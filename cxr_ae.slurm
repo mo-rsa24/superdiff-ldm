@@ -103,9 +103,9 @@ ARGS=(
 
 # Overfit/tiny
 if [[ "$OVERFIT_ONE" == "1" ]]; then
-  [cite_start]ARGS+=( --overfit_one --repeat_len "$REPEAT_LEN" ) [cite: 12]
+  ARGS+=( --overfit_one --repeat_len "$REPEAT_LEN" )
 elif (( OVERFIT_K > 0 )); then
-  [cite_start]ARGS+=( --overfit_k "$OVERFIT_K" ) [cite: 13]
+  ARGS+=( --overfit_k "$OVERFIT_K" )
 fi
 
 # Optional run name / resume
@@ -114,7 +114,7 @@ fi
 
 # WandB
 if [[ "$WANDB" == "1" ]]; then
-  [cite_start]ARGS+=( --wandb --wandb_project "$WANDB_PROJECT" ) [cite: 14]
+  ARGS+=( --wandb --wandb_project "$WANDB_PROJECT" )
   [[ -n "$WANDB_ENTITY" ]] && ARGS+=( --wandb_entity "$WANDB_ENTITY" )
   [[ -n "$WANDB_TAGS"   ]] && ARGS+=( --wandb_tags "$WANDB_TAGS" )
   [[ -n "$WANDB_ID"     ]] && ARGS+=( --wandb_id "$WANDB_ID" )
