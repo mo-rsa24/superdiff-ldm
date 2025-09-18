@@ -6,7 +6,19 @@
 #SBATCH --error=logs/%x-%j.err
 
 set -euo pipefail
-
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  RED=${RED-$(printf '\033[31m')}
+  GRN=${GRN-$(printf '\033[32m')}
+  YEL=${YEL-$(printf '\033[33m')}
+  BLU=${BLU-$(printf '\033[34m')}
+  MAG=${MAG-$(printf '\033[35m')}
+  CYN=${CYN-$(printf '\033[36m')}
+  WHT=${WHT-$(printf '\033[37m')}
+  BLD=${BLD-$(printf '\033[1m')}
+  RST=${RST-$(printf '\033[0m')}
+else
+  RED=${RED-}; GRN=${GRN-}; YEL=${YEL-}; BLU=${BLU-}; MAG=${MAG-}; CYN=${CYN-}; WHT=${WHT-}; BLD=${BLD-}; RST=${RST-}
+fi
 # ----------------------------
 # Pretty printing helpers
 # ----------------------------
