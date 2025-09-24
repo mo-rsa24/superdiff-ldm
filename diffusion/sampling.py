@@ -158,34 +158,32 @@ def Euler_Maruyama_sampler(rng, score_model, params, ae_model, ae_params,
                            num_steps=500, eps=1e-3, scale_factor=1.0):
     """
     Generate samples using the Euler-Maruyama solver for the reverse SDE.
-    MODIFIED for LDM: Operates in latent space and decodes at the end.
     """
     devices = jax.local_device_count()
     if batch_size % devices != 0:
         raise ValueError(f"Batch size ({batch_size}) must be divisible by device count ({devices}).")
 
     pmap_score_fn = make_pmap_score_fn(score_model)
-    pmapped_ae_decode = jax.pmap(ae_model.decode, in_axes=(None, 0))
+    pmapped_ae_decode = jax.pmap(ae_model.decode, in_axes=(None, 0), static_broadcasted_argnums=(0,))
 
     time_shape = (devices, batch_size // devices)
     latent_shape = time_shape + (latent_size, latent_size, z_channels)
 
     rng, step_rng = jax.random.split(rng)
-    # Start from pure noise in latent space
-    z = jax.random.normal(step_rng, latent_shape) * marginal_prob_std_fn(jnp.ones(time_shape))
+    std_t1 = marginal_prob_std_fn(jnp.ones(time_shape))
+    std_t1_reshaped = std_t1.reshape(std_t1.shape + (1,) * (len(latent_shape) - len(std_t1.shape)))
+    z = jax.random.normal(step_rng, latent_shape) * std_t1_reshaped
+
     time_steps = jnp.linspace(1., eps, num_steps)
     step_size = time_steps[0] - time_steps[1]
 
     for time_step in tqdm(time_steps, desc="EM Sampler"):
         t = jnp.ones(time_shape) * time_step
         g = diffusion_coeff_fn(t)
-        # Reshape g for broadcasting
         g_broadcast = g.reshape(g.shape + (1,) * (z.ndim - g.ndim))
 
-        # Score function call
         score = pmap_score_fn(score_model, params, z, t)
 
-        # Corrector step
         rng, step_rng = jax.random.split(rng)
         noise = jax.random.normal(step_rng, z.shape)
         drift = -0.5 * (g_broadcast ** 2) * score * step_size
@@ -193,12 +191,11 @@ def Euler_Maruyama_sampler(rng, score_model, params, ae_model, ae_params,
         z_mean = z + drift
         z = z_mean + diffusion
 
-    # Denoise the last step
-    final_z = z_mean / scale_factor  # Rescale latent before decoding
+    final_z = z_mean / scale_factor
 
-    # Decode latents to images
-    decoded_images = pmapped_ae_decode({'params': ae_params}, final_z)
-    # Reshape from (Devices, B/D, H, W, C) -> (B, H, W, C)
+    # Decode latents to images using the pmapped decode function
+    decoded_images = pmapped_ae_decode({'params': ae_params}, final_z, train=False)
+
     return decoded_images.reshape((-1,) + decoded_images.shape[2:])
 
 
