@@ -14,9 +14,9 @@ export ENV_NAME="jax115"
 
 # --- Key Training Parameters ---
 export TASK="TB"                         # Set the dataset task (TB or PNEUMONIA)
-export EPOCHS=50                        # Set a higher number of epochs for a full run
-export BATCH_PER_DEVICE=4                # Adjust batch size based on your GPU memory
-export SAMPLE_EVERY=5                    # Sample every 5 epochs to save disk space
+export EPOCHS=200                        # Set a higher number of epochs for a full run
+export BATCH_PER_DEVICE=8                # Adjust batch size based on your GPU memory
+export SAMPLE_EVERY=20                    # Sample every 5 epochs to save disk space
 export CH_MULTS="64:128:256"
 export WANDB_TAGS="ae-full-train:slurm"     # Set W&B tags (use colons to separate)
 
