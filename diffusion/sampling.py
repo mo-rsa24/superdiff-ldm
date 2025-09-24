@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import *
 from tqdm import trange
-import tqdm
+from tqdm import tqdm
 import math
 from diffusion.equations import diffusion, drift, score_function_hutchinson_estimator, get_kappa, dlog_alphadt, beta, \
     dlogqdt, marginal_prob_std_fn, diffusion_coeff_fn
