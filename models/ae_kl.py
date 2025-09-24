@@ -103,42 +103,43 @@ class Decoder(nn.Module):
         h = nn.Conv(self.out_ch, (3,3), padding="SAME")(h)
         return h
 
+
+# models/ae_kl.py
+
+# ... (all other classes like DiagonalGaussian, ResBlock, Encoder, Decoder are unchanged) ...
+
 class AutoencoderKL(nn.Module):
     enc_cfg: dict
     dec_cfg: dict
     embed_dim: int
-    @nn.compact
-    def __call__(self, x, *, rng=None, sample_posterior=True, train=True):
+    def setup(self):
         enc_z = self.enc_cfg.get("z_ch", self.embed_dim)
         dec_z = self.dec_cfg.get("z_ch", self.embed_dim)
         enc_kwargs = {k: v for k, v in self.enc_cfg.items() if k != "z_ch"}
         dec_kwargs = {k: v for k, v in self.dec_cfg.items() if k != "z_ch"}
-        enc = Encoder(z_ch=enc_z, **enc_kwargs, name="encoder")
-        dec = Decoder(z_ch=dec_z, **dec_kwargs, name="decoder")
-        moments = enc(x, train=train)
+
+        self.encoder = Encoder(z_ch=enc_z, **enc_kwargs)
+        self.decoder = Decoder(z_ch=dec_z, **dec_kwargs)
+
+    def __call__(self, x, *, rng=None, sample_posterior=True, train=True):
+        moments = self.encoder(x, train=train)
         mu, logvar = jnp.split(moments, 2, axis=-1)
         q = DiagonalGaussian(mu, logvar)
+
         if sample_posterior:
-            assert rng is not None, "rng required when sampling posterior."
+            if rng is None:
+                raise ValueError("RNG key must be provided when sampling from the posterior.")
             z = q.sample(rng)
         else:
             z = q.mode()
-        xrec = dec(z, train=train)
+
+        xrec = self.decoder(z, train=train)
         return xrec, q
 
-    # helpers for separate calls
-    @nn.compact
     def encode(self, x, *, train=True):
-        enc_z = self.enc_cfg.get("z_ch", self.embed_dim)
-        enc_kwargs = {k: v for k, v in self.enc_cfg.items() if k != "z_ch"}
-        enc = Encoder(z_ch=enc_z, **enc_kwargs, name="encoder")
-        moments = enc(x, train=train)
+        moments = self.encoder(x, train=train)
         mu, logvar = jnp.split(moments, 2, axis=-1)
         return DiagonalGaussian(mu, logvar)
 
-    @nn.compact
     def decode(self, z, *, train=True):
-        dec_z = self.dec_cfg.get("z_ch", self.embed_dim)
-        dec_kwargs = {k: v for k, v in self.dec_cfg.items() if k != "z_ch"}
-        dec = Decoder(z_ch=dec_z, **dec_kwargs, name="decoder")
-        return dec(z, train=train)
+        return self.decoder(z, train=train)
