@@ -127,6 +127,7 @@ class AutoencoderKL(nn.Module):
         return xrec, q
 
     # helpers for separate calls
+    @nn.compact
     def encode(self, x, *, train=True):
         enc_z = self.enc_cfg.get("z_ch", self.embed_dim)
         enc_kwargs = {k: v for k, v in self.enc_cfg.items() if k != "z_ch"}
@@ -135,6 +136,7 @@ class AutoencoderKL(nn.Module):
         mu, logvar = jnp.split(moments, 2, axis=-1)
         return DiagonalGaussian(mu, logvar)
 
+    @nn.compact
     def decode(self, z, *, train=True):
         dec_z = self.dec_cfg.get("z_ch", self.embed_dim)
         dec_kwargs = {k: v for k, v in self.dec_cfg.items() if k != "z_ch"}

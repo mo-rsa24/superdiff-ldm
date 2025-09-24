@@ -2,7 +2,7 @@
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
-from typing import Any, Tuple
+from typing import Any, Tuple, Sequence
 
 class GaussianFourierProjection(nn.Module):
     embed_dim: int
@@ -36,22 +36,17 @@ class ResBlock(nn.Module):
     def __call__(self, x, t_embed):
         act = nn.swish
         in_ch = x.shape[-1]
-
-        # main branch: conv → t-bias → GN → act → conv → GN
-        h = nn.Conv(self.c, (3, 3), padding='SAME', use_bias=False)(x)
+        h = nn.GroupNorm(num_groups=_pick_gn_groups(in_ch))(x)
+        h = act(h)
+        h = nn.Conv(self.c, (3, 3), padding='SAME', use_bias=False)(h)
         h = h + DenseToMap(self.c)(t_embed)
         h = nn.GroupNorm(num_groups=_pick_gn_groups(self.c))(h)
         h = act(h)
         h = nn.Conv(self.c, (3, 3), padding='SAME', use_bias=False)(h)
-        h = nn.GroupNorm(num_groups=_pick_gn_groups(self.c))(h)
-
-        # skip branch: project if channels don't match
         if in_ch != self.c:
             x = nn.Conv(self.c, (1, 1), padding='SAME', use_bias=False, name='skip_proj')(x)
-
         if self.scale_skip:
             x = x * (1.0 / jnp.sqrt(2.0))
-
         return act(h + x)
 
 
@@ -64,49 +59,59 @@ class SelfAttention2D(nn.Module):
         h = h.reshape((B, H*W, C))
         h = nn.SelfAttention(num_heads=self.num_heads)(h)
         h = h.reshape((B,H,W,C))
-        return x + h  # residual
+        return x + h
 
 class ScoreNet(nn.Module):
-    marginal_prob_std: Any
-    channels: Tuple[int, ...] = (64, 128, 256, 512)
+    # MODIFIED: Default channels updated for 32x32 latent space input
+    z_channels: int = 3
+    channels: Sequence[int] = (128, 256, 512)
     embed_dim: int = 256
-    attn_bottleneck: bool = True
+    num_res_blocks: int = 2
+    attn_resolutions: Tuple[int, ...] = (16,) # Apply attention at 16x16
     num_heads: int = 4
 
     @nn.compact
     def __call__(self, x, t):
+        # NOTE: The marginal_prob_std function is now passed to the loss function,
+        # not stored in the model, to keep the model definition clean.
         act = nn.swish
-        temb = act(nn.Dense(self.embed_dim)(
-            GaussianFourierProjection(self.embed_dim)(t)))
+        # Time embedding
+        temb = act(nn.Dense(self.embed_dim)(GaussianFourierProjection(self.embed_dim)(t)))
 
-        # Encoder
-        h1 = ResBlock(self.channels[0], self.embed_dim)(x, temb)
-        d1 = nn.Conv(self.channels[0], (3,3), strides=(2,2), padding='SAME', use_bias=False)(h1)
+        # --- Encoder ---
+        # Initial projection
+        h = nn.Conv(self.channels[0], (3,3), padding='SAME')(x)
+        skips = [h]
+        # Downsampling blocks
+        for i, ch in enumerate(self.channels):
+            for _ in range(self.num_res_blocks):
+                h = ResBlock(ch, self.embed_dim)(h, temb)
+                if h.shape[1] in self.attn_resolutions:
+                    h = SelfAttention2D(num_heads=self.num_heads)(h)
+                skips.append(h)
+            if i < len(self.channels) - 1:
+                h = nn.Conv(self.channels[i+1], (3,3), strides=(2,2), padding='SAME')(h)
+                skips.append(h)
 
-        h2 = ResBlock(self.channels[1], self.embed_dim)(d1, temb)
-        d2 = nn.Conv(self.channels[1], (3,3), strides=(2,2), padding='SAME', use_bias=False)(h2)
+        # --- Bottleneck ---
+        h = ResBlock(self.channels[-1], self.embed_dim)(h, temb)
+        h = SelfAttention2D(num_heads=self.num_heads)(h)
+        h = ResBlock(self.channels[-1], self.embed_dim)(h, temb)
 
-        h3 = ResBlock(self.channels[2], self.embed_dim)(d2, temb)
-        d3 = nn.Conv(self.channels[2], (3,3), strides=(2,2), padding='SAME', use_bias=False)(h3)
+        # --- Decoder ---
+        for i in reversed(range(len(self.channels))):
+            for _ in range(self.num_res_blocks + 1): # +1 for skip connections
+                h = jnp.concatenate([h, skips.pop()], axis=-1)
+                h = ResBlock(self.channels[i], self.embed_dim)(h, temb)
+                if h.shape[1] in self.attn_resolutions:
+                    h = SelfAttention2D(num_heads=self.num_heads)(h)
+            if i > 0:
+                h = nn.ConvTranspose(self.channels[i-1], (4,4), strides=(2,2), padding='SAME')(h)
 
-        h4 = ResBlock(self.channels[3], self.embed_dim)(d3, temb)  # 32×32 bottleneck
-        if self.attn_bottleneck:
-            h4 = SelfAttention2D(num_heads=self.num_heads)(h4)
-
-        # Decoder
-        u3 = nn.ConvTranspose(self.channels[2], (4,4), strides=(2,2), padding='SAME', use_bias=False)(h4)
-        u3 = jnp.concatenate([u3, h3], axis=-1)
-        u3 = ResBlock(self.channels[2], self.embed_dim)(u3, temb)
-
-        u2 = nn.ConvTranspose(self.channels[1], (4,4), strides=(2,2), padding='SAME', use_bias=False)(u3)
-        u2 = jnp.concatenate([u2, h2], axis=-1)
-        u2 = ResBlock(self.channels[1], self.embed_dim)(u2, temb)
-
-        u1 = nn.ConvTranspose(self.channels[0], (4,4), strides=(2,2), padding='SAME', use_bias=False)(u2)
-        u1 = jnp.concatenate([u1, h1], axis=-1)
-        u1 = ResBlock(self.channels[0], self.embed_dim)(u1, temb)
-
-        out = nn.Conv(1, (3,3), strides=(1,1), padding='SAME')(u1)
-        # score normalization must use the *same* marginal_prob_std as loss
-        out = out / self.marginal_prob_std(t)[:, None, None, None]
+        # Final projection
+        h = nn.GroupNorm(num_groups=_pick_gn_groups(h.shape[-1]))(h)
+        h = act(h)
+        # MODIFIED: Output has z_channels (3) instead of 1
+        out = nn.Conv(self.z_channels, (3,3), padding='SAME',
+                      kernel_init=nn.initializers.zeros)(h)
         return out

@@ -30,13 +30,13 @@ def q_t(data, t, standard_noise): # Forward Diffusion
   return x_t
 
 def _log_alpha_bar_cosine(t, s=0.008):
-  # Nichol & Dhariwal cosine schedule in continuous time
+  """Continuous-time version of the cosine schedule from Nichol & Dhariwal."""
+  # Ref: https://arxiv.org/abs/2102.09672
   c = (t + s) / (1.0 + s)
-  # add tiny epsilon for numerical stability
+  # Add a small epsilon for numerical stability at t=1
   return 2.0 * jnp.log(jnp.cos(jnp.pi * c / 2.0 + 1e-12))
 
-
-# d/dt log alpha_bar
+# Graduate of log alpha_bar w.r.t. time 't'
 _dlogab_dt = jax.grad(lambda _t: _log_alpha_bar_cosine(_t).sum())
 
 
@@ -175,32 +175,25 @@ def get_kappa(t, divlogs, sdlogdxs):
 
 # @title Set up the SDE
 
-def marginal_prob_std(t, sigma):
-  """Compute the mean and standard deviation of $p_{0t}(x(t) | x(0))$.
-
-  Args:
-    t: A vector of time steps.
-    sigma: The $\sigma$ in our SDE.
-
-  Returns:
-    The standard deviation.
+def marginal_prob_std(t):
   """
-  return jnp.sqrt((sigma ** (2 * t) - 1.) / 2. / jnp.log(sigma))
-
-
-def diffusion_coeff(t, sigma):
-  """Compute the diffusion coefficient of our SDE.
-
-  Args:
-    t: A vector of time steps.
-    sigma: The $\sigma$ in our SDE.
-
-  Returns:
-    The vector of diffusion coefficients.
+  Computes the standard deviation of the perturbation kernel q(x_t | x_0).
+  std(t) = sqrt(1 - alpha_bar(t))
   """
-  return sigma ** t
+  log_alpha_bar = _log_alpha_bar_cosine(t)
+  return jnp.sqrt(1.0 - jnp.exp(log_alpha_bar))
 
 
-sigma = 25.0  # @param {'type':'number'}
-marginal_prob_std_fn = functools.partial(marginal_prob_std, sigma=sigma)
-diffusion_coeff_fn = functools.partial(diffusion_coeff, sigma=sigma)
+
+def diffusion_coeff(t):
+  """
+  Computes the diffusion coefficient of the SDE, g(t).
+  g(t)^2 = beta(t) = -d/dt log alpha_bar(t)
+  """
+  # Ensure beta_t is non-negative
+  beta_t = -_dlogab_dt(t)
+  return jnp.sqrt(jnp.maximum(beta_t, 1e-12))
+
+sigma = 12.0
+marginal_prob_std_fn = marginal_prob_std
+diffusion_coeff_fn = diffusion_coeff

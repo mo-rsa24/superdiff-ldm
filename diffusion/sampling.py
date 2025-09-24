@@ -6,7 +6,8 @@ from tqdm import trange
 import tqdm
 import math
 from diffusion.equations import diffusion, drift, score_function_hutchinson_estimator, get_kappa, dlog_alphadt, beta, \
-    dlogqdt
+    dlogqdt, marginal_prob_std_fn, diffusion_coeff_fn
+
 
 def _sum_except_batch(x):
     axes = tuple(range(1, x.ndim))
@@ -139,33 +140,66 @@ num_steps = 500
 # pmap_score_fn = jax.pmap(score_fn, in_axes=(None, None, 0, 0))
 
 def make_pmap_score_fn(score_model):
+    """Creates a pmapped function for efficient multi-device score evaluation."""
     def score_fn(params, x, t):
-        return score_model.apply(params, x, t)
-    return jax.pmap(score_fn, in_axes=(None, 0, 0))
+        # The model now directly predicts noise 'z', so the score is -z/std.
+        # This normalization is applied here during sampling.
+        std = marginal_prob_std_fn(t)
+        # Reshape std for broadcasting: (B,) -> (B, 1, 1, 1)
+        std_broadcast = std.reshape(std.shape + (1,) * (x.ndim - std.ndim))
+        pred_noise = score_model.apply({'params': params}, x, t)
+        return -pred_noise / std_broadcast
 
-def Euler_Maruyama_sampler(rng, score_model, params, marginal_prob_std, diffusion_coeff,
-                           batch_size=64, num_steps=num_steps, eps=1e-3, img_size=28):
+    return jax.pmap(score_fn, in_axes=(None, 0, 0), static_broadcasted_argnums=(0,))
+
+
+def Euler_Maruyama_sampler(rng, score_model, params, ae_model, ae_params,
+                           batch_size=16, latent_size=32, z_channels=3,
+                           num_steps=500, eps=1e-3, scale_factor=1.0):
+    """
+    Generate samples using the Euler-Maruyama solver for the reverse SDE.
+    MODIFIED for LDM: Operates in latent space and decodes at the end.
+    """
     devices = jax.local_device_count()
     if batch_size % devices != 0:
-        raise ValueError(
-            f"sample_batch_size ({batch_size}) must be divisible by local_device_count ({devices}). "
-            "Choose a multiple to avoid degenerate sampling.")
+        raise ValueError(f"Batch size ({batch_size}) must be divisible by device count ({devices}).")
+
     pmap_score_fn = make_pmap_score_fn(score_model)
-    time_shape   = (devices, batch_size // devices)
-    sample_shape = time_shape + (img_size, img_size, 1)
+    pmapped_ae_decode = jax.pmap(ae_model.decode, in_axes=(None, 0))
+
+    time_shape = (devices, batch_size // devices)
+    latent_shape = time_shape + (latent_size, latent_size, z_channels)
+
     rng, step_rng = jax.random.split(rng)
-    init_x = jax.random.normal(step_rng, sample_shape) * marginal_prob_std(1.)
+    # Start from pure noise in latent space
+    z = jax.random.normal(step_rng, latent_shape) * marginal_prob_std_fn(jnp.ones(time_shape))
     time_steps = jnp.linspace(1., eps, num_steps)
     step_size = time_steps[0] - time_steps[1]
-    x = init_x
-    for time_step in tqdm.tqdm(time_steps):
-        batch_time_step = jnp.ones(time_shape) * time_step
-        g = diffusion_coeff(time_step)
-        mean_x = x + (g ** 2) * pmap_score_fn(params, x, batch_time_step) * step_size
-        rng, step_rng = jax.random.split(rng)
-        x = mean_x + jnp.sqrt(step_size) * g * jax.random.normal(step_rng, x.shape)
-    return mean_x
 
+    for time_step in tqdm(time_steps, desc="EM Sampler"):
+        t = jnp.ones(time_shape) * time_step
+        g = diffusion_coeff_fn(t)
+        # Reshape g for broadcasting
+        g_broadcast = g.reshape(g.shape + (1,) * (z.ndim - g.ndim))
+
+        # Score function call
+        score = pmap_score_fn(score_model, params, z, t)
+
+        # Corrector step
+        rng, step_rng = jax.random.split(rng)
+        noise = jax.random.normal(step_rng, z.shape)
+        drift = -0.5 * (g_broadcast ** 2) * score * step_size
+        diffusion = g_broadcast * jnp.sqrt(step_size) * noise
+        z_mean = z + drift
+        z = z_mean + diffusion
+
+    # Denoise the last step
+    final_z = z_mean / scale_factor  # Rescale latent before decoding
+
+    # Decode latents to images
+    decoded_images = pmapped_ae_decode({'params': ae_params}, final_z)
+    # Reshape from (Devices, B/D, H, W, C) -> (B, H, W, C)
+    return decoded_images.reshape((-1,) + decoded_images.shape[2:])
 
 
 # @title Define the Predictor-Corrector sampler (double click to expand or collapse)
