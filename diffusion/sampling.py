@@ -150,7 +150,7 @@ def make_pmap_score_fn(score_model):
         pred_noise = score_model.apply({'params': params}, x, t)
         return -pred_noise / std_broadcast
 
-    return jax.pmap(score_fn, in_axes=(None, 0, 0), static_broadcasted_argnums=(0,))
+    return jax.pmap(score_fn, in_axes=(None, 0, 0))
 
 
 def Euler_Maruyama_sampler(rng, score_model, params, ae_model, ae_params,
@@ -164,7 +164,10 @@ def Euler_Maruyama_sampler(rng, score_model, params, ae_model, ae_params,
         raise ValueError(f"Batch size ({batch_size}) must be divisible by device count ({devices}).")
 
     pmap_score_fn = make_pmap_score_fn(score_model)
-    pmapped_ae_decode = jax.pmap(ae_model.decode, in_axes=(None, 0), static_broadcasted_argnums=(0,))
+    pmapped_ae_decode = jax.pmap(
+        lambda variables, latents: ae_model.decode(variables, latents, train=False),
+        in_axes=(None, 0)
+    )
 
     time_shape = (devices, batch_size // devices)
     latent_shape = time_shape + (latent_size, latent_size, z_channels)
