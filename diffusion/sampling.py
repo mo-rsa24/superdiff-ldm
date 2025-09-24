@@ -141,11 +141,9 @@ num_steps = 500
 
 def make_pmap_score_fn(score_model):
     """Creates a pmapped function for efficient multi-device score evaluation."""
+
     def score_fn(params, x, t):
-        # The model now directly predicts noise 'z', so the score is -z/std.
-        # This normalization is applied here during sampling.
         std = marginal_prob_std_fn(t)
-        # Reshape std for broadcasting: (B,) -> (B, 1, 1, 1)
         std_broadcast = std.reshape(std.shape + (1,) * (x.ndim - std.ndim))
         pred_noise = score_model.apply({'params': params}, x, t)
         return -pred_noise / std_broadcast
@@ -164,6 +162,7 @@ def Euler_Maruyama_sampler(rng, score_model, params, ae_model, ae_params,
         raise ValueError(f"Batch size ({batch_size}) must be divisible by device count ({devices}).")
 
     pmap_score_fn = make_pmap_score_fn(score_model)
+
     pmapped_ae_decode = jax.pmap(
         lambda variables, latents: ae_model.decode(variables, latents, train=False),
         in_axes=(None, 0)
@@ -173,6 +172,7 @@ def Euler_Maruyama_sampler(rng, score_model, params, ae_model, ae_params,
     latent_shape = time_shape + (latent_size, latent_size, z_channels)
 
     rng, step_rng = jax.random.split(rng)
+
     std_t1 = marginal_prob_std_fn(jnp.ones(time_shape))
     std_t1_reshaped = std_t1.reshape(std_t1.shape + (1,) * (len(latent_shape) - len(std_t1.shape)))
     z = jax.random.normal(step_rng, latent_shape) * std_t1_reshaped
@@ -185,7 +185,9 @@ def Euler_Maruyama_sampler(rng, score_model, params, ae_model, ae_params,
         g = diffusion_coeff_fn(t)
         g_broadcast = g.reshape(g.shape + (1,) * (z.ndim - g.ndim))
 
-        score = pmap_score_fn(score_model, params, z, t)
+        # MODIFIED: Removed the extra `score_model` argument from the call.
+        # The pmap_score_fn already knows about the model from the factory.
+        score = pmap_score_fn(params, z, t)
 
         rng, step_rng = jax.random.split(rng)
         noise = jax.random.normal(step_rng, z.shape)
@@ -196,8 +198,7 @@ def Euler_Maruyama_sampler(rng, score_model, params, ae_model, ae_params,
 
     final_z = z_mean / scale_factor
 
-    # Decode latents to images using the pmapped decode function
-    decoded_images = pmapped_ae_decode({'params': ae_params}, final_z, train=False)
+    decoded_images = pmapped_ae_decode({'params': ae_params}, final_z)
 
     return decoded_images.reshape((-1,) + decoded_images.shape[2:])
 
