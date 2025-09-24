@@ -17,9 +17,9 @@ export AE_CONFIG_PATH="runs/ae_full_tb_b4_20250918/20250918-112409/run_meta.json
 
 # --- Key Training Parameters ---
 export TASK="TB"                         # Dataset task (TB or PNEUMONIA)
-export EPOCHS=1000                       # Set a higher number of epochs for LDM
+export EPOCHS=500                  # Set a higher number of epochs for LDM
 export BATCH_PER_DEVICE=4                # Adjust batch size
-export SAMPLE_EVERY=20                   # Sample every 20 epochs
+export SAMPLE_EVERY=50                   # Sample every 20 epochs
 export LDM_BASE_CH=192                   # UNet base channels
 export LDM_CH_MULTS="1:2:3"              # UNet channel multipliers (use colons)
 export WANDB_TAGS="ldm-full-train:slurm" # Set W&B tags (use colons)
