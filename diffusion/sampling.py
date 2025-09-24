@@ -164,7 +164,7 @@ def Euler_Maruyama_sampler(rng, score_model, params, ae_model, ae_params,
     pmap_score_fn = make_pmap_score_fn(score_model)
 
     pmapped_ae_decode = jax.pmap(
-        lambda variables, latents: ae_model.decode(variables, latents, train=False),
+        lambda variables, latents: ae_model.apply(variables, latents, method=ae_model.decode, train=False),
         in_axes=(None, 0)
     )
 
