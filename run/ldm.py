@@ -43,6 +43,8 @@ def parse_args():
     p.add_argument("--task", choices=["TB", "PNEUMONIA"], default="TB")
     p.add_argument("--split", choices=["train", "val", "test"], default="train")
     p.add_argument("--img_size", type=int, default=256)
+    p.add_argument("--class_filter", type=int, default=1,
+                   help="Optional: keep a class index only (e.g., 1 for disease, 0 for normal)")
     p.add_argument("--overfit_one", action="store_true", help="Repeat a single sample to overfit.")
     p.add_argument("--overfit_k", type=int, default=0, help="If >0, train on a fixed tiny subset of size K.")
     p.add_argument("--repeat_len", type=int, default=16384, help="Virtual length for the repeated dataset.")
@@ -50,7 +52,7 @@ def parse_args():
     # --- Pretrained Autoencoder ---
     p.add_argument("--ae_ckpt_path", required=True, help="Path to the last.flax of the pretrained autoencoder.")
     p.add_argument("--ae_config_path", required=True, help="Path to the run_meta.json of the AE run.")
-    p.add_argument("--latent_scale_factor", type=float, default=0.18215, help="From stable-diffusion v1.")
+    p.add_argument("--latent_scale_factor", type=float, default=1.0, help="From stable-diffusion v1.")
 
     # --- LDM UNet Architecture ---
     p.add_argument("--ldm_ch_mults", type=str, default="1,2,4", help="Channel multipliers for UNet, relative to base_ch.")
@@ -120,7 +122,9 @@ def main():
         json.dump(vars(args), f, indent=2)
 
     # --- Setup Dataset ---
-    base_ds = ChestXrayDataset(root_dir=args.data_root, task=args.task, split=args.split, img_size=args.img_size)
+    base_ds = ChestXrayDataset(root_dir=args.data_root, task=args.task, split=args.split, img_size=args.img_size,
+                               class_filter=args.class_filter
+                               )
     batch_size = args.batch_per_device * jax.local_device_count()
     if args.overfit_one:
         ds = Subset(base_ds, [0])

@@ -8,9 +8,11 @@
 set -euo pipefail
 
 # --- Pretty printing helpers ---
-CYN=$(printf '\033[36m'); BLU=$(printf '\033[34m'); BLD=$(printf '\033[1m'); RST=$(printf '\033[0m')
+CYN=$(printf '\033[36m'); BLU=$(printf '\033[34m'); BLD=$(printf '\033[1m');
+RST=$(printf '\033[0m')
 banner(){ printf "\n${BLU}${BLD}== %s ==${RST}\n" "$*"; }
-kv(){ printf "  ${CYN}%-22s${RST} %s\n" "$1" "$2"; }
+kv(){ printf "  ${CYN}%-22s${RST} %s\n" "$1" "$2";
+}
 
 # ----------------------------
 # Defaults (override via env)
@@ -23,6 +25,7 @@ DATA_ROOT="/datasets/mmolefe/cleaned"
 TASK="${TASK:-TB}"
 SPLIT="${SPLIT:-train}"
 IMG_SIZE="${IMG_SIZE:-256}"
+DISEASE="${DISEASE:-1}" # Use 1 for diseased, 0 for normal
 OVERFIT_ONE="${OVERFIT_ONE:-0}"
 OVERFIT_K="${OVERFIT_K:-0}"
 REPEAT_LEN="${REPEAT_LEN:-16384}"
@@ -81,6 +84,7 @@ WANDB_TAGS="${WANDB_TAGS//:/,}"
 # ----------------------------
 ARGS=(
   --data_root "$DATA_ROOT" --task "$TASK" --split "$SPLIT" --img_size "$IMG_SIZE"
+  --class_filter "$DISEASE"
   --ae_ckpt_path "$AE_CKPT_PATH" --ae_config_path "$AE_CONFIG_PATH"
   --ldm_base_ch "$LDM_BASE_CH" --ldm_ch_mults "$LDM_CH_MULTS" --ldm_num_res_blocks "$LDM_NUM_RES_BLOCKS" --ldm_attn_res "$LDM_ATTN_RES"
   --lr "$LR" --weight_decay "$WEIGHT_DECAY" --grad_clip "$GRAD_CLIP"
@@ -91,14 +95,16 @@ ARGS=(
 
 # Debugging
 if [[ "$OVERFIT_ONE" == "1" ]]; then ARGS+=( --overfit_one --repeat_len "$REPEAT_LEN" );
-elif (( OVERFIT_K > 0 )); then ARGS+=( --overfit_k "$OVERFIT_K" ); fi
+elif (( OVERFIT_K > 0 )); then ARGS+=( --overfit_k "$OVERFIT_K" );
+fi
 
 # Optional run name / resume
 [[ -n "$RUN_NAME" ]] && ARGS+=( --run_name "$RUN_NAME" )
 [[ -n "$RESUME_DIR" ]] && ARGS+=( --resume_dir "$RESUME_DIR" )
 
 # WandB
-if [[ "$WANDB" == "1" ]]; then
+if [[ "$WANDB" == "1" ]];
+then
   ARGS+=( --wandb --wandb_project "$WANDB_PROJECT" )
   [[ -n "$WANDB_TAGS" ]] && ARGS+=( --wandb_tags "$WANDB_TAGS" )
 fi
@@ -113,6 +119,7 @@ kv "Node"           "$(hostname)"
 banner "LDM Training Info"
 kv "PYFILE"         "$PYFILE"
 kv "TASK"           "$TASK"
+kv "DATASET"        "$([[ "$DISEASE" == 1 ]] && echo "Diseased" || echo "Normal")"
 kv "EPOCHS"         "$EPOCHS"
 kv "BATCHxDEVS"     "$BATCH_PER_DEVICE x $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo 1)"
 kv "AE_CHECKPOINT"  "$AE_CKPT_PATH"
