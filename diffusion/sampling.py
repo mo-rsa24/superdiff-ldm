@@ -150,57 +150,44 @@ def make_pmap_score_fn(score_model):
 
     return jax.pmap(score_fn, in_axes=(None, 0, 0))
 
-
-def Euler_Maruyama_sampler(rng, score_model, params, ae_model, ae_params,
-                           batch_size=16, latent_size=32, z_channels=3,
-                           num_steps=500, eps=1e-3, scale_factor=1.0):
-    """
-    Generate samples using the Euler-Maruyama solver for the reverse SDE.
-    """
-    devices = jax.local_device_count()
-    if batch_size % devices != 0:
-        raise ValueError(f"Batch size ({batch_size}) must be divisible by device count ({devices}).")
-
-    pmap_score_fn = make_pmap_score_fn(score_model)
-
-    pmapped_ae_decode = jax.pmap(
-        lambda variables, latents: ae_model.apply(variables, latents, method=ae_model.decode, train=False),
-        in_axes=(None, 0)
-    )
-
-    time_shape = (devices, batch_size // devices)
-    latent_shape = time_shape + (latent_size, latent_size, z_channels)
-
+def Euler_Maruyama_sampler(rng,
+                           ldm_model,
+                           ldm_params,
+                           marginal_prob_std_fn,
+                           diffusion_coeff_fn,
+                           batch_size,
+                           latent_shape,
+                           ae_model,
+                           ae_params,
+                           n_steps=1000,
+                           eps=1e-3):
     rng, step_rng = jax.random.split(rng)
 
-    std_t1 = marginal_prob_std_fn(jnp.ones(time_shape))
-    std_t1_reshaped = std_t1.reshape(std_t1.shape + (1,) * (len(latent_shape) - len(std_t1.shape)))
-    z = jax.random.normal(step_rng, latent_shape) * std_t1_reshaped
-
-    time_steps = jnp.linspace(1., eps, num_steps)
+    t = jnp.ones(batch_size)
+    init_z = jax.random.normal(step_rng, (batch_size, *latent_shape[1:])) * marginal_prob_std_fn(t)[:, None, None, None]
+    time_steps = jnp.linspace(1., eps, n_steps)
     step_size = time_steps[0] - time_steps[1]
+    z = init_z
 
-    for time_step in tqdm(time_steps, desc="EM Sampler"):
-        t = jnp.ones(time_shape) * time_step
-        g = diffusion_coeff_fn(t)
-        g_broadcast = g.reshape(g.shape + (1,) * (z.ndim - g.ndim))
-
-        # MODIFIED: Removed the extra `score_model` argument from the call.
-        # The pmap_score_fn already knows about the model from the factory.
-        score = pmap_score_fn(params, z, t)
-
+    for t in tqdm(time_steps, desc="Sampling", leave=False):
         rng, step_rng = jax.random.split(rng)
-        noise = jax.random.normal(step_rng, z.shape)
-        drift = -0.5 * (g_broadcast ** 2) * score * step_size
-        diffusion = g_broadcast * jnp.sqrt(step_size) * noise
-        z_mean = z + drift
-        z = z_mean + diffusion
 
-    final_z = z_mean / scale_factor
+        batch_time_step = jnp.ones(batch_size) * t
+        g = diffusion_coeff_fn(batch_time_step)
+        std = marginal_prob_std_fn(batch_time_step)
+        predicted_noise = ldm_model.apply({'params': ldm_params}, z, batch_time_step)
+        score = -predicted_noise / std[:, None, None, None]
+        # --- End of Correction ---
 
-    decoded_images = pmapped_ae_decode({'params': ae_params}, final_z)
+        drift = -0.5 * g[:, None, None, None] ** 2 * score
+        diffusion = g[:, None, None, None] * jax.random.normal(step_rng, z.shape)
+        z_mean = z + drift * step_size
+        z = z_mean + diffusion * jnp.sqrt(step_size)
+    decoded_sample = ae_model.apply({'params': ae_params}, z, method=ae_model.decode)
+    decoded_samples = (decoded_sample + 1.) / 2.
+    decoded_samples = jnp.clip(decoded_samples, 0., 1.)
 
-    return decoded_images.reshape((-1,) + decoded_images.shape[2:])
+    return decoded_samples
 
 
 # @title Define the Predictor-Corrector sampler (double click to expand or collapse)
