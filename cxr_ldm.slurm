@@ -28,7 +28,7 @@ IMG_SIZE="${IMG_SIZE:-256}"
 DISEASE="${DISEASE:-1}" # Use 1 for diseased, 0 for normal
 OVERFIT_ONE="${OVERFIT_ONE:-0}"
 OVERFIT_K="${OVERFIT_K:-0}"
-REPEAT_LEN="${REPEAT_LEN:-16384}"
+REPEAT_LEN="${REPEAT_LEN:-500}"
 
 # Autoencoder paths (REQUIRED to be set by launcher script)
 AE_CKPT_PATH="${AE_CKPT_PATH:?Must set AE_CKPT_PATH}"

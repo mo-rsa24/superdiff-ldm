@@ -51,7 +51,7 @@ def parse_args():
                                        help = "Repeat a single sample to overfit the AE.")
     p.add_argument("--overfit_k", type=int, default=0,
                                        help = "If >0, train on a fixed tiny subset of size K.")
-    p.add_argument("--repeat_len", type=int, default=16384,
+    p.add_argument("--repeat_len", type=int, default=500,
                                        help = "Virtual length for the repeated one-sample dataset.")
 
     # Model arch (no YAML)
