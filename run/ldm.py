@@ -169,9 +169,10 @@ def main():
     # --- Define Training Step ---
     def train_step(rng, ldm_state, ae_params, x_batch):
         def loss_fn(ldm_params):
+            rng_ae, rng_diff = jax.random.split(rng)
             posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
-            z = posterior.mode() * args.latent_scale_factor
-            rng_t, rng_noise = jax.random.split(rng)
+            z = posterior.sample(rng_ae) * args.latent_scale_factor
+            rng_t, rng_noise = jax.random.split(rng_diff) # Use the second key here
             t = jax.random.uniform(rng_t, (z.shape[0],), minval=1e-5, maxval=1.0)
             noise = jax.random.normal(rng_noise, z.shape)
             std = marginal_prob_std_fn(t)
