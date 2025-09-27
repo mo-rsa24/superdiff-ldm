@@ -47,7 +47,8 @@ def parse_args():
                    help="Optional: keep a class index only (e.g., 1 for disease, 0 for normal)")
     p.add_argument("--overfit_one", action="store_true", help="Repeat a single sample to overfit.")
     p.add_argument("--overfit_k", type=int, default=0, help="If >0, train on a fixed tiny subset of size K.")
-    p.add_argument("--repeat_len", type=int, default=16384, help="Virtual length for the repeated dataset.")
+    p.add_argument("--repeat_len", type=int, default=500,
+                   help="Virtual length for the repeated one-sample dataset.")
 
     # --- Pretrained Autoencoder ---
     p.add_argument("--ae_ckpt_path", required=True, help="Path to the last.flax of the pretrained autoencoder.")

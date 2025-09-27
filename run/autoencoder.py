@@ -159,8 +159,25 @@ def main():
         shuffle = True
         drop_last = True
     batch_size = per_dev * ndev
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
-                                         num_workers = 8, drop_last = drop_last, pin_memory = True)
+    if args.overfit_one:
+        print("INFO: Overfitting on one sample. Disabling data loader workers and shuffle.")
+        loader_kwargs = {
+            "batch_size": batch_size,
+            "shuffle": False,  # Not needed for a single repeating item
+            "num_workers": 0,  # CRITICAL: Avoids worker overhead
+            "drop_last": True,
+            "pin_memory": True
+        }
+    else:
+        loader_kwargs = {
+            "batch_size": batch_size,
+            "shuffle": True,
+            "num_workers": 8,
+            "drop_last": True,
+            "pin_memory": True
+        }
+
+    loader = DataLoader(ds, **loader_kwargs)
 
     # ----- model -----
     enc_cfg = dict(ch_mults = ch_mults,
