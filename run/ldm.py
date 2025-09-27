@@ -133,7 +133,24 @@ def main():
         ds = Subset(base_ds, list(range(min(args.overfit_k, len(base_ds)))))
     else:
         ds = base_ds
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=8, drop_last=True, pin_memory=True)
+    if args.overfit_one:
+        print("INFO: Overfitting on one sample. Disabling data loader workers and shuffle.")
+        loader_kwargs = {
+            "batch_size": batch_size,
+            "shuffle": False,  # Not needed for a single repeating item
+            "num_workers": 0,  # CRITICAL: Avoids worker overhead
+            "drop_last": True,
+            "pin_memory": True
+        }
+    else:
+        loader_kwargs = {
+            "batch_size": batch_size,
+            "shuffle": True,
+            "num_workers": 8,
+            "drop_last": True,
+            "pin_memory": True
+        }
+    loader = DataLoader(ds, **loader_kwargs)
 
     # --- Load Pretrained Autoencoder ---
     ae_model, ae_params = load_autoencoder(args.ae_config_path, args.ae_ckpt_path)

@@ -6,7 +6,7 @@ from flax.training.common_utils import shard
 from diffusers import FlaxStableDiffusionPipeline
 
 pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-    "CompVis/stable-diffusion-v1-4", revision="flax", dtype=jax.numpy.bfloat16
+    "CompVis/stable-diffusion-v1-4", revision="bf16", dtype=jax.numpy.bfloat16
 )
 
 prompt = "a photo of an astronaut riding a horse on mars"
