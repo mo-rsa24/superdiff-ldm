@@ -244,7 +244,7 @@ def main():
                 diffusion_coeff_fn=diffusion_coeff_fn,
                 latent_size=latent_size,
                 batch_size=args.sample_batch_size,
-                z_channels=args.z_channels
+                z_channels=z_channels
             )
 
             # Save the returned image grid
