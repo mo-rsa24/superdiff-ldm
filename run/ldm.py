@@ -14,14 +14,14 @@ from flax.training.train_state import TrainState
 from flax.serialization import from_bytes, to_bytes
 from torch.utils.data import DataLoader, Dataset, Subset
 from tqdm import tqdm
-from torchvision.utils import make_grid
+from torchvision.utils import make_grid, save_image
 import torch
 
 # Local imports
 from datasets.ChestXRay import ChestXrayDataset
 from models.ae_kl import AutoencoderKL
 from models.cxr_unet import ScoreNet
-from diffusion.equations import marginal_prob_std_fn
+from diffusion.equations import marginal_prob_std_fn, diffusion_coeff_fn
 from diffusion.sampling import Euler_Maruyama_sampler
 
 # W&B is optional
@@ -228,18 +228,33 @@ def main():
         if (ep + 1) % args.sample_every == 0:
             print(f"Sampling at epoch {ep + 1}...")
             rng, sample_rng = jax.random.split(rng)
+
+            # Get a single replica of the model parameters for inference
             unrep_ldm_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ldm_state.params))
             unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
-            samples = Euler_Maruyama_sampler(sample_rng, ldm_model, unrep_ldm_params, ae_model, unrep_ae_params,
-                                             batch_size=args.sample_batch_size, latent_size=latent_size,
-                                             z_channels=z_channels, scale_factor=args.latent_scale_factor)
-            samples_torch = torch.from_numpy(np.asarray(samples)).permute(0, 3, 1, 2)
-            grid = make_grid(samples_torch, nrow=int(math.sqrt(args.sample_batch_size)), normalize=True)
+
+            # Call the sampler with the correct arguments
+            samples_grid = Euler_Maruyama_sampler(
+                rng=sample_rng,
+                ldm_model=ldm_model,
+                ldm_params=unrep_ldm_params,
+                ae_model=ae_model,
+                ae_params=unrep_ae_params,
+                marginal_prob_std_fn=marginal_prob_std_fn,
+                diffusion_coeff_fn=diffusion_coeff_fn,
+                n_steps=args.sample_steps,
+                batch_size=args.n_samples,
+                img_size=args.img_size,
+                z_channels=args.z_channels
+            )
+
+            # Save the returned image grid
             out_path = os.path.join(samples_dir, f"sample_ep{ep + 1:04d}.png")
-            from PIL import Image
-            grid_np = grid.permute(1, 2, 0).numpy()
-            Image.fromarray((grid_np * 255).astype(np.uint8)).save(out_path)
-            if use_wandb: wandb.log({"samples": wandb.Image(out_path), "epoch": ep + 1})
+            save_image(samples_grid, out_path)
+
+            # Log to WandB if enabled
+            if use_wandb:
+                wandb.log({"samples": wandb.Image(out_path), "epoch": ep + 1})
 
         # Save checkpoint
         unrep_state = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ldm_state))

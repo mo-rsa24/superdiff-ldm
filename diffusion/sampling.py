@@ -150,45 +150,54 @@ def make_pmap_score_fn(score_model):
 
     return jax.pmap(score_fn, in_axes=(None, 0, 0))
 
-def Euler_Maruyama_sampler(rng,
-                           ldm_model,
-                           ldm_params,
+import jax
+import jax.numpy as jnp
+from tqdm import tqdm
+import torch
+from torchvision.utils import make_grid, save_image
+
+def Euler_Maruyama_sampler(rng, ldm_model, ldm_params, ae_model, ae_params,
                            marginal_prob_std_fn,
                            diffusion_coeff_fn,
-                           batch_size,
-                           latent_shape,
-                           ae_model,
-                           ae_params,
                            n_steps=1000,
+                           batch_size=64,
+                           img_size=256,
+                           z_channels=3,
                            eps=1e-3):
+    latent_size = img_size // 8
+    latent_shape = (batch_size, latent_size, latent_size, z_channels)
+
     rng, step_rng = jax.random.split(rng)
+    z = jax.random.normal(step_rng, latent_shape)
 
-    t = jnp.ones(batch_size)
-    init_z = jax.random.normal(step_rng, (batch_size, *latent_shape[1:])) * marginal_prob_std_fn(t)[:, None, None, None]
-    time_steps = jnp.linspace(1., eps, n_steps)
-    step_size = time_steps[0] - time_steps[1]
-    z = init_z
+    dt = -1. / n_steps
 
-    for t in tqdm(time_steps, desc="Sampling", leave=False):
+    for i in tqdm(range(n_steps), desc="Sampling"):
         rng, step_rng = jax.random.split(rng)
+        t = jnp.ones(batch_size) * (1. - i / n_steps)
 
-        batch_time_step = jnp.ones(batch_size) * t
-        g = diffusion_coeff_fn(batch_time_step)
-        std = marginal_prob_std_fn(batch_time_step)
-        predicted_noise = ldm_model.apply({'params': ldm_params}, z, batch_time_step)
+        g = diffusion_coeff_fn(t)
+        std = marginal_prob_std_fn(t)
+
+        predicted_noise = ldm_model.apply({'params': ldm_params}, z, t)
         score = -predicted_noise / std[:, None, None, None]
-        # --- End of Correction ---
 
-        drift = -0.5 * g[:, None, None, None] ** 2 * score
+        drift = -0.5 * g[:, None, None, None]**2 * score
         diffusion = g[:, None, None, None] * jax.random.normal(step_rng, z.shape)
-        z_mean = z + drift * step_size
-        z = z_mean + diffusion * jnp.sqrt(step_size)
-    decoded_sample = ae_model.apply({'params': ae_params}, z, method=ae_model.decode)
-    decoded_samples = (decoded_sample + 1.) / 2.
+        z_mean = z + drift * dt
+        z = z_mean + diffusion * jnp.sqrt(-dt)
+
+    decoded_samples = ae_model.apply({'params': ae_params}, z, method=ae_model.decode)
+
+    decoded_samples = (decoded_samples + 1.) / 2.
     decoded_samples = jnp.clip(decoded_samples, 0., 1.)
 
-    return decoded_samples
+    permuted_samples = jnp.transpose(decoded_samples, (0, 3, 1, 2))
+    samples_torch = torch.from_numpy(jax.device_get(permuted_samples))
 
+    grid = make_grid(samples_torch, nrow=int(jnp.sqrt(batch_size)), padding=2, normalize=False)
+
+    return grid
 
 # @title Define the Predictor-Corrector sampler (double click to expand or collapse)
 
