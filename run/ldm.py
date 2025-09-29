@@ -39,7 +39,7 @@ def ensure_dir(p):
 def parse_args():
     p = argparse.ArgumentParser("JAX Latent Diffusion Model (CXR) Trainer")
     # --- Data & Debugging ---
-    p.add_argument("--data_root", default="/datasets/mmolefe/cleaned")
+    p.add_argument("--data_root", default="../datasets/cleaned")
     p.add_argument("--task", choices=["TB", "PNEUMONIA"], default="TB")
     p.add_argument("--split", choices=["train", "val", "test"], default="train")
     p.add_argument("--img_size", type=int, default=256)
@@ -212,8 +212,8 @@ def main():
         progress_bar = tqdm(loader, desc=f"Epoch {ep + 1}/{args.epochs}", leave=False)
         for batch in progress_bar:
             x, _ = batch
-            x = jnp.asarray(x.numpy()).transpose(0, 2, 3, 1) # NCHW -> NHWC
-            x = (x + 1.0) / 2.0 # [-1, 1] -> [0, 1] (as expected by AE)
+            x = jnp.asarray(x.numpy()).transpose(0, 2, 3, 1)
+            x = (x + 1.0) / 2.0
             x_sharded = x.reshape((jax.local_device_count(), -1) + x.shape[1:])
             rng, step_rng = jax.random.split(rng)
             rng_sharded = jax.random.split(step_rng, jax.local_device_count())
@@ -242,9 +242,8 @@ def main():
                 ae_params=unrep_ae_params,
                 marginal_prob_std_fn=marginal_prob_std_fn,
                 diffusion_coeff_fn=diffusion_coeff_fn,
-                n_steps=args.sample_steps,
-                batch_size=args.n_samples,
-                img_size=args.img_size,
+                latent_size=latent_size,
+                batch_size=args.sample_batch_size,
                 z_channels=args.z_channels
             )
 

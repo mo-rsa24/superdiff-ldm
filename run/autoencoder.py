@@ -142,40 +142,30 @@ def main():
         def __len__(self): return self.length
         def __getitem__(self, idx): return self.x, self.y
 
+    # (in autoencoder.py, around line 136)
+    batch_size = per_dev * ndev
+    shuffle = True
+    drop_last = True
+
     if args.overfit_one:
-        batch_size = per_dev * ndev
-        indices = list(range(batch_size))
-        ds = Subset(base_ds, indices)
-        ds = torch.utils.data.ConcatDataset([ds] * (args.repeat_len // batch_size))
-        shuffle = True
-        drop_last = True
+        print("INFO: Overfitting on a single repeating sample.")
+        single_item = base_ds[0]
+        ds = RepeatOne(single_item, length=args.repeat_len)
+        shuffle = False  # Not necessary when all items are identical
     elif args.overfit_k > 0:
+        print(f"INFO: Training on a small subset of {args.overfit_k} samples.")
         idxs = list(range(min(args.overfit_k, len(base_ds))))
         ds = Subset(base_ds, idxs)
-        shuffle = True
-        drop_last = True
     else:
         ds = base_ds
-        shuffle = True
-        drop_last = True
-    batch_size = per_dev * ndev
-    if args.overfit_one:
-        print("INFO: Overfitting on one sample. Disabling data loader workers and shuffle.")
-        loader_kwargs = {
-            "batch_size": batch_size,
-            "shuffle": False,  # Not needed for a single repeating item
-            "num_workers": 0,  # CRITICAL: Avoids worker overhead
-            "drop_last": True,
-            "pin_memory": True
-        }
-    else:
-        loader_kwargs = {
-            "batch_size": batch_size,
-            "shuffle": True,
-            "num_workers": 8,
-            "drop_last": True,
-            "pin_memory": True
-        }
+
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": 0 if args.overfit_one else 8,  # Disable workers for the simple RepeatOne dataset
+        "drop_last": drop_last,
+        "pin_memory": True
+    }
 
     loader = DataLoader(ds, **loader_kwargs)
 

@@ -156,45 +156,38 @@ from tqdm import tqdm
 import torch
 from torchvision.utils import make_grid, save_image
 
+
 def Euler_Maruyama_sampler(rng, ldm_model, ldm_params, ae_model, ae_params,
                            marginal_prob_std_fn,
                            diffusion_coeff_fn,
                            n_steps=1000,
-                           batch_size=64,
-                           img_size=256,
-                           z_channels=3,
-                           eps=1e-3):
-    latent_size = img_size // 8
+                           latent_size=32,  # Updated default based on AE config
+                           batch_size=16,
+                           z_channels=3):
+    """
+    Generates samples using the reverse-time Probability Flow ODE.
+
+    This version is deterministic and generally more stable than the SDE sampler,
+    making it a good choice for avoiding artifacts like black images.
+    """
     latent_shape = (batch_size, latent_size, latent_size, z_channels)
-
     rng, step_rng = jax.random.split(rng)
-    z = jax.random.normal(step_rng, latent_shape)
+    z = jax.random.normal(step_rng, latent_shape) * marginal_prob_std_fn(jnp.ones(batch_size))[:, None, None, None]
+    time_steps = jnp.linspace(1., 1e-5, n_steps)
+    dt = time_steps[0] - time_steps[1]
 
-    dt = -1. / n_steps
-
-    for i in tqdm(range(n_steps), desc="Sampling"):
-        rng, step_rng = jax.random.split(rng)
-        t = jnp.ones(batch_size) * (1. - i / n_steps)
-
+    for t_val in tqdm(time_steps, desc="Sampling (ODE)"):
+        t = jnp.ones(batch_size) * t_val
         g = diffusion_coeff_fn(t)
         std = marginal_prob_std_fn(t)
-
         predicted_noise = ldm_model.apply({'params': ldm_params}, z, t)
         score = -predicted_noise / std[:, None, None, None]
-
-        drift = -0.5 * g[:, None, None, None]**2 * score
-        diffusion = g[:, None, None, None] * jax.random.normal(step_rng, z.shape)
-        z_mean = z + drift * dt
-        z = z_mean + diffusion * jnp.sqrt(-dt)
-
-    decoded_samples = ae_model.apply({'params': ae_params}, z, method=ae_model.decode)
-
-    decoded_samples = (decoded_samples + 1.) / 2.
+        drift = -0.5 * g[:, None, None, None] ** 2 * score
+        z = z + drift * dt
+    decoded_samples = ae_model.apply({'params': ae_params}, z, method=ae_model.decode, train=False)
     decoded_samples = jnp.clip(decoded_samples, 0., 1.)
-
     permuted_samples = jnp.transpose(decoded_samples, (0, 3, 1, 2))
-    samples_torch = torch.from_numpy(jax.device_get(permuted_samples))
-
+    samples_torch = torch.from_numpy(np.asarray(jax.device_get(permuted_samples)))
     grid = make_grid(samples_torch, nrow=int(jnp.sqrt(batch_size)), padding=2, normalize=False)
 
     return grid
