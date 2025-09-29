@@ -77,6 +77,8 @@ def parse_args():
     p.add_argument("--log_every", type=int, default=100)
     p.add_argument("--sample_every", type=int, default=5)
     p.add_argument("--sample_batch_size", type=int, default=16)
+    p.add_argument("--sample_steps", type=int, default=100,
+                   help="Number of steps for the Euler Maruyama sampler during validation.")
 
     # --- W&B ---
     p.add_argument("--wandb", action="store_true")
@@ -244,7 +246,8 @@ def main():
                 diffusion_coeff_fn=diffusion_coeff_fn,
                 latent_size=latent_size,
                 batch_size=args.sample_batch_size,
-                z_channels=args.z_channels
+                z_channels=args.z_channels,
+                n_steps=args.sample_steps
             )
 
             # Save the returned image grid

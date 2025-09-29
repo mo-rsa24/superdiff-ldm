@@ -11,6 +11,7 @@ export ENV_NAME="jax115"
 export TASK="TB"
 export CLASS_FILTER="0"
 export EPOCHS=100
+export REPEAT_LEN=100
 export BATCH_PER_DEVICE=1
 export SAMPLE_EVERY=10
 export CH_MULTS="64:128:256"

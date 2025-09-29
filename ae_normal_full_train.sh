@@ -15,11 +15,16 @@ export ENV_NAME="jax115"
 # --- Key Training Parameters ---
 export TASK="TB"                         # Set the dataset task (TB or PNEUMONIA)
 export CLASS_FILTER="0"                  # 0 = Normal, 1 = Diseased
-export EPOCHS=200                        # Set a higher number of epochs for a full run
-export BATCH_PER_DEVICE=8                # Adjust batch size based on your GPU memory
-export SAMPLE_EVERY=20                    # Sample every 5 epochs to save disk space
-export CH_MULTS="64:128:256"
-export WANDB_TAGS="ae:normal:full"
+export EPOCHS=200                        # Keep this high for the full run
+export BATCH_PER_DEVICE=16
+export SAMPLE_EVERY=5
+export CH_MULTS="128:256:512"
+export Z_CHANNELS="4"
+export WANDB_TAGS="ae:normal:full:fast"
+
+# --- Add these to your script to override the defaults in cxr_ae.slurm ---
+export PERCEPTUAL_WEIGHT="1.0"
+export DISC_START="10000"
 
 # ----------------------------------------------------------------
 #                🚀 --- JOB LAUNCH LOGIC --- 🚀
