@@ -163,6 +163,7 @@ def Euler_Maruyama_sampler(rng, ldm_model, ldm_params, ae_model, ae_params,
                            n_steps=1000,
                            latent_size=32,  # Updated default based on AE config
                            batch_size=16,
+                           z_std=1.0,
                            z_channels=3):
     """
     Generates samples using the reverse-time Probability Flow ODE.
@@ -184,6 +185,7 @@ def Euler_Maruyama_sampler(rng, ldm_model, ldm_params, ae_model, ae_params,
         score = -predicted_noise / std[:, None, None, None]
         drift = -0.5 * g[:, None, None, None] ** 2 * score
         z = z + drift * dt
+    z = z * z_std
     decoded_samples = ae_model.apply({'params': ae_params}, z, method=ae_model.decode, train=False)
     decoded_samples = jnp.clip(decoded_samples, 0., 1.)
     permuted_samples = jnp.transpose(decoded_samples, (0, 3, 1, 2))

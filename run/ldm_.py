@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import tensorflow as tf
+from flax import jax_utils
 from flax.training.train_state import TrainState
 from flax.serialization import from_bytes, to_bytes
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -53,7 +54,7 @@ def parse_args():
     # --- Pretrained Autoencoder ---
     p.add_argument("--ae_ckpt_path", required=True, help="Path to the last.flax of the pretrained autoencoder.")
     p.add_argument("--ae_config_path", required=True, help="Path to the run_meta.json of the AE run.")
-    p.add_argument("--latent_scale_factor", type=float, default=1.38727160, help="From stable-diffusion v1.")
+    p.add_argument("--latent_scale_factor", type=float, default=1.0, help="From stable-diffusion v1.")
 
     # --- LDM UNet Architecture ---
     p.add_argument("--ldm_ch_mults", type=str, default="1,2,4", help="Channel multipliers for UNet, relative to base_ch.")
@@ -157,6 +158,8 @@ def main():
     ae_model, ae_params = load_autoencoder(args.ae_config_path, args.ae_ckpt_path)
     ae_params = jax.device_put_replicated(ae_params, jax.local_devices())
 
+
+
     # --- Setup LDM UNet ---
     with open(args.ae_config_path, 'r') as f: ae_args = json.load(f)
     z_channels = ae_args['z_channels']
@@ -184,12 +187,41 @@ def main():
     if use_wandb:
         wandb.init(project=args.wandb_project, name=args.run_name or f"{args.exp_name}-{ts}", config=args, tags=args.wandb_tags.split(','))
 
+    if args.overfit_one and use_wandb:
+        print("Logging AE reconstruction of the diagnostic sample...")
+        original_img, _ = base_ds[0]
+        original_img_batch = jnp.expand_dims(original_img, axis=0)
+        unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
+        posterior = ae_model.apply({'params': unrep_ae_params}, original_img_batch, method=ae_model.encode)
+        recon_img_batch = ae_model.apply({'params': unrep_ae_params}, posterior.mode(), method=ae_model.decode)
+        images_to_log = jnp.concatenate([original_img_batch[0], recon_img_batch[0]], axis=1)
+        images_to_log = (images_to_log + 1.) / 2.  # Denormalize from [-1, 1] to [0, 1]
+
+        wandb.log({
+            "ae_diagnostic": wandb.Image(
+                images_to_log,
+                caption="Left: Original, Right: AE Reconstruction"
+            )
+        })
+
+        diag_batch = next(iter(loader))
+        diag_x_batch = jax_utils.replicate(diag_batch[0])
+
+        posterior = ae_model.apply({'params': ae_params}, diag_x_batch, method=ae_model.encode)
+        z = posterior.mode()  # Use mode() for a stable calculation
+
+        z_std = jnp.std(z)
+        print("---------------------------------------------------------")
+        print(f"🔥 DIAGNOSTIC: Standard deviation of latents is: {z_std:.4f}")
+        print("---------------------------------------------------------")
     # --- Define Training Step ---
-    def train_step(rng, ldm_state, ae_params, x_batch):
+    def train_step(rng, ldm_state, ae_params, x_batch, z_std):
         def loss_fn(ldm_params):
             rng_ae, rng_diff = jax.random.split(rng)
             posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
-            z = posterior.sample(rng_ae) * args.latent_scale_factor
+            # z = posterior.sample(rng_ae) * args.latent_scale_factor
+            z_std = jnp.std(posterior.mode())  # Or use the value you printed
+            z = posterior.sample(rng_ae) / z_std
             rng_t, rng_noise = jax.random.split(rng_diff) # Use the second key here
             t = jax.random.uniform(rng_t, (z.shape[0],), minval=1e-5, maxval=1.0)
             noise = jax.random.normal(rng_noise, z.shape)
@@ -221,15 +253,6 @@ def main():
             if global_step % args.log_every == 0:
                 loss_val = np.asarray(loss[0])
                 progress_bar.set_postfix(loss=f"{loss_val:.4f}")
-                posterior_dbg = ae_model.apply({'params': ae_params[0]}, x_sharded[0], method=ae_model.encode,
-                                               train=False)
-                z_dbg = posterior_dbg.sample(jax.random.PRNGKey(global_step)) * args.latent_scale_factor
-                z_mean = float(jnp.mean(z_dbg))
-                z_std = float(jnp.std(z_dbg))
-                z_min = float(jnp.min(z_dbg))
-                z_max = float(jnp.max(z_dbg))
-                progress_bar.set_postfix_str(
-                    f"loss={loss_val:.4f} | zμ={z_mean:.3f} zσ={z_std:.3f} [{z_min:.3f},{z_max:.3f}]")
                 if use_wandb: wandb.log({"train/loss": loss_val, "train/step": global_step})
             global_step += 1
 
@@ -254,7 +277,7 @@ def main():
                 latent_size=latent_size,
                 batch_size=args.sample_batch_size,
                 z_channels=z_channels,
-                z_std=(1.0 / args.latent_scale_factor)
+                z_std=z_std
             )
 
             # Save the returned image grid
