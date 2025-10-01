@@ -22,6 +22,8 @@ export NUM_RES_BLOCKS=2    # Number of residual blocks
 # --- VAE Regularization ---
 export KL_WEIGHT=1.0e-6    # Start with a small KL weight
 
+# --- W&B Logging ---
+export WANDB=1
 export WANDB_TAGS="ae:tb:diagnostic-compvis-arch"
 export OVERFIT_ONE=1
 export OVERFIT_K=0

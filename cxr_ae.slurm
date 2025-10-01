@@ -17,7 +17,7 @@ err(){ printf "${RED}!! %s${RST}\\n" "$*"; }
 ok(){ printf "${GRN}** %s${RST}\\n" "$*"; }
 
 # ----------------------------
-# Defaults (override via env)
+# Defaults (override via en)
 # ----------------------------
 WORKDIR="${WORKDIR:-$PWD}"
 PYFILE="${PYFILE:-run/autoencoder.py}"
@@ -148,9 +148,18 @@ fi
 # ----------------------------
 # Info & Run
 # ----------------------------
-banner "SLURM Job Info"
-kv "JOB_ID"         "${SLURM_JOB_ID:-<none>}"
-kv "Node"           "$(hostname)"
+banner "AE Training Info"
+kv "Python script"  "$PYFILE"
+kv "Run name"       "$RUN_NAME"
+kv "Task"           "$TASK"
+kv "Image size"     "$IMG_SIZE"
+kv "Base channels"  "$BASE_CH"
+kv "Channel mults"  "\"$CH_MULTS\""
+kv "Z channels"     "$Z_CHANNELS"
+kv "KL weight"      "$KL_WEIGHT"
+kv "Batch/device"   "$BATCH_PER_DEVICE"
+kv "Epochs"         "$EPOCHS"
+kv "W&B Enabled"    "$WANDB"
 
 banner "AE Training Run"
 srun python -u "$PYFILE" "${ARGS[@]}"
