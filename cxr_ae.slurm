@@ -113,6 +113,12 @@ ARGS=(
   --epochs "$EPOCHS" --batch_per_device "$BATCH_PER_DEVICE"
   --seed "$SEED" --sample_every "$SAMPLE_EVERY"
   --output_root "$OUTPUT_ROOT" --exp_name "$EXP_NAME"
+   --base_ch "$BASE_CH" \
+  --ch_mults "$CH_MULTS" \
+  --attn_res "$ATTN_RES" \
+  --z_channels "$Z_CHANNELS" \
+  --embed_dim "$EMBED_DIM" \
+  --kl_weight "$KL_WEIGHT"
 )
 
 # Overfit/tiny

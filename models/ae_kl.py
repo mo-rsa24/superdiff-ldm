@@ -60,53 +60,80 @@ class Up(nn.Module):
         return nn.Conv(self.ch, (3,3), padding="SAME")(x)
 
 # --------------- Encoder/Decoder ---------------
+class SelfAttention2D(nn.Module):
+    num_heads: int = 1 # A single head is often sufficient for the AE
+    @nn.compact
+    def __call__(self, x):
+        B,H,W,C = x.shape
+        h = nn.GroupNorm(num_groups=32)(x) # Use GroupNorm instead of LayerNorm
+        h = h.reshape((B, H*W, C))
+        h = nn.SelfAttention(num_heads=self.num_heads, qkv_features=C, out_features=C)(h)
+        h = h.reshape((B,H,W,C))
+        return x + h
 
 class Encoder(nn.Module):
-    ch_mults: Sequence[int] = (64,128,256,256)
+    ch_mults: Sequence[int] = (128, 256, 512, 512)
     in_ch: int = 1
     z_ch: int = 4
     num_res_blocks: int = 2
     dropout: float = 0.0
-    double_z: bool = True  # like LDM: produce 2*z_ch for μ,logσ²
+    double_z: bool = True
+    attn_resolutions: Sequence[int] = () # Add this argument
 
     @nn.compact
     def __call__(self, x, train=True):
         h = nn.Conv(self.ch_mults[0], (3,3), padding="SAME")(x)
+        current_res = x.shape[1]
+
         for i, ch in enumerate(self.ch_mults):
             for _ in range(self.num_res_blocks):
                 h = ResBlock(ch, self.dropout)(h, train=train)
+                if current_res in self.attn_resolutions:
+                    h = SelfAttention2D()(h) # Apply attention
             if i < len(self.ch_mults)-1:
                 h = Down(self.ch_mults[i+1])(h)
+                current_res //= 2 # Update resolution
+
         h = ResBlock(self.ch_mults[-1], self.dropout)(h, train=train)
+        if current_res in self.attn_resolutions:
+             h = SelfAttention2D()(h) # Apply attention in bottleneck
+
         out_ch = (2*self.z_ch) if self.double_z else self.z_ch
         h = nn.Conv(out_ch, (3,3), padding="SAME")(h)
         return h
 
+
 class Decoder(nn.Module):
-    ch_mults: Sequence[int] = (64,128,256,256)
+    ch_mults: Sequence[int] = (128, 256, 512, 512)
     out_ch: int = 1
     z_ch: int = 4
     num_res_blocks: int = 2
     dropout: float = 0.0
+    attn_resolutions: Sequence[int] = ()  # Add this argument
 
     @nn.compact
     def __call__(self, z, train=True):
-        h = nn.Conv(self.ch_mults[-1], (3,3), padding="SAME")(z)
+        h = nn.Conv(self.ch_mults[-1], (3, 3), padding="SAME")(z)
+        current_res = z.shape[1]
+
         h = ResBlock(self.ch_mults[-1], self.dropout)(h, train=train)
+        if current_res in self.attn_resolutions:
+            h = SelfAttention2D()(h)  # Apply attention in bottleneck
+
         for i in reversed(range(len(self.ch_mults))):
             if i > 0:
-                h = Up(self.ch_mults[i-1])(h)
+                h = Up(self.ch_mults[i - 1])(h)
+                current_res *= 2  # Update resolution
+
             for _ in range(self.num_res_blocks):
                 h = ResBlock(self.ch_mults[i], self.dropout)(h, train=train)
+                if current_res in self.attn_resolutions:
+                    h = SelfAttention2D()(h)  # Apply attention
+
         h = nn.GroupNorm(num_groups=32)(h)
         h = nn.swish(h)
-        h = nn.Conv(self.out_ch, (3,3), padding="SAME")(h)
+        h = nn.Conv(self.out_ch, (3, 3), padding="SAME")(h)
         return h
-
-
-# models/ae_kl.py
-
-# ... (all other classes like DiagonalGaussian, ResBlock, Encoder, Decoder are unchanged) ...
 
 class AutoencoderKL(nn.Module):
     enc_cfg: dict

@@ -94,6 +94,9 @@ ARGS=(
   --seed "$SEED" --sample_every "$SAMPLE_EVERY"
   --log_every "$LOG_EVERY"
   --output_root "$OUTPUT_ROOT" --exp_name "$EXP_NAME"
+  --ldm_base_ch "$LDM_BASE_CH" \
+  --ldm_ch_mults "$LDM_CH_MULTS" \
+  --ldm_attn_res "$LDM_ATTN_RES"
 )
 
 # Debugging

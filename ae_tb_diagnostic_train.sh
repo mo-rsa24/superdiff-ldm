@@ -1,41 +1,37 @@
 #!/usr/bin/env bash
-#
-# Launches a DIAGNOSTIC training job for the autoencoder on a single TB sample
-# with settings suitable for creating a normalized latent space.
-#
 
 set -euo pipefail
 
-# REQUIRED: Set the name of your conda or mamba environment
 export ENV_NAME="jax115"
 
-# --- Key Training Parameters ---
+# --- Key Training Parameters (Aligned with CompVis) ---
 export TASK="TB"
 export CLASS_FILTER="1"
-export EPOCHS=200 # Train a bit longer to ensure convergence
+export EPOCHS=200
 export BATCH_PER_DEVICE=1
 export SAMPLE_EVERY=10
-export CH_MULTS="64:128:256"
 
-# --- MODIFIED: Set parameters for a proper VAE ---
-export Z_CHANNELS=4          # Increased from 3 to 4 for more capacity
-export KL_WEIGHT=1.0e-4      # Set a meaningful KL weight to regularize the latent space
+# --- ARCHITECTURE ---
+export BASE_CH=128
+export CH_MULTS="1:2:4:4"  # Deeper and wider
+export ATTN_RES="16"       # Add attention at 16x16 resolution
+export Z_CHANNELS=64       # CRITICAL: Match LDM's expected channels
+export EMBED_DIM=64        # Explicitly set embedding dimension
 
-export WANDB_TAGS="ae:tb:diagnostic-vae"
+# --- VAE Regularization ---
+export KL_WEIGHT=1.0e-6    # Start with a small KL weight
 
-# --- Enable overfitting on one sample ---
+export WANDB_TAGS="ae:tb:diagnostic-compvis-arch"
 export OVERFIT_ONE=1
 export OVERFIT_K=0
+export RUN_NAME="ae_tb_diagnostic_compvis_$(date +%Y%m%d)"
 
-export RUN_NAME="ae_tb_diagnostic_vae_$(date +%Y%m%d)"
-
-echo "Submitting SLURM job for VAE DIAGNOSTIC training..."
+echo "Submitting SLURM job for VAE DIAGNOSTIC training (CompVis-style)..."
 echo "------------------------------------------------"
 echo "  ▶️  Run Name:         $RUN_NAME"
 echo "  ▶️  Task:             $TASK (Class: TB)"
-echo "  ▶️  Overfit Mode:     ENABLED (1 sample)"
 echo "  ▶️  Latent Channels:  $Z_CHANNELS"
-echo "  ▶️  KL Weight:        $KL_WEIGHT"
+echo "  ▶️  Attention At:     $ATTN_RES"
 echo "------------------------------------------------"
 sbatch cxr_ae.slurm
 echo "✅ Job successfully submitted!"

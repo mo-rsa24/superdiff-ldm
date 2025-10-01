@@ -19,8 +19,10 @@ export LATENT_SCALE_FACTOR="1.0"
 export BATCH_PER_DEVICE=1
 export SAMPLE_EVERY=5
 export LOG_EVERY=10
-export LDM_BASE_CH=192
-export LDM_CH_MULTS="1:2:3"
+export LDM_BASE_CH=256
+export LDM_CH_MULTS="1:2:4:4"
+export LDM_ATTN_RES="4:2:1" # Attention in the deeper layers
+
 export WANDB_TAGS="ldm:tb:diagnostic"
 
 # --- Enable overfitting on one sample ---

@@ -58,7 +58,9 @@ def parse_args():
     p.add_argument("--ch_mults", type=str, default="128,256,512")
     p.add_argument("--num_res_blocks", type=int, default=2)
     p.add_argument("--dropout", type=float, default=0.0)
-    p.add_argument("--z_channels", type=int, default=3)
+    p.add_argument("--z_channels", type=int, default=64)
+    p.add_argument("--attn_res", type=str, default="16", help="Comma-separated resolutions for attention, e.g., '16,8'")
+    p.add_argument("--embed_dim", type=int, default=64, help="Dimension of the latent embedding.")
 
     # Loss settings (LDM-like)
     p.add_argument("--kl_weight", type=float, default=1.0e-6)
@@ -170,10 +172,19 @@ def main():
     loader = DataLoader(ds, **loader_kwargs)
 
     # ----- model -----
-    enc_cfg = dict(ch_mults = ch_mults,
-        in_ch = 1, num_res_blocks = args.num_res_blocks, dropout = args.dropout, double_z = True, )
-    dec_cfg = dict( ch_mults = ch_mults, out_ch = 1, num_res_blocks = args.num_res_blocks, dropout = args.dropout,)
-    ae = AutoencoderKL(enc_cfg=enc_cfg, dec_cfg=dec_cfg, embed_dim=args.z_channels)
+    attn_res = tuple(int(r.strip()) for r in args.attn_res.split(',') if r.strip())
+    enc_cfg = dict(ch_mults=ch_mults,
+                   in_ch=1,
+                   num_res_blocks=args.num_res_blocks,
+                   dropout=args.dropout,
+                   double_z=True,
+                   attn_resolutions=attn_res)  # Add attention resolutions
+    dec_cfg = dict(ch_mults=ch_mults,
+                   out_ch=1,
+                   num_res_blocks=args.num_res_blocks,
+                   dropout=args.dropout,
+                   attn_resolutions=attn_res)
+    ae = AutoencoderKL(enc_cfg=enc_cfg, dec_cfg=dec_cfg, embed_dim=args.embed_dim)
 
     # ----- loss -----
     loss_cfg = LPIPSGANConfig(
