@@ -17,6 +17,7 @@ export CH_MULTS="1:2:4:4"  # Deeper and wider
 export ATTN_RES="16"       # Add attention at 16x16 resolution
 export Z_CHANNELS=64       # CRITICAL: Match LDM's expected channels
 export EMBED_DIM=64        # Explicitly set embedding dimension
+export NUM_RES_BLOCKS=2    # Number of residual blocks
 
 # --- VAE Regularization ---
 export KL_WEIGHT=1.0e-6    # Start with a small KL weight

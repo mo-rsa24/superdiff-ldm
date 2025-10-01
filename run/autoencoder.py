@@ -94,6 +94,9 @@ def parse_args():
     p.add_argument("--wandb_entity", default=None)
     p.add_argument("--wandb_tags", default="")
     p.add_argument("--wandb_id", default=None)
+
+    p.add_argument("--base_ch", type=int, default=128)
+    p.add_argument("--ch_mults", type=str, default="1,2,4,4", help="Channel multipliers, e.g., '1,2,4,4'")
     return p.parse_args()
 
 def n_local_devices():
@@ -109,7 +112,8 @@ def main():
     ndev = n_local_devices()
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-    ch_mults = tuple(int(c.strip()) for c in args.ch_mults.split(",") if c.strip())
+    ch_mult_factors = tuple(int(c.strip()) for c in args.ch_mults.split(',') if c.strip())
+    ch_mults = tuple(args.base_ch * m for m in ch_mult_factors)
     mode = "full"
     if args.overfit_one:
         mode = "of1"
