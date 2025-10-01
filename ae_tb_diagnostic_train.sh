@@ -13,7 +13,7 @@ export SAMPLE_EVERY=10
 
 # --- ARCHITECTURE ---
 export BASE_CH=128
-export CH_MULTS="1:2:4:4"  # Deeper and wider
+export CH_MULTS="1,2,4,4"  # Deeper and wider
 export ATTN_RES="16"       # Add attention at 16x16 resolution
 export Z_CHANNELS=64       # CRITICAL: Match LDM's expected channels
 export EMBED_DIM=64        # Explicitly set embedding dimension
