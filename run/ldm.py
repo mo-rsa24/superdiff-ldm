@@ -221,7 +221,8 @@ def main():
             if global_step % args.log_every == 0:
                 loss_val = np.asarray(loss[0])
                 progress_bar.set_postfix(loss=f"{loss_val:.4f}")
-                posterior_dbg = ae_model.apply({'params': ae_params[0]}, x_sharded[0], method=ae_model.encode,
+                unrep_ae_params_dbg = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
+                posterior_dbg = ae_model.apply({'params': unrep_ae_params_dbg}, x_sharded[0], method=ae_model.encode,
                                                train=False)
                 z_dbg = posterior_dbg.sample(jax.random.PRNGKey(global_step)) * args.latent_scale_factor
                 z_mean = float(jnp.mean(z_dbg))
