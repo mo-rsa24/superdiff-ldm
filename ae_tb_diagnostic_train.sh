@@ -7,9 +7,9 @@ export ENV_NAME="jax115"
 # --- Key Training Parameters (Aligned with CompVis) ---
 export TASK="TB"
 export CLASS_FILTER="1"
-export EPOCHS=200
+export EPOCHS=50
 export BATCH_PER_DEVICE=1
-export SAMPLE_EVERY=10
+export SAMPLE_EVERY=5
 
 # --- ARCHITECTURE ---
 export BASE_CH=128

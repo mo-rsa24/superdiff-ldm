@@ -133,6 +133,7 @@ class Decoder(nn.Module):
         h = nn.GroupNorm(num_groups=32)(h)
         h = nn.swish(h)
         h = nn.Conv(self.out_ch, (3, 3), padding="SAME")(h)
+        h = nn.sigmoid(h)
         return h
 
 class AutoencoderKL(nn.Module):
