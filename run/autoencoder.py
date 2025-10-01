@@ -55,7 +55,7 @@ def parse_args():
                                        help = "Virtual length for the repeated one-sample dataset.")
 
     # Model arch (no YAML)
-    p.add_argument("--ch_mults", type=str, default="128,256,512")
+    # p.add_argument("--ch_mults", type=str, default="128,256,512")
     p.add_argument("--num_res_blocks", type=int, default=2)
     p.add_argument("--dropout", type=float, default=0.0)
     p.add_argument("--z_channels", type=int, default=64)
