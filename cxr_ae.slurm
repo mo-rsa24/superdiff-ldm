@@ -9,6 +9,7 @@ set -euo pipefail
 
 # --- Pretty printing helpers ---
 CYN=$(printf '\\033[36m'); BLU=$(printf '\\033[34m'); BLD=$(printf '\\033[1m');
+RED=$(printf '\\033[31m'); GRN=$(printf '\\033[32m');
 RST=$(printf '\\033[0m')
 banner(){ printf "\\n${BLU}${BLD}== %s ==${RST}\\n" "$*"; }
 kv(){ printf "  ${CYN}%-22s${RST} %s\\n" "$1" "$2"; }
