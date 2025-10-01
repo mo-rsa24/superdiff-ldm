@@ -81,8 +81,19 @@ class LPIPSWithDiscriminatorJAX(nn.Module):
         )
         self.disc_is_hinge = (self.cfg.disc_loss == "hinge")
 
-    def _adopt_weight(self, step):
-        return jnp.where(step >= self.cfg.disc_start, self.cfg.disc_factor, 0.0)
+    # def _adopt_weight(self, step):
+    #     return jnp.where(step >= self.cfg.disc_start, self.cfg.disc_factor, 0.0)
+
+    def _adopt_weight(self, step, threshold=0., value=0.):
+        if self.cfg.disc_start < 0:
+            return 1.
+        warmup_steps = 10000.0
+        weight = jax.lax.clamp(
+            0.,
+            (step - self.cfg.disc_start) / warmup_steps,
+            1.
+        )
+        return weight
 
     def _pixel_loss(self, x, y):
         # L1 + (optional) perceptual
