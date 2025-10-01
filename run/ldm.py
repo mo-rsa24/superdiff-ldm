@@ -53,7 +53,7 @@ def parse_args():
     # --- Pretrained Autoencoder ---
     p.add_argument("--ae_ckpt_path", required=True, help="Path to the last.flax of the pretrained autoencoder.")
     p.add_argument("--ae_config_path", required=True, help="Path to the run_meta.json of the AE run.")
-    p.add_argument("--latent_scale_factor", type=float, default=1.38727160, help="From stable-diffusion v1.")
+    p.add_argument("--latent_scale_factor", type=float, default=1.0, help="From stable-diffusion v1.")
 
     # --- LDM UNet Architecture ---
     p.add_argument("--ldm_ch_mults", type=str, default="1,2,4", help="Channel multipliers for UNet, relative to base_ch.")

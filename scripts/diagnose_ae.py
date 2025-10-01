@@ -45,8 +45,24 @@ def load_autoencoder(config_path, ckpt_path):
     # We only need the generator (AE) part for diagnosis
     from flax.training.train_state import TrainState
     import optax
-    dummy_gen_state = TrainState.create(apply_fn=None, params={'ae': ae_variables['params']}, tx=optax.adamw(1e-4))
-    dummy_disc_state = TrainState.create(apply_fn=None, params={}, tx=optax.adamw(1e-4))
+
+    # --- FIX: Recreate the full optimizer chain from training to ensure states match ---
+    def get_tx(lr, grad_clip, weight_decay):
+        """Replicates the optimizer creation from the training script."""
+        return optax.chain(
+            optax.clip_by_global_norm(grad_clip) if grad_clip > 0 else optax.identity(),
+            optax.adamw(lr, weight_decay=weight_decay)
+        )
+
+    # Use the function to create a structurally identical optimizer
+    tx = get_tx(
+        lr=ae_args.get('lr', 1e-4),
+        grad_clip=ae_args.get('grad_clip', 1.0),
+        weight_decay=ae_args.get('weight_decay', 1e-4)
+    )
+
+    dummy_gen_state = TrainState.create(apply_fn=None, params={'ae': ae_variables['params']}, tx=tx)
+    dummy_disc_state = TrainState.create(apply_fn=None, params={}, tx=tx)
 
     from flax.serialization import from_bytes
     restored_gen_state, _ = from_bytes((dummy_gen_state, dummy_disc_state), blob)
@@ -56,17 +72,16 @@ def load_autoencoder(config_path, ckpt_path):
     return ae_model, ae_params, ae_args
 
 
-@jax.jit
 def encode(model, params, x):
-    """Encode a batch of images and return the posterior distribution."""
     return model.apply({'params': params}, x, method=model.encode, train=False)
+encode = jax.jit(encode, static_argnums=(0,))
 
 
-@jax.jit
+# @jax.jit(static_argnums=(0,))
 def decode(model, params, z):
     """Decode a batch of latents into images."""
     return model.apply({'params': params}, z, method=model.decode, train=False)
-
+decode = jax.jit(decode, static_argnums=(0,))
 
 def check_1_reconstruction(ae_model, ae_params, loader, output_dir, n_images=8):
     """CHECK 1: Visual Reconstruction Test."""
@@ -88,16 +103,18 @@ def check_1_reconstruction(ae_model, ae_params, loader, output_dir, n_images=8):
 
     # Interleave original and reconstructed images for comparison
     comparison_grid = torch.cat([x_orig_torch, x_rec_torch], dim=0)
-    comparison_grid = comparison_grid.reshape(2, n_images, 1, x_orig.shape[1], x_orig.shape[2])
-    comparison_grid = comparison_grid.permute(1, 0, 2, 3, 4).reshape(2 * n_images, 1, x_orig.shape[1], x_orig.shape[2])
+    # Correctly interleave images: [orig1, rec1, orig2, rec2, ...]
+    interleaved = torch.empty((2 * n_images, 1, x_orig.shape[1], x_orig.shape[2]), dtype=x_orig_torch.dtype)
+    interleaved[0::2] = x_orig_torch
+    interleaved[1::2] = x_rec_torch
 
-    grid_img = make_grid(comparison_grid, nrow=2, padding=2, normalize=False)
+    grid_img = make_grid(interleaved, nrow=2, padding=2, normalize=False)
     grid_img_np = (grid_img.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
 
     output_path = Path(output_dir) / "reconstruction_comparison.png"
     Image.fromarray(grid_img_np).save(output_path)
     print(f"✅ Reconstruction grid saved to: {output_path}")
-    print("   (Top row: Original, Bottom row: Reconstructed)")
+    print("   (Left column: Original, Right column: Reconstructed)")
 
 
 def check_2_latent_stats(ae_model, ae_params, loader, n_samples=1024):
@@ -180,8 +197,9 @@ def main():
     print("\n--- Check 3: LDM Overfitting Test (Guidance) ---")
     print("To perform this check, you must now train the LDM on these verified latents.")
     print("1. Update 'ldm_tb_diagnostic_train.sh' with the path to this verified AE run.")
-    print("2. IMPORTANT: In 'cxr_ldm.slurm', set the 'LATENT_SCALE_FACTOR' to 1.0.")
-    print("   (Because the KL regularization now handles normalization, manual scaling is not needed).")
+    print(
+        "2. IMPORTANT: If your latent space is now normalized (std≈1), you may not need a 'latent_scale_factor' > 1.0 for the LDM.")
+    print("   You can start by removing it or setting it to 1.0 in your LDM launch script.")
     print(
         "3. Run the LDM diagnostic script. If the loss decreases and samples are non-black, your pipeline is working.")
     print("✅ Diagnostics complete.")
@@ -189,3 +207,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

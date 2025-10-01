@@ -19,7 +19,7 @@ export CH_MULTS="64:128:256"
 
 # --- MODIFIED: Set parameters for a proper VAE ---
 export Z_CHANNELS=4          # Increased from 3 to 4 for more capacity
-export KL_WEIGHT=1.0e-5      # Set a meaningful KL weight to regularize the latent space
+export KL_WEIGHT=1.0e-4      # Set a meaningful KL weight to regularize the latent space
 
 export WANDB_TAGS="ae:tb:diagnostic-vae"
 
