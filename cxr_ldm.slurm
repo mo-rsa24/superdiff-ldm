@@ -20,7 +20,7 @@ kv(){ printf "  ${CYN}%-22s${RST} %s\n" "$1" "$2";
 WORKDIR="${WORKDIR:-$PWD}"
 PYFILE="${PYFILE:-run/ldm.py}"
 DATA_ROOT="/datasets/mmolefe/cleaned"
-
+LATENT_SCALE_FACTOR="${LATENT_SCALE_FACTOR:-1.0}"
 # Data & Debug
 TASK="${TASK:-TB}"
 SPLIT="${SPLIT:-train}"
@@ -29,7 +29,7 @@ DISEASE="${DISEASE:-1}" # Use 1 for diseased, 0 for normal
 OVERFIT_ONE="${OVERFIT_ONE:-0}"
 OVERFIT_K="${OVERFIT_K:-0}"
 REPEAT_LEN="${REPEAT_LEN:-500}"
-
+LOG_EVERY="${LOG_EVERY:-100}"
 # Autoencoder paths (REQUIRED to be set by launcher script)
 AE_CKPT_PATH="${AE_CKPT_PATH:?Must set AE_CKPT_PATH}"
 AE_CONFIG_PATH="${AE_CONFIG_PATH:?Must set AE_CONFIG_PATH}"
@@ -47,6 +47,7 @@ GRAD_CLIP="${GRAD_CLIP:-1.0}"
 EPOCHS="${EPOCHS:-500}"
 BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-4}"
 SAMPLE_EVERY="${SAMPLE_EVERY:-5}"
+LOG_EVERY="${LOG_EVERY:-100}"
 SEED="${SEED:-42}"
 
 # Experiment naming / output
@@ -86,10 +87,12 @@ ARGS=(
   --data_root "$DATA_ROOT" --task "$TASK" --split "$SPLIT" --img_size "$IMG_SIZE"
   --class_filter "$DISEASE"
   --ae_ckpt_path "$AE_CKPT_PATH" --ae_config_path "$AE_CONFIG_PATH"
+  --latent_scale_factor "$LATENT_SCALE_FACTOR"
   --ldm_base_ch "$LDM_BASE_CH" --ldm_ch_mults "$LDM_CH_MULTS" --ldm_num_res_blocks "$LDM_NUM_RES_BLOCKS" --ldm_attn_res "$LDM_ATTN_RES"
   --lr "$LR" --weight_decay "$WEIGHT_DECAY" --grad_clip "$GRAD_CLIP"
   --epochs "$EPOCHS" --batch_per_device "$BATCH_PER_DEVICE"
   --seed "$SEED" --sample_every "$SAMPLE_EVERY"
+  --log_every "$LOG_EVERY"
   --output_root "$OUTPUT_ROOT" --exp_name "$EXP_NAME"
 )
 

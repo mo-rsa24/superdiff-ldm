@@ -160,7 +160,7 @@ from torchvision.utils import make_grid, save_image
 def Euler_Maruyama_sampler(rng, ldm_model, ldm_params, ae_model, ae_params,
                            marginal_prob_std_fn,
                            diffusion_coeff_fn,
-                           n_steps=1000,
+                           n_steps=500,
                            latent_size=32,  # Updated default based on AE config
                            batch_size=16,
                            z_std=1.0,
