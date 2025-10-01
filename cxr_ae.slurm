@@ -49,10 +49,12 @@ REPEAT_LEN="${REPEAT_LEN:-500}"
 CH_MULTS="${CH_MULTS:-128,256,512}"
 NUM_RES_BLOCKS="${NUM_RES_BLOCKS:-2}"
 DROPOUT="${DROPOUT:-0.0}"
-Z_CHANNELS="${Z_CHANNELS:-3}"
+# --- MODIFIED: Increased default latent channels ---
+Z_CHANNELS="${Z_CHANNELS:-4}"
 
 # Loss settings
-KL_WEIGHT="${KL_WEIGHT:-1.0e-6}"
+# --- MODIFIED: Increased KL weight to a meaningful value for regularization ---
+KL_WEIGHT="${KL_WEIGHT:-1.0e-5}"
 PIXEL_WEIGHT="${PIXEL_WEIGHT:-1.0}"
 DISC_START="${DISC_START:-50001}"
 DISC_WEIGHT="${DISC_WEIGHT:-0.5}"
@@ -90,8 +92,8 @@ export JAX_PLATFORMS=cuda
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export TF_CPP_MIN_LOG_LEVEL=3
 source ~/.bashrc
-mamba activate jax115
-ok "Activated micromamba: jax115"
+mamba activate "${ENV_NAME:?Must set ENV_NAME}"
+ok "Activated micromamba environment: ${ENV_NAME}"
 
 # ----------------------------
 # Normalize list-like vars
@@ -146,6 +148,7 @@ kv "TASK"           "$TASK"
 kv "IMG_SIZE"       "$IMG_SIZE"
 kv "CH_MULTS"       "$CH_MULTS"
 kv "Z_CHANNELS"     "$Z_CHANNELS"
+kv "KL_WEIGHT"      "$KL_WEIGHT"
 kv "LR"             "$LR"
 kv "EPOCHS"         "$EPOCHS"
 kv "BATCHxDEVS"     "$BATCH_PER_DEVICE x $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo 1)"
