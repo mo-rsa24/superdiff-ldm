@@ -12,6 +12,8 @@ CYN=$(printf '\\033[36m'); BLU=$(printf '\\033[34m'); BLD=$(printf '\\033[1m');
 RST=$(printf '\\033[0m')
 banner(){ printf "\\n${BLU}${BLD}== %s ==${RST}\\n" "$*"; }
 kv(){ printf "  ${CYN}%-22s${RST} %s\\n" "$1" "$2"; }
+err(){ printf "${RED}!! %s${RST}\\n" "$*"; }
+ok(){ printf "${GRN}** %s${RST}\\n" "$*"; }
 
 # ----------------------------
 # Defaults (override via env)
@@ -19,6 +21,7 @@ kv(){ printf "  ${CYN}%-22s${RST} %s\\n" "$1" "$2"; }
 WORKDIR="${WORKDIR:-$PWD}"
 PYFILE="${PYFILE:-run/autoencoder.py}"
 DATA_ROOT="/datasets/mmolefe/cleaned"
+ENV_NAME="${ENV_NAME:-jax115}" # Environment name for mamba
 
 # Data & Debug
 TASK="${TASK:-TB}"
@@ -70,6 +73,26 @@ WANDB_TAGS="${WANDB_TAGS:-}"
 WANDB_ID="${WANDB_ID:-}"
 
 # ----------------------------
+# Environment Setup
+# ----------------------------
+banner "Setup"
+mkdir -p "$WORKDIR/logs"
+cd "$WORKDIR"
+export PYTHONPATH="$WORKDIR${PYTHONPATH:+:$PYTHONPATH}"
+export JAX_PLATFORMS=cuda
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export TF_CPP_MIN_LOG_LEVEL=3
+
+kv "Working directory" "$WORKDIR"
+kv "Python path" "$PYTHONPATH"
+
+# Activate Conda/Mamba Environment
+source ~/.bashrc
+mamba activate "${ENV_NAME:?Must set ENV_NAME}"
+ok "Activated micromamba environment: ${ENV_NAME}"
+
+
+# ----------------------------
 # Arguments for Python script
 # ----------------------------
 ARGS=(
@@ -78,8 +101,6 @@ ARGS=(
   --split "$SPLIT"
   --img_size "$IMG_SIZE"
   --class_filter "$CLASS_FILTER"
-
-  # --- Architecture Arguments ---
   --base_ch "$BASE_CH"
   --ch_mults "$CH_MULTS"
   --num_res_blocks "$NUM_RES_BLOCKS"
@@ -87,16 +108,12 @@ ARGS=(
   --z_channels "$Z_CHANNELS"
   --embed_dim "$EMBED_DIM"
   --dropout "$DROPOUT"
-
-  # --- Loss Arguments ---
   --kl_weight "$KL_WEIGHT"
   --pixel_weight "$PIXEL_WEIGHT"
   --perceptual_weight "$PERCEPTUAL_WEIGHT"
   --disc_start "$DISC_START"
   --disc_factor "$DISC_FACTOR"
   --disc_weight "$DISC_WEIGHT"
-
-  # --- Optimizer Arguments ---
   --lr "$LR"
   --weight_decay "$WEIGHT_DECAY"
   --grad_clip "$GRAD_CLIP"
@@ -134,17 +151,9 @@ banner "SLURM Job Info"
 kv "JOB_ID"         "${SLURM_JOB_ID:-<none>}"
 kv "Node"           "$(hostname)"
 
-banner "AE Training Info"
-kv "Python script"  "$PYFILE"
-kv "Run name"       "$RUN_NAME"
-kv "Task"           "$TASK"
-kv "Image size"     "$IMG_SIZE"
-kv "Base channels"  "$BASE_CH"
-kv "Channel mults"  "$CH_MULTS"
-kv "Z channels"     "$Z_CHANNELS"
-kv "KL weight"      "$KL_WEIGHT"
-kv "Batch/device"   "$BATCH_PER_DEVICE"
-kv "Epochs"         "$EPOCHS"
+banner "AE Training Run"
+srun python -u "$PYFILE" "${ARGS[@]}"
+RC=$?
 
-echo
-srun python3 "$PYFILE" "${ARGS[@]}"
+banner "Done (ExitCode: $RC)"
+[[ $RC -eq 0 ]] && ok "Success." || { err "Failure (exit $RC)"; exit "$RC"; }
