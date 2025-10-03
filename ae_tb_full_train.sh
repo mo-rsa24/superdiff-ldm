@@ -1,43 +1,40 @@
 #!/usr/bin/env bash
-#
-# Launches a full training job for the autoencoder using cxr_ae.slurm.
-# This script disables the default "overfit" mode.
-#
 
 set -euo pipefail
 
-# ----------------------------------------------------------------
-#                ✅ --- USER CONFIGURATION --- ✅
-# ----------------------------------------------------------------
-# REQUIRED: Set the name of your conda or mamba environment
 export ENV_NAME="jax115"
 
-# --- Key Training Parameters ---
-export TASK="TB"                         # Set the dataset task (TB or PNEUMONIA)\
-export CLASS_FILTER="1"                  # 0 = Normal, 1 = Diseased
-export EPOCHS=200                        # Set a higher number of epochs for a full run
-export BATCH_PER_DEVICE=8                # Adjust batch size based on your GPU memory
-export SAMPLE_EVERY=20                    # Sample every 5 epochs to save disk space
-export CH_MULTS="64:128:256"
+# --- Key Training Parameters (Aligned with CompVis) ---
+export TASK="TB"
+export CLASS_FILTER="1"
+export EPOCHS=200
+export BATCH_PER_DEVICE=8
+export SAMPLE_EVERY=10
+
+# --- ARCHITECTURE ---
+export BASE_CH=128
+export CH_MULTS="1,2,4,4"
+export ATTN_RES="16"
+export Z_CHANNELS=2
+export EMBED_DIM=2
+export NUM_RES_BLOCKS=2
+
+# --- VAE Regularization ---
+export KL_WEIGHT=1.0e-5
+
+# --- W&B Logging ---
+export WANDB=1
 export WANDB_TAGS="ae:tb:full"
+export OVERFIT_ONE=0
+export OVERFIT_K=0
+export RUN_NAME="ae_tb_full_kl_1.0e-5_zchannels_2"
 
-
-# ----------------------------------------------------------------
-#                🚀 --- JOB LAUNCH LOGIC --- 🚀
-# ----------------------------------------------------------------
-# IMPORTANT: Disable debugging/overfit modes for a full training run
-export OVERFIT_ONE=0  # Set to 0 to turn OFF overfitting
-export OVERFIT_K=0    # Set to 0 to turn OFF tiny-K subset training
-
-# Create a descriptive name for the experiment run
-export RUN_NAME="ae_tb_full_b${BATCH_PER_DEVICE}_$(date +%Y%m%d)"
-
-# --- Submit to Slurm ---
-echo "Submitting SLURM job for AE FULL training on TB data..."
+echo "Submitting SLURM job for VAE DIAGNOSTIC training (CompVis-style)..."
 echo "------------------------------------------------"
 echo "  ▶️  Run Name:         $RUN_NAME"
 echo "  ▶️  Task:             $TASK (Class: TB)"
-echo "  ▶️  Overfit Mode:     DISABLED"
+echo "  ▶️  Latent Channels:  $Z_CHANNELS"
+echo "  ▶️  Attention At:     $ATTN_RES"
 echo "------------------------------------------------"
 sbatch cxr_ae.slurm
 echo "✅ Job successfully submitted!"

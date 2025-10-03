@@ -37,4 +37,4 @@ echo "  ▶️  Latent Channels:  $Z_CHANNELS"
 echo "  ▶️  Attention At:     $ATTN_RES"
 echo "------------------------------------------------"
 sbatch cxr_ae.slurm
-echo "✅ Job successfully submitted!"
+echo "✅ Job successfully submitted!"z
