@@ -12,7 +12,7 @@ export BATCH_PER_DEVICE=8
 export SAMPLE_EVERY=10
 
 # --- ARCHITECTURE ---
-export BASE_CH=128
+export BASE_CH=64
 export CH_MULTS="1,2,4,4"
 export ATTN_RES="16"
 export Z_CHANNELS=2
