@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=disc-cxr-ae
+#SBATCH --job-name=cxr-ae
 #SBATCH --partition=bigbatch
 #SBATCH --exclude=mscluster65,mscluster76
 #SBATCH --time=72:00:00
