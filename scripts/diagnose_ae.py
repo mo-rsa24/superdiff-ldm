@@ -50,7 +50,7 @@ try:
 except Exception:
     _HAS_PLOTLY = False
 
-def _safe_write_plotly(fig, out_html: Path, out_png: Path | None = None, scale=2):
+def _safe_write_plotly(fig, out_html: Path, out_png: Path = None, scale=2):
     fig.write_html(out_html)
     if out_png is not None:
         try:
