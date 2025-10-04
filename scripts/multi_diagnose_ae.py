@@ -3,7 +3,8 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+import re  # <-- FIX: Import the regular expression module
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -31,9 +32,10 @@ from datasets.ChestXRay import ChestXrayDataset
 from models.ae_kl import AutoencoderKL
 
 
-def find_latest_run_dir(parent_dir: Path) -> Optional[Path]:
+def find_latest_run_dir(parent_dir: Path):
     """Finds the subdirectory with the latest timestamp."""
-    subdirs = [d for d in parent_dir.iterdir() if d.is_dir() and d.name.matches(r'^\d{8}-\d{6}$')]
+    # --- FIX: Use re.match() for regex matching on the directory name string ---
+    subdirs = [d for d in parent_dir.iterdir() if d.is_dir() and re.match(r'^\d{8}-\d{6}$', d.name)]
     if not subdirs:
         return None
     return max(subdirs, key=lambda d: d.name)
@@ -261,3 +263,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
