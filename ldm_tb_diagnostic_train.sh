@@ -8,14 +8,14 @@ set -euo pipefail
 export ENV_NAME="jax115"
 
 # ❗ UPDATE AFTER AE TRAINING ❗
-export AE_CKPT_PATH="runs/ae_tb_diagnostic_vae_20251001/20251001-035448/ckpts/last.flax"
-export AE_CONFIG_PATH="runs/ae_tb_diagnostic_vae_20251001/20251001-035448/run_meta.json"
+export AE_CKPT_PATH="runs/ae_tb_full_kl_1.0e-5_zchannels_3/20251003-125631/ckpts/last.flax"
+export AE_CONFIG_PATH="runs/ae_tb_full_kl_1.0e-5_zchannels_3/20251003-125631/run_meta.json"
 
 # --- Key Training Parameters ---
 export TASK="TB"
 export DISEASE="1"
 export EPOCHS=50
-export LATENT_SCALE_FACTOR="1.0"
+export LATENT_SCALE_FACTOR="1.9388840460107197"
 export BATCH_PER_DEVICE=1
 export SAMPLE_EVERY=5
 export LOG_EVERY=10
