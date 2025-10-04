@@ -42,14 +42,3 @@ echo "  ▶️  Overfit Mode:     32 Samples"
 echo "------------------------------------------------"
 sbatch cxr_ldm.slurm
 echo "✅ Job successfully submitted!"
-```
-
-### Next Steps
-
-1.  **Update Checkpoint Paths:** Before running, make sure to update the `AE_CKPT_PATH` and `AE_CONFIG_PATH` in each script to point to your best, fully-trained VAE.
-2.  **Run the Scripts:** Execute each script to launch the three separate experiments.
-    ```bash
-    bash ldm_overfit_1.sh
-    bash ldm_overfit_16.sh
-    bash ldm_overfit_32.sh
-
