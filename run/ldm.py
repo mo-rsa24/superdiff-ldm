@@ -89,22 +89,54 @@ def load_autoencoder(config_path, ckpt_path):
     print(f"Loading AE from config: {config_path}")
     with open(config_path, 'r') as f:
         ae_args = json.load(f)
-    ae_ch_mults = tuple(int(c.strip()) for c in ae_args['ch_mults'].split(','))
-    enc_cfg = dict(ch_mults=ae_ch_mults, num_res_blocks=ae_args['num_res_blocks'], z_ch=ae_args['z_channels'], double_z=True)
-    dec_cfg = dict(ch_mults=ae_ch_mults, num_res_blocks=ae_args['num_res_blocks'], out_ch=1)
-    ae_model = AutoencoderKL(enc_cfg=enc_cfg, dec_cfg=dec_cfg, embed_dim=ae_args['z_channels'])
-    fake_img = jnp.ones((1, ae_args['img_size'], ae_args['img_size'], 1))
+
+    # Correctly parse ch_mults by incorporating base_ch
+    if isinstance(ae_args['ch_mults'], str):
+        ch_mult_factors = tuple(int(c.strip()) for c in ae_args['ch_mults'].split(',') if c.strip())
+        base_ch = ae_args.get('base_ch', 64)
+        ae_ch_mults = tuple(base_ch * m for m in ch_mult_factors)
+    else:
+        ae_ch_mults = tuple(ae_args['ch_mults'])
+
+    attn_res = tuple(int(r) for r in ae_args.get('attn_res', '16').split(',') if r)
+
+    enc_cfg = dict(ch_mults=ae_ch_mults, num_res_blocks=ae_args['num_res_blocks'], z_ch=ae_args['z_channels'],
+                   double_z=True, attn_resolutions=attn_res, in_ch=1)
+    dec_cfg = dict(ch_mults=ae_ch_mults, num_res_blocks=ae_args['num_res_blocks'], out_ch=1,
+                   attn_resolutions=attn_res)
+
+    ae_model = AutoencoderKL(enc_cfg=enc_cfg, dec_cfg=dec_cfg, embed_dim=ae_args['embed_dim'])
+
+    # Robust loading logic
     rng = jax.random.PRNGKey(0)
+    fake_img = jnp.ones((1, ae_args['img_size'], ae_args['img_size'], 1))
     ae_variables = ae_model.init({'params': rng, 'dropout': rng}, fake_img, rng=rng)
-    ae_params = ae_variables['params']
+
+    # Recreate the optimizer structure from AE training to load the checkpoint
     def get_ae_tx(lr, grad_clip, weight_decay):
-        return optax.chain(optax.clip_by_global_norm(grad_clip), optax.adamw(lr, weight_decay=weight_decay))
-    tx = get_ae_tx(lr=ae_args.get('lr',1e-4), grad_clip=ae_args.get('grad_clip',1.0), weight_decay=ae_args.get('weight_decay',0.0))
-    dummy_gen_state = TrainState.create(apply_fn=None, params={'ae': ae_params}, tx=tx)
-    dummy_disc_state = TrainState.create(apply_fn=None, params={}, tx=tx)
+        return optax.chain(
+            optax.clip_by_global_norm(grad_clip) if grad_clip > 0 else optax.identity(),
+            optax.adamw(lr, weight_decay=weight_decay)
+        )
+
+    tx = get_ae_tx(lr=ae_args.get('lr', 1e-4), grad_clip=ae_args.get('grad_clip', 1.0),
+                   weight_decay=ae_args.get('weight_decay', 1e-4))
+
+    gen_params = {'ae': ae_variables['params']}
+    from losses.lpips_gan import LPIPSWithDiscriminatorJAX, LPIPSGANConfig
+    loss_cfg = LPIPSGANConfig(disc_num_layers=ae_args.get('disc_layers', 3))
+    loss_mod = LPIPSWithDiscriminatorJAX(loss_cfg)
+    loss_params_dummy = \
+    loss_mod.init({'params': rng}, x_in=fake_img, x_rec=fake_img, posterior=None, step=jnp.array(0))['params']
+    disc_params_dummy = {'loss': loss_params_dummy}
+
+    dummy_gen_state = TrainState.create(apply_fn=None, params=gen_params, tx=tx)
+    dummy_disc_state = TrainState.create(apply_fn=None, params=disc_params_dummy, tx=tx)
+
     print(f"Loading AE checkpoint from: {ckpt_path}")
     with tf.io.gfile.GFile(ckpt_path, "rb") as f:
         blob = f.read()
+
     restored_gen_state, _ = from_bytes((dummy_gen_state, dummy_disc_state), blob)
     print("Autoencoder loaded successfully.")
     return ae_model, restored_gen_state.params['ae']
@@ -190,15 +222,22 @@ def main():
             rng_ae, rng_diff = jax.random.split(rng)
             posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
             z = posterior.sample(rng_ae) * args.latent_scale_factor
+            jax.debug.print("z_stats | shape: {s}, mean: {m:.4f}, std: {d:.4f}, min: {mn:.4f}, max: {mx:.4f}",
+                            s=z.shape, m=jnp.mean(z), d=jnp.std(z), mn=jnp.min(z), mx=jnp.max(z))
             rng_t, rng_noise = jax.random.split(rng_diff) # Use the second key here
             t = jax.random.uniform(rng_t, (z.shape[0],), minval=1e-5, maxval=1.0)
             noise = jax.random.normal(rng_noise, z.shape)
             std = marginal_prob_std_fn(t)
             perturbed_z = z + noise * std[:, None, None, None]
             predicted_noise = ldm_model.apply({'params': ldm_params}, perturbed_z, t)
+            jax.debug.print(
+                "noise_stats | target_mean: {tm:.4f}, target_std: {ts:.4f} | pred_mean: {pm:.4f}, pred_std: {ps:.4f}",
+                tm=jnp.mean(noise), ts=jnp.std(noise), pm=jnp.mean(predicted_noise), ps=jnp.std(predicted_noise))
             return jnp.mean((predicted_noise - noise) ** 2)
 
         loss, grads = jax.value_and_grad(loss_fn)(ldm_state.params)
+        grad_norm = optax.global_norm(grads)
+        jax.debug.print("train_step | loss: {l:.5f}, grad_norm: {g:.5f}", l=loss, g=grad_norm)
         grads = jax.lax.pmean(grads, axis_name='device')
         loss = jax.lax.pmean(loss, axis_name='device')
         new_ldm_state = ldm_state.apply_gradients(grads=grads)
