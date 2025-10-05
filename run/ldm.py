@@ -232,6 +232,11 @@ def main():
     def train_step(rng, ldm_state, ae_params, x_batch):
         def loss_fn(ldm_params):
             rng_ae, rng_diff = jax.random.split(rng)
+            jax.debug.print("x_batch_stats | min: {mn}, max: {mx}, mean: {m}",
+                            mn=jnp.min(x_batch), mx=jnp.max(x_batch), m=jnp.mean(x_batch))
+            x_batch_scaled = (x_batch + 1.0) / 2.0
+            jax.debug.print("x_batch_scaled_stats | min: {mn}, max: {mx}, mean: {m}",
+                            mn=jnp.min(x_batch_scaled), mx=jnp.max(x_batch_scaled), m=jnp.mean(x_batch_scaled))
             posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
             z = posterior.sample(rng_ae) * args.latent_scale_factor
             jax.debug.print("z_stats | mean: {m}, std: {d}, min: {mn}, max: {mx}",
