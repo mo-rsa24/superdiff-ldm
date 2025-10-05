@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=cxr-ldm
 #SBATCH --partition=bigbatch
+#SBATCH --exclude=mscluster65,mscluster76
 #SBATCH --time=72:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
