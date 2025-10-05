@@ -157,41 +157,42 @@ import torch
 from torchvision.utils import make_grid, save_image
 
 
-def Euler_Maruyama_sampler(
-    rng, ldm_model, ldm_params, ae_model, ae_params,
-    marginal_prob_std_fn, diffusion_coeff_fn,
-    n_steps=500, latent_size=32, batch_size=16,
-    z_channels=3, latent_scale_factor=1.387
-):
+def Euler_Maruyama_sampler(rng, ldm_model, ldm_params, ae_model, ae_params,
+                           marginal_prob_std_fn,
+                           diffusion_coeff_fn,
+                           n_steps=500,
+                           latent_size=32,  # Updated default based on AE config
+                           batch_size=16,
+                           z_std=1.0,
+                           z_channels=3):
+    """
+    Generates samples using the reverse-time Probability Flow ODE.
+
+    This version is deterministic and generally more stable than the SDE sampler,
+    making it a good choice for avoiding artifacts like black images.
+    """
     latent_shape = (batch_size, latent_size, latent_size, z_channels)
     rng, step_rng = jax.random.split(rng)
-
-    # 1) Start in the TRAINED LDM space with unit-std noise
-    z = jax.random.normal(step_rng, latent_shape)
-    print("init z std:", float(jnp.std(z)))
-
+    z = jax.random.normal(step_rng, latent_shape) * marginal_prob_std_fn(jnp.ones(batch_size))[:, None, None, None]
     time_steps = jnp.linspace(1., 1e-5, n_steps)
-    dt = float(time_steps[0] - time_steps[1])
+    dt = time_steps[0] - time_steps[1]
 
-    # 2) Reverse PF-ODE integration using ε-prediction -> score
-    for t_val in time_steps:
-        t = jnp.full((batch_size,), t_val)
-        g   = diffusion_coeff_fn(t)                                  # (B,)
-        std = marginal_prob_std_fn(t)                                # (B,)
-        eps_pred = ldm_model.apply({'params': ldm_params}, z, t)     # predict ε
-        score = -eps_pred / std[:, None, None, None]                 # ∇x log p_t(x)
+    for t_val in tqdm(time_steps, desc="Sampling (ODE)"):
+        t = jnp.ones(batch_size) * t_val
+        g = diffusion_coeff_fn(t)
+        std = marginal_prob_std_fn(t)
+        predicted_noise = ldm_model.apply({'params': ldm_params}, z, t)
+        score = -predicted_noise / std[:, None, None, None]
+        drift = -0.5 * g[:, None, None, None] ** 2 * score
+        z = z + drift * dt
+    z = z * z_std
+    decoded_samples = ae_model.apply({'params': ae_params}, z, method=ae_model.decode, train=False)
+    decoded_samples = jnp.clip(decoded_samples, 0., 1.)
+    permuted_samples = jnp.transpose(decoded_samples, (0, 3, 1, 2))
+    samples_torch = torch.from_numpy(np.asarray(jax.device_get(permuted_samples)))
+    grid = make_grid(samples_torch, nrow=int(jnp.sqrt(batch_size)), padding=2, normalize=False)
 
-        drift = -0.5 * (g[:, None, None, None] ** 2) * score
-        z = z + drift * dt                                           # deterministic PF-ODE step
-
-    print("final z std (trained space):", float(jnp.std(z)))
-
-    # 3) UN-SCALE before decoding to AE space
-    z_for_decode = z / float(latent_scale_factor)
-    x = ae_model.apply({'params': ae_params}, z_for_decode, method=ae_model.decode, train=False)
-    x = jnp.clip(x, 0., 1.)
-    return jnp.transpose(x, (0, 3, 1, 2))  # (B,C,H,W) for grid
-
+    return grid
 
 # @title Define the Predictor-Corrector sampler (double click to expand or collapse)
 
