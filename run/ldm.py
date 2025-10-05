@@ -238,7 +238,8 @@ def main():
             jax.debug.print("x_batch_scaled_stats | min: {mn}, max: {mx}, mean: {m}",
                             mn=jnp.min(x_batch_scaled), mx=jnp.max(x_batch_scaled), m=jnp.mean(x_batch_scaled))
             posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
-            z = posterior.sample(rng_ae) * args.latent_scale_factor
+            # z = posterior.sample(rng_ae) * args.latent_scale_factor
+            z = posterior.mode() * args.latent_scale_factor
             jax.debug.print("z_stats | mean: {m}, std: {d}, min: {mn}, max: {mx}",
                             m=jnp.mean(z), d=jnp.std(z), mn=jnp.min(z), mx=jnp.max(z))
             rng_t, rng_noise = jax.random.split(rng_diff) # Use the second key here
