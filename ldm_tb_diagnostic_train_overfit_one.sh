@@ -15,7 +15,7 @@ export AE_CONFIG_PATH="runs/ae_tb_full_kl_1.0e-5_zchannels_3/20251003-125631/run
 export TASK="TB"
 export DISEASE="1"
 export EPOCHS=100 # Increased epochs to ensure convergence
-export LATENT_SCALE_FACTOR="1.938884" # Use the value from your diagnostics
+export LATENT_SCALE_FACTOR="2.051733" # Use the value from your diagnostics
 export SAMPLE_EVERY=10
 export LOG_EVERY=10
 
