@@ -192,8 +192,20 @@ def main():
     # --- Setup LDM UNet ---
     with open(args.ae_config_path, 'r') as f: ae_args = json.load(f)
     z_channels = ae_args['z_channels']
-    downsample_factor = 2 ** (len(ae_args['ch_mults'].split(',')) - 1)
+    # --- ADD THIS BLOCK FOR DIAGNOSTICS ---
+    print("--- Shape & Channel Verification ---")
+    if isinstance(ae_args['ch_mults'], str):
+        num_downsamples = len(ae_args['ch_mults'].split(',')) - 1
+    else:
+        num_downsamples = len(ae_args['ch_mults']) - 1
+    downsample_factor = 2 ** num_downsamples
     latent_size = args.img_size // downsample_factor
+
+    print(f"AE `z_channels`: {z_channels}")
+    print(f"AE `ch_mults`: {ae_args['ch_mults']}")
+    print(f"Calculated downsample factor: 2^{num_downsamples} = {downsample_factor}")
+    print(f"Expected latent spatial size: {latent_size}x{latent_size}")
+    # --- END DIAGNOSTIC BLOCK ---
     ldm_chans = tuple(args.ldm_base_ch * int(m) for m in args.ldm_ch_mults.split(','))
     attn_res = tuple(int(r) for r in args.ldm_attn_res.split(','))
     ldm_model = ScoreNet(z_channels=z_channels, channels=ldm_chans, num_res_blocks=args.ldm_num_res_blocks, attn_resolutions=attn_res)
@@ -237,7 +249,7 @@ def main():
 
         loss, grads = jax.value_and_grad(loss_fn)(ldm_state.params)
         grad_norm = optax.global_norm(grads)
-        jax.debug.print("train_step | loss: {l:.5f}, grad_norm: {g:.5f}", l=loss, g=grad_norm)
+        jax.debug.print("train_step | loss: {l}, grad_norm: {g}", l=loss, g=grad_norm)
         grads = jax.lax.pmean(grads, axis_name='device')
         loss = jax.lax.pmean(loss, axis_name='device')
         new_ldm_state = ldm_state.apply_gradients(grads=grads)

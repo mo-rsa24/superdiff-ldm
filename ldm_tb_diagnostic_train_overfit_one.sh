@@ -25,7 +25,7 @@ export OVERFIT_K=0
 export BATCH_PER_DEVICE=1 # For a single sample, a batch size of 1 is simplest and fastest.
 
 # --- LDM Architecture ---
-export LDM_BASE_CH=256
+export LDM_BASE_CH=64
 export LDM_CH_MULTS="1:2:4:4"
 export LDM_ATTN_RES="16:8"
 
