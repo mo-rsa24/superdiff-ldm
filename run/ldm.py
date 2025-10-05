@@ -222,8 +222,8 @@ def main():
             rng_ae, rng_diff = jax.random.split(rng)
             posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
             z = posterior.sample(rng_ae) * args.latent_scale_factor
-            jax.debug.print("z_stats | shape: {s}, mean: {m:.4f}, std: {d:.4f}, min: {mn:.4f}, max: {mx:.4f}",
-                            s=z.shape, m=jnp.mean(z), d=jnp.std(z), mn=jnp.min(z), mx=jnp.max(z))
+            jax.debug.print("z_stats | mean: {m}, std: {d}, min: {mn}, max: {mx}",
+                            m=jnp.mean(z), d=jnp.std(z), mn=jnp.min(z), mx=jnp.max(z))
             rng_t, rng_noise = jax.random.split(rng_diff) # Use the second key here
             t = jax.random.uniform(rng_t, (z.shape[0],), minval=1e-5, maxval=1.0)
             noise = jax.random.normal(rng_noise, z.shape)
@@ -231,7 +231,7 @@ def main():
             perturbed_z = z + noise * std[:, None, None, None]
             predicted_noise = ldm_model.apply({'params': ldm_params}, perturbed_z, t)
             jax.debug.print(
-                "noise_stats | target_mean: {tm:.4f}, target_std: {ts:.4f} | pred_mean: {pm:.4f}, pred_std: {ps:.4f}",
+                "noise_stats | target_mean: {tm}, target_std: {ts} | pred_mean: {pm}, pred_std: {ps}",
                 tm=jnp.mean(noise), ts=jnp.std(noise), pm=jnp.mean(predicted_noise), ps=jnp.std(predicted_noise))
             return jnp.mean((predicted_noise - noise) ** 2)
 
