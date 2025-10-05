@@ -30,8 +30,8 @@ export LDM_CH_MULTS="1:2:4:4"
 export LDM_ATTN_RES="16:8"
 
 # --- Experiment Naming ---
-export WANDB_TAGS="ldm:tb:overfit-3"
-export RUN_NAME="ldm_tb_overfit_3_$(date +%Y%m%d)"
+export WANDB_TAGS="ldm:tb:overfit-4"
+export RUN_NAME="ldm_tb_overfit_4_$(date +%Y%m%d)"
 
 echo "Submitting SLURM job: LDM Overfit on 1 Sample"
 echo "------------------------------------------------"

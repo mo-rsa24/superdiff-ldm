@@ -180,12 +180,10 @@ def Euler_Maruyama_sampler(rng, ldm_model, ldm_params, ae_model, ae_params,
     for t_val in tqdm(time_steps, desc="Sampling (ODE)"):
         t = jnp.ones(batch_size) * t_val
         g = diffusion_coeff_fn(t)
-        g_sq = g[:, None, None, None] ** 2
         std = marginal_prob_std_fn(t)
         predicted_noise = ldm_model.apply({'params': ldm_params}, z, t)
         score = -predicted_noise / std[:, None, None, None]
-        # drift = -0.5 * g[:, None, None, None] ** 2 * score
-        drift = -0.5 * g_sq * z - g_sq * score
+        drift = -0.5 * (g[:, None, None, None] ** 2) * score
         z = z + drift * dt
     z = z * z_std
     decoded_samples = ae_model.apply({'params': ae_params}, z, method=ae_model.decode, train=False)
