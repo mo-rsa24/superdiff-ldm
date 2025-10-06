@@ -162,7 +162,7 @@ def Euler_Maruyama_sampler(
         rng, ldm_model, ldm_params, ae_model, ae_params,
         marginal_prob_std_fn, diffusion_coeff_fn,
         latent_size, batch_size, z_channels, z_std=1.0,
-        n_steps=1000, eps=1e-5):
+        n_steps=200, eps=1e-5):
     """
     Corrected Euler-Maruyama sampler for the reverse-time SDE with rich logging.
     """
@@ -212,7 +212,7 @@ def Euler_Maruyama_sampler(
         "min": jnp.min(x),
         "max": jnp.max(x),
     }
-    pretty_table(z_final_metrics, title="latent z @ t≈0")
+    pretty_table("latent z @ t≈0", z_final_metrics)
 
     # 2. Decode the final latents to get the image
     # The division by z_std is a scaling step specific to this architecture
@@ -231,7 +231,7 @@ def Euler_Maruyama_sampler(
         "min": jnp.min(x_hat),
         "max": jnp.max(x_hat),
     }
-    pretty_table(image_metrics, title="decoded image")
+    pretty_table("decoded image", image_metrics)
 
     close_block("SAMPLER", step=-1)
 
