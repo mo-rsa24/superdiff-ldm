@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Launch a FULL LDM training run on the PNEUMONIA dataset.
+# Launch a fast LDM diagnostic run that OVERFITS on 16 PNEUMONIA samples.
 #
 
 set -euo pipefail
@@ -20,49 +20,48 @@ export CLASS_FILTER="1"
 export IMG_SIZE="256"
 
 # ────────────────────────────────────────────────────────────────────────────────
-# LDM: FULL TRAINING
+# LDM DIAGNOSTIC: overfit 16 images
 # ────────────────────────────────────────────────────────────────────────────────
 export OVERFIT_ONE="0"
-export OVERFIT_K="0"
-export REPEAT_LEN="1"
+export OVERFIT_K="16"
+export REPEAT_LEN="200"
 
 export LDM_CH_MULTS="1,2,4,4"
 export LDM_BASE_CH="128"
 export LDM_NUM_RES_BLOCKS="2"
 export LDM_ATTN_RES="16,8"
 
-# Use the robust scale factor calculated over the full dataset
-export LATENT_SCALE_FACTOR="YOUR_FULL_PNEUMONIA_SCALE_FACTOR"
+export LATENT_SCALE_FACTOR="YOUR_PNEUMONIA_SCALE_FACTOR"
 
 # ────────────────────────────────────────────────────────────────────────────────
-# OPTIMIZER / SCHEDULING (tuned for full dataset)
+# OPTIMIZER / SCHEDULING
 # ────────────────────────────────────────────────────────────────────────────────
-export LR="1e-4"
-export WEIGHT_DECAY="0.01"
+export LR="2e-4"
+export WEIGHT_DECAY="0.0"
 export GRAD_CLIP="1.0"
 
-export EPOCHS="1000"
-export BATCH_PER_DEVICE="16"
-export LOG_EVERY="100"
+export EPOCHS="100"
+export BATCH_PER_DEVICE="4"
+export LOG_EVERY="25"
 
-export SAMPLE_EVERY="10"
+export SAMPLE_EVERY="5"
 export SAMPLE_BATCH_SIZE="16"
 
 # ────────────────────────────────────────────────────────────────────────────────
 # W&B
 # ────────────────────────────────────────────────────────────────────────────────
-export USE_WANDB="1"
+export USE_WANDB="0"
 export WANDB_PROJECT="cxr-ldm"
-export WANDB_TAGS="ldm:pneumonia:full-train"
+export WANDB_TAGS="ldm:pneumonia:overfit-16,fast"
 
 # ────────────────────────────────────────────────────────────────────────────────
 # RUN NAMING
 # ────────────────────────────────────────────────────────────────────────────────
 export EXP_NAME="cxr_ldm"
-export RUN_NAME="ldm_pneumonia_full_train_$(date +%Y%m%d-%H%M%S)"
+export RUN_NAME="ldm_pneumonia_overfit_16_fast_$(date +%Y%m%d-%H%M%S)"
 
 # ────────────────────────────────────────────────────────────────────────────────
 # SUBMIT
 # ────────────────────────────────────────────────────────────────────────────────
-echo "Submitting SLURM job: LDM Pneumonia Full Training"
+echo "Submitting SLURM job: LDM Pneumonia Overfit 16"
 sbatch cxr_ldm.slurm
