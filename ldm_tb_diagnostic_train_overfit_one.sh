@@ -23,7 +23,8 @@ export AE_CKPT_PATH="runs/ae_tb_full_kl_1.0e-5_zchannels_3/20251003-125631/ckpts
 export AE_CONFIG_PATH="runs/ae_tb_full_kl_1.0e-5_zchannels_3/20251003-125631/run_meta.json"
 
 # Your data root & task
-export DATA_ROOT="../datasets/cleaned"
+
+export DATA_ROOT="/datasets/mmolefe/cleaned"
 export TASK="TB"
 export SPLIT="train"
 export CLASS_FILTER="1"            # 1 = diseased, 0 = normal (keeps it consistent)

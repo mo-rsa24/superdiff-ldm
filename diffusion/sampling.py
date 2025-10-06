@@ -207,7 +207,7 @@ def Euler_Maruyama_sampler_(
     ae_params,
     marginal_prob_std_fn,
     diffusion_coeff_fn,
-    n_steps=300,
+    n_steps=500,
     latent_size=32,
     batch_size=16,
     z_std=1.0,
