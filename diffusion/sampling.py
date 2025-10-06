@@ -184,14 +184,14 @@ def Euler_Maruyama_sampler(
     std_1 = marginal_prob_std_fn(jnp.ones(batch_size))[:, None, None, None]
     z = jax.random.normal(step_rng, latent_shape) * std_1
 
-    time_steps = jnp.linspace(1.0, 1e-5, n_steps)
+    time_steps = jnp.linspace(1.0, 1e-3, n_steps)
     dt = time_steps[0] - time_steps[1]
 
     for t_val in tqdm(time_steps, desc="Sampling (PF-ODE)"):
         t = jnp.ones(batch_size) * t_val                    # shape [B]
         g = diffusion_coeff_fn(t)[:, None, None, None]      # [B,1,1,1]
-        std = marginal_prob_std_fn(t)[:, None, None, None]  # [B,1,1,1]
-
+        std = marginal_prob_std_fn(t)[:, None, None, None]
+        std = jnp.maximum(std, 1e-3)
         # Model predicts noise ε̂; convert to score = -ε̂/σ(t)
         eps_pred = ldm_model.apply({'params': ldm_params}, z, t)  # [B,H,W,C]
         score = -eps_pred / std

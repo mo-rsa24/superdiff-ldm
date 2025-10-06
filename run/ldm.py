@@ -308,7 +308,8 @@ def main():
                 z = precomputed_z0
             else:
                 posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
-                z = posterior.sample(rng_ae) * args.latent_scale_factor  # or .mode()
+                # z = posterior.sample(rng_ae) * args.latent_scale_factor  # or .mode()
+                z = posterior.sample(rng_ae)
 
             # ε-prediction training
             rng_t, rng_noise = jax.random.split(rng_diff)
