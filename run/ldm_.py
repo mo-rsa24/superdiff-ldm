@@ -27,17 +27,14 @@ from diffusion.sampling import Euler_Maruyama_sampler
 # W&B is optional
 try:
     import wandb
-
     _WANDB = True
 except ImportError:
     wandb = None
     _WANDB = False
 
-
 def ensure_dir(p):
     os.makedirs(p, exist_ok=True)
     return p
-
 
 def parse_args():
     p = argparse.ArgumentParser("JAX Latent Diffusion Model (CXR) Trainer")
@@ -59,14 +56,13 @@ def parse_args():
     p.add_argument("--latent_scale_factor", type=float, default=1.0, help="From stable-diffusion v1.")
 
     # --- LDM UNet Architecture ---
-    p.add_argument("--ldm_ch_mults", type=str, default="1,2,4",
-                   help="Channel multipliers for UNet, relative to base_ch.")
+    p.add_argument("--ldm_ch_mults", type=str, default="1,2,4", help="Channel multipliers for UNet, relative to base_ch.")
     p.add_argument("--ldm_base_ch", type=int, default=128)
     p.add_argument("--ldm_num_res_blocks", type=int, default=2)
     p.add_argument("--ldm_attn_res", type=str, default="16", help="Resolutions for attention blocks, e.g., '16,8'")
 
     # --- Optimizer ---
-    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--lr", type=float, default=1e-5)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--grad_clip", type=float, default=1.0)
     p.add_argument("--epochs", type=int, default=500)
@@ -94,18 +90,16 @@ def load_autoencoder(config_path, ckpt_path):
     with open(config_path, 'r') as f:
         ae_args = json.load(f)
 
-    # --- FIX: Correctly parse ch_mults by incorporating base_ch ---
+    # Correctly parse ch_mults by incorporating base_ch
     if isinstance(ae_args['ch_mults'], str):
         ch_mult_factors = tuple(int(c.strip()) for c in ae_args['ch_mults'].split(',') if c.strip())
-        base_ch = ae_args.get('base_ch', 1)  # Default to 1 if not present, though it should be
+        base_ch = ae_args.get('base_ch', 64)
         ae_ch_mults = tuple(base_ch * m for m in ch_mult_factors)
     else:
         ae_ch_mults = tuple(ae_args['ch_mults'])
 
-    # Also parse attention resolutions correctly
     attn_res = tuple(int(r) for r in ae_args.get('attn_res', '16').split(',') if r)
 
-    # --- FIX: Pass all necessary arguments from ae_args to the model ---
     enc_cfg = dict(ch_mults=ae_ch_mults, num_res_blocks=ae_args['num_res_blocks'], z_ch=ae_args['z_channels'],
                    double_z=True, attn_resolutions=attn_res, in_ch=1)
     dec_cfg = dict(ch_mults=ae_ch_mults, num_res_blocks=ae_args['num_res_blocks'], out_ch=1,
@@ -113,12 +107,12 @@ def load_autoencoder(config_path, ckpt_path):
 
     ae_model = AutoencoderKL(enc_cfg=enc_cfg, dec_cfg=dec_cfg, embed_dim=ae_args['embed_dim'])
 
-    # --- FIX: Use robust loading logic from diagnose_ae.py ---
+    # Robust loading logic
     rng = jax.random.PRNGKey(0)
     fake_img = jnp.ones((1, ae_args['img_size'], ae_args['img_size'], 1))
     ae_variables = ae_model.init({'params': rng, 'dropout': rng}, fake_img, rng=rng)
 
-    # Recreate the optimizer structure from AE training
+    # Recreate the optimizer structure from AE training to load the checkpoint
     def get_ae_tx(lr, grad_clip, weight_decay):
         return optax.chain(
             optax.clip_by_global_norm(grad_clip) if grad_clip > 0 else optax.identity(),
@@ -128,9 +122,7 @@ def load_autoencoder(config_path, ckpt_path):
     tx = get_ae_tx(lr=ae_args.get('lr', 1e-4), grad_clip=ae_args.get('grad_clip', 1.0),
                    weight_decay=ae_args.get('weight_decay', 1e-4))
 
-    # Recreate the structure with both generator and discriminator states to match the saved checkpoint
     gen_params = {'ae': ae_variables['params']}
-
     from losses.lpips_gan import LPIPSWithDiscriminatorJAX, LPIPSGANConfig
     loss_cfg = LPIPSGANConfig(disc_num_layers=ae_args.get('disc_layers', 3))
     loss_mod = LPIPSWithDiscriminatorJAX(loss_cfg)
@@ -149,15 +141,13 @@ def load_autoencoder(config_path, ckpt_path):
     print("Autoencoder loaded successfully.")
     return ae_model, restored_gen_state.params['ae']
 
-
 def main():
     args = parse_args()
     rng = jax.random.PRNGKey(args.seed)
 
     # --- Setup Directories ---
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = args.resume_dir if args.resume_dir else os.path.join(args.output_root,
-                                                                   args.run_name or f"{args.exp_name}-{ts}")
+    run_dir = args.resume_dir if args.resume_dir else os.path.join(args.output_root, args.run_name or f"{args.exp_name}-{ts}")
     ckpt_dir = ensure_dir(os.path.join(run_dir, "ckpts"))
     samples_dir = ensure_dir(os.path.join(run_dir, "samples"))
     ckpt_latest = os.path.join(ckpt_dir, "last.flax")
@@ -176,9 +166,23 @@ def main():
         ds = Subset(base_ds, list(range(min(args.overfit_k, len(base_ds)))))
     else:
         ds = base_ds
-
-    loader_kwargs = {"batch_size": batch_size, "shuffle": not args.overfit_one,
-                     "num_workers": 0 if args.overfit_one else 4, "drop_last": True, "pin_memory": True}
+    if args.overfit_one:
+        print("INFO: Overfitting on one sample. Disabling data loader workers and shuffle.")
+        loader_kwargs = {
+            "batch_size": batch_size,
+            "shuffle": False,  # Not needed for a single repeating item
+            "num_workers": 0,  # CRITICAL: Avoids worker overhead
+            "drop_last": True,
+            "pin_memory": True
+        }
+    else:
+        loader_kwargs = {
+            "batch_size": batch_size,
+            "shuffle": True,
+            "num_workers": 8,
+            "drop_last": True,
+            "pin_memory": True
+        }
     loader = DataLoader(ds, **loader_kwargs)
 
     # --- Load Pretrained Autoencoder ---
@@ -186,11 +190,10 @@ def main():
     ae_params = jax.device_put_replicated(ae_params, jax.local_devices())
 
     # --- Setup LDM UNet ---
-    with open(args.ae_config_path, 'r') as f:
-        ae_args = json.load(f)
+    with open(args.ae_config_path, 'r') as f: ae_args = json.load(f)
     z_channels = ae_args['z_channels']
-
-    # Use the corrected logic to determine downsample_factor
+    # --- ADD THIS BLOCK FOR DIAGNOSTICS ---
+    print("--- Shape & Channel Verification ---")
     if isinstance(ae_args['ch_mults'], str):
         num_downsamples = len(ae_args['ch_mults'].split(',')) - 1
     else:
@@ -198,10 +201,14 @@ def main():
     downsample_factor = 2 ** num_downsamples
     latent_size = args.img_size // downsample_factor
 
+    print(f"AE `z_channels`: {z_channels}")
+    print(f"AE `ch_mults`: {ae_args['ch_mults']}")
+    print(f"Calculated downsample factor: 2^{num_downsamples} = {downsample_factor}")
+    print(f"Expected latent spatial size: {latent_size}x{latent_size}")
+    # --- END DIAGNOSTIC BLOCK ---
     ldm_chans = tuple(args.ldm_base_ch * int(m) for m in args.ldm_ch_mults.split(','))
-    attn_res_ldm = tuple(int(r) for r in args.ldm_attn_res.split(','))
-    ldm_model = ScoreNet(z_channels=z_channels, channels=ldm_chans, num_res_blocks=args.ldm_num_res_blocks,
-                         attn_resolutions=attn_res_ldm)
+    attn_res = tuple(int(r) for r in args.ldm_attn_res.split(','))
+    ldm_model = ScoreNet(z_channels=z_channels, channels=ldm_chans, num_res_blocks=args.ldm_num_res_blocks, attn_resolutions=attn_res)
     rng, init_rng = jax.random.split(rng)
     fake_latent = jnp.ones((1, latent_size, latent_size, z_channels))
     fake_time = jnp.ones((1,))
@@ -219,24 +226,33 @@ def main():
     # --- Setup W&B ---
     use_wandb = bool(args.wandb and _WANDB)
     if use_wandb:
-        wandb.init(project=args.wandb_project, name=args.run_name or f"{args.exp_name}-{ts}", config=args,
-                   tags=args.wandb_tags.split(','))
+        wandb.init(project=args.wandb_project, name=args.run_name or f"{args.exp_name}-{ts}", config=args, tags=args.wandb_tags.split(','))
 
     # --- Define Training Step ---
     def train_step(rng, ldm_state, ae_params, x_batch):
         def loss_fn(ldm_params):
             rng_ae, rng_diff = jax.random.split(rng)
+            jax.debug.print("x_batch_stats | min: {mn}, max: {mx}, mean: {m}",
+                            mn=jnp.min(x_batch), mx=jnp.max(x_batch), m=jnp.mean(x_batch))
             posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
             z = posterior.sample(rng_ae) * args.latent_scale_factor
-            rng_t, rng_noise = jax.random.split(rng_diff)
+            # z = posterior.mode() * args.latent_scale_factor
+            jax.debug.print("z_stats | mean: {m}, std: {d}, min: {mn}, max: {mx}",
+                            m=jnp.mean(z), d=jnp.std(z), mn=jnp.min(z), mx=jnp.max(z))
+            rng_t, rng_noise = jax.random.split(rng_diff) # Use the second key here
             t = jax.random.uniform(rng_t, (z.shape[0],), minval=1e-5, maxval=1.0)
             noise = jax.random.normal(rng_noise, z.shape)
             std = marginal_prob_std_fn(t)
             perturbed_z = z + noise * std[:, None, None, None]
             predicted_noise = ldm_model.apply({'params': ldm_params}, perturbed_z, t)
+            jax.debug.print(
+                "noise_stats | target_mean: {tm}, target_std: {ts} | pred_mean: {pm}, pred_std: {ps}",
+                tm=jnp.mean(noise), ts=jnp.std(noise), pm=jnp.mean(predicted_noise), ps=jnp.std(predicted_noise))
             return jnp.mean((predicted_noise - noise) ** 2)
 
         loss, grads = jax.value_and_grad(loss_fn)(ldm_state.params)
+        grad_norm = optax.global_norm(grads)
+        jax.debug.print("train_step | loss: {l}, grad_norm: {g}", l=loss, g=grad_norm)
         grads = jax.lax.pmean(grads, axis_name='device')
         loss = jax.lax.pmean(loss, axis_name='device')
         new_ldm_state = ldm_state.apply_gradients(grads=grads)
@@ -245,7 +261,7 @@ def main():
     pmapped_train_step = jax.pmap(train_step, axis_name='device')
 
     # --- Training Loop ---
-    global_step = int(ldm_state.step[0]) if hasattr(ldm_state.step, '__len__') else int(ldm_state.step)
+    global_step = int(ldm_state.step[0])
     for ep in range(args.epochs):
         progress_bar = tqdm(loader, desc=f"Epoch {ep + 1}/{args.epochs}", leave=False)
         for batch in progress_bar:
@@ -256,34 +272,53 @@ def main():
             rng, step_rng = jax.random.split(rng)
             rng_sharded = jax.random.split(step_rng, jax.local_device_count())
             ldm_state, loss = pmapped_train_step(rng_sharded, ldm_state, ae_params, x_sharded)
-            global_step += 1
             if global_step % args.log_every == 0:
                 loss_val = np.asarray(loss[0])
+                progress_bar.set_postfix(loss=f"{loss_val:.4f}")
                 unrep_ae_params_dbg = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
                 posterior_dbg = ae_model.apply({'params': unrep_ae_params_dbg}, x_sharded[0], method=ae_model.encode,
                                                train=False)
                 z_dbg = posterior_dbg.sample(jax.random.PRNGKey(global_step)) * args.latent_scale_factor
                 z_mean = float(jnp.mean(z_dbg))
                 z_std = float(jnp.std(z_dbg))
-                progress_bar.set_postfix_str(f"loss={loss_val:.4f} | zμ={z_mean:.3f} zσ={z_std:.3f}")
+                z_min = float(jnp.min(z_dbg))
+                z_max = float(jnp.max(z_dbg))
+                progress_bar.set_postfix_str(
+                    f"loss={loss_val:.4f} | zμ={z_mean:.3f} zσ={z_std:.3f} [{z_min:.3f},{z_max:.3f}]")
                 if use_wandb: wandb.log({"train/loss": loss_val, "train/step": global_step})
+            global_step += 1
 
         # --- Sampling & Checkpointing ---
         if (ep + 1) % args.sample_every == 0:
             print(f"Sampling at epoch {ep + 1}...")
             rng, sample_rng = jax.random.split(rng)
+
+            # Get a single replica of the model parameters for inference
             unrep_ldm_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ldm_state.params))
             unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
+
+            # Call the sampler with the correct arguments
             samples_grid = Euler_Maruyama_sampler(
-                rng=sample_rng, ldm_model=ldm_model, ldm_params=unrep_ldm_params,
-                ae_model=ae_model, ae_params=unrep_ae_params,
-                marginal_prob_std_fn=marginal_prob_std_fn, diffusion_coeff_fn=diffusion_coeff_fn,
-                latent_size=latent_size, batch_size=args.sample_batch_size, z_channels=z_channels,
+                rng=sample_rng,
+                ldm_model=ldm_model,
+                ldm_params=unrep_ldm_params,
+                ae_model=ae_model,
+                ae_params=unrep_ae_params,
+                marginal_prob_std_fn=marginal_prob_std_fn,
+                diffusion_coeff_fn=diffusion_coeff_fn,
+                latent_size=latent_size,
+                batch_size=args.sample_batch_size,
+                z_channels=z_channels,
                 z_std=(1.0 / args.latent_scale_factor)
             )
+
+            # Save the returned image grid
             out_path = os.path.join(samples_dir, f"sample_ep{ep + 1:04d}.png")
             save_image(samples_grid, out_path)
-            if use_wandb: wandb.log({"samples": wandb.Image(out_path), "epoch": ep + 1})
+
+            # Log to WandB if enabled
+            if use_wandb:
+                wandb.log({"samples": wandb.Image(out_path), "epoch": ep + 1})
 
         # Save checkpoint
         unrep_state = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ldm_state))
@@ -292,7 +327,6 @@ def main():
 
     if use_wandb: wandb.finish()
     print(f"Training complete. Artifacts saved to: {run_dir}")
-
 
 if __name__ == "__main__":
     tf.config.experimental.set_visible_devices([], "GPU")
