@@ -190,7 +190,8 @@ def Euler_Maruyama_sampler(
         x_mean = x - drift * step_size
         x = x_mean + diffusion * jnp.sqrt(step_size)
     final_z_for_decode = x # The sampler already produces a latent at the correct scale
-    x_hat = ae_model.apply({'params': ae_params}, final_z_for_decode, method=ae_model.decode, train=False)
+    z_for_decode = final_z_for_decode * z_std
+    x_hat = ae_model.apply({'params': ae_params}, z_for_decode, method=ae_model.decode, train=False)
     x_hat = jnp.clip(x_hat, 0., 1.)
     x_hat = jnp.transpose(x_hat, (0, 3, 1, 2)) # NHWC -> NCHW
     x_hat_t = torch.from_numpy(np.asarray(x_hat))
