@@ -32,7 +32,7 @@ export LDM_NUM_RES_BLOCKS="2"
 export LDM_ATTN_RES="16,8"
 
 # Use the new, more robust scale factor you calculated!
-export LATENT_SCALE_FACTOR="YOUR_NEW_SCALE_FACTOR"
+export LATENT_SCALE_FACTOR="1.861066"
 
 # ────────────────────────────────────────────────────────────────────────────────
 # OPTIMIZER / SCHEDULING (tuned for full dataset)
