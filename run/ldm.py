@@ -414,8 +414,8 @@ def main():
                 x_mid_t = torch.from_numpy(np.asarray(x_mid))
                 save_image(x_mid_t, os.path.join(samples_dir, f"sanityB_decode_noisy_latent_ep{ep + 1:04d}.png"))
 
-            open_block("sample", step=global_step, epoch=ep + 1, note="Euler–Maruyama (PF-ODE)")
-            samples_grid = Euler_Maruyama_sampler(
+            open_block("sample", step=global_step, epoch=ep + 1, note="Euler-Maruyama SDE Sampler")
+            samples_grid, final_latent = Euler_Maruyama_sampler(
                 rng=sample_rng,
                 ldm_model=ldm_model,
                 ldm_params=unrep_ldm_params,
@@ -428,6 +428,15 @@ def main():
                 z_channels=z_channels,
                 z_std=(1.0 / args.latent_scale_factor)
             )
+            final_latent_np = np.asarray(final_latent)
+            stats = {
+                "mean": np.mean(final_latent_np),
+                "std": np.std(final_latent_np),
+                "min": np.min(final_latent_np),
+                "max": np.max(final_latent_np),
+            }
+            pretty_table("final_latent_stats", stats)
+            close_block("sample", step=global_step)
             out_path = os.path.join(samples_dir, f"sample_ep{ep + 1:04d}.png")
             save_image(samples_grid, out_path)
             close_block("sample", step=global_step)

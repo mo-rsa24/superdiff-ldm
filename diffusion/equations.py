@@ -1,8 +1,8 @@
-import jax.numpy as jnp
 import numpy as np
 from jax import *
 from numpy import ndarray
-import functools
+import jax.numpy as jnp
+from jax import vmap
 
 beta_0 = 0.1
 beta_1 = 20.0
@@ -13,7 +13,10 @@ log_sigma = lambda t: jnp.log(t)
 dlog_alphadt = jax.grad(lambda t: log_alpha(t).sum())
 dlog_sigmadt = jax.grad(lambda t: log_sigma(t).sum())
 
-beta = lambda t: (1 + 0.5*t*beta_0 + 0.5*t**2*(beta_1-beta_0)) # Controls how fast noise is added to data
+def beta(t):
+  """Defines the linear noise schedule beta(t)."""
+  return beta_0 + t * (beta_1 - beta_0)
+
 diffusion = lambda dt, state, t, trajectory_at_time_t, xi: -dt * vector_field(state, t, trajectory_at_time_t, xi)
 drift = lambda t, noise, dt:jnp.sqrt(2*jnp.exp(log_sigma(t))*beta(t)*dt) * noise
 
@@ -177,23 +180,18 @@ def get_kappa(t, divlogs, sdlogdxs):
 
 def marginal_prob_std(t):
   """
-  Computes the standard deviation of the perturbation kernel q(x_t | x_0).
-  std(t) = sqrt(1 - alpha_bar(t))
+  Computes the standard deviation of the marginal probability p_0t(x(t)|x(0)),
+  which is sqrt(1 - exp(2 * log_alpha(t))). This is the stable, correct formula.
   """
-  log_alpha_bar = _log_alpha_bar_cosine(t)
-  return jnp.sqrt(1.0 - jnp.exp(log_alpha_bar))
+  log_alpha_t = -0.25 * t ** 2 * (beta_1 - beta_0) - 0.5 * t * beta_0
+  return jnp.sqrt(1. - jnp.exp(2. * log_alpha_t))
 
 
 
 def diffusion_coeff(t):
-  """
-  Computes the diffusion coefficient of the SDE, g(t).
-  g(t)^2 = beta(t) = -d/dt log alpha_bar(t)
-  """
-  # Ensure beta_t is non-negative
-  beta_t = -_dlogab_dt(t)
-  return jnp.sqrt(jnp.maximum(beta_t, 1e-12))
+  """Computes the diffusion coefficient g(t), which is sqrt(beta(t))."""
+  return jnp.sqrt(beta(t))
 
 sigma = 12.0
-marginal_prob_std_fn = marginal_prob_std
-diffusion_coeff_fn = diffusion_coeff
+marginal_prob_std_fn = vmap(marginal_prob_std)
+diffusion_coeff_fn = vmap(diffusion_coeff)

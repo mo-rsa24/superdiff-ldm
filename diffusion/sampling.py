@@ -159,19 +159,17 @@ from torchvision.utils import make_grid, save_image
 
 
 def Euler_Maruyama_sampler(
-        rng, ldm_model, ldm_params, ae_model, ae_params,
-        marginal_prob_std_fn, diffusion_coeff_fn,
-        latent_size, batch_size, z_channels, z_std=1.0,
-        n_steps=200, eps=1e-5):
+    rng, ldm_model, ldm_params, ae_model, ae_params,
+    marginal_prob_std_fn, diffusion_coeff_fn,
+    latent_size, batch_size, z_channels, z_std=1.0,
+    n_steps=300, eps=1e-3  # Use eps=1e-3 for stability with this SDE
+):
     """
-    Corrected Euler-Maruyama sampler for the reverse-time SDE with rich logging.
+    Corrected Euler-Maruyama sampler using the correct reverse-time SDE.
     """
-    print("Running CORRECTED Euler-Maruyama sampler with rich logging...")
-
-    # Initial state is random noise
+    print("Running CORRECTED Euler-Maruyama sampler with stable equations...")
     rng, step_rng = jax.random.split(rng)
     init_x = jax.random.normal(step_rng, (batch_size, latent_size, latent_size, z_channels))
-    # Scale by the standard deviation at t=1
     init_x = init_x * marginal_prob_std_fn(jnp.ones(batch_size))[:, None, None, None]
 
     time_steps = jnp.linspace(1., eps, n_steps)
@@ -183,64 +181,22 @@ def Euler_Maruyama_sampler(
         vec_t = jnp.ones(batch_size) * t
         g = diffusion_coeff_fn(vec_t)
 
-        # --- CORRECTED CALCULATION ---
-        # 1. Stabilize the score division to prevent nan values
         std = marginal_prob_std_fn(vec_t)
-        # Add a small epsilon for numerical stability
-        safe_std = std[:, None, None, None] + 1e-8
         predicted_noise = ldm_model.apply({'params': ldm_params}, x, vec_t)
-        score = -predicted_noise / safe_std
+        score = -predicted_noise / (std[:, None, None, None] + 1e-8)
+        drift = -0.5 * beta(vec_t)[:, None, None, None] * x - (g**2)[:, None, None, None] * score
 
-        # 2. Correct the drift term for the reverse SDE (VP-SDE)
-        drift = -0.5 * (g ** 2)[:, None, None, None] * score
-
-        # --- UPDATE STEP (Predictor) ---
+        diffusion = g[:, None, None, None] * jax.random.normal(step_rng, x.shape)
         x_mean = x - drift * step_size
-
-        # --- CORRECTION STEP ---
-        diffusion = g[:, None, None, None] * jnp.sqrt(step_size) * jax.random.normal(step_rng, x.shape)
-        x = x_mean + diffusion
-
-    # --- DIAGNOSTICS & DECODING ---
-    from run.ldm import pretty_table, open_block, close_block
-    open_block("SAMPLER", step=-1, epoch=-1, note="end-of-trajectory stats")
-
-    # 1. Stats for the final latent z @ t≈0
-    z_final_metrics = {
-        "mean": jnp.mean(x),
-        "std": jnp.std(x),
-        "min": jnp.min(x),
-        "max": jnp.max(x),
-    }
-    pretty_table("latent z @ t≈0", z_final_metrics)
-
-    # 2. Decode the final latents to get the image
-    # The division by z_std is a scaling step specific to this architecture
-    final_z_for_decode = x / z_std
-    x_hat = ae_model.apply(
-        {'params': ae_params},
-        final_z_for_decode,
-        method=ae_model.decode,
-        train=False
-    )
-
-    # 3. Stats for the decoded image
-    image_metrics = {
-        "mean": jnp.mean(x_hat),
-        "std": jnp.std(x_hat),
-        "min": jnp.min(x_hat),
-        "max": jnp.max(x_hat),
-    }
-    pretty_table("decoded image", image_metrics)
-
-    close_block("SAMPLER", step=-1)
-
-    # 4. Final processing for saving
+        x = x_mean + diffusion * jnp.sqrt(step_size)
+    final_z_for_decode = x # The sampler already produces a latent at the correct scale
+    x_hat = ae_model.apply({'params': ae_params}, final_z_for_decode, method=ae_model.decode, train=False)
     x_hat = jnp.clip(x_hat, 0., 1.)
-    x_hat = jnp.transpose(x_hat, (0, 3, 1, 2))  # NHWC -> NCHW for saving
+    x_hat = jnp.transpose(x_hat, (0, 3, 1, 2)) # NHWC -> NCHW
     x_hat_t = torch.from_numpy(np.asarray(x_hat))
 
-    return x_hat_t
+    grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
+    return grid, x
 
 def Euler_Maruyama_sampler_(
     rng,
