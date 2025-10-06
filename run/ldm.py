@@ -36,6 +36,37 @@ def ensure_dir(p):
     os.makedirs(p, exist_ok=True)
     return p
 
+# Pretty logger (Rich → fallback)
+try:
+    from rich.console import Console
+    from rich.table import Table
+    _RICH = True
+    _console = Console(log_time=False, log_path=False)
+    def pretty_table(title, metrics: dict):
+        table = Table(title=title, show_header=True, header_style="bold magenta")
+        table.add_column("Metric", justify="left")
+        table.add_column("Value", justify="right")
+        for k, v in metrics.items():
+            if isinstance(v, (float, int)):
+                table.add_row(k, f"{v:.6f}" if isinstance(v, float) else str(v))
+            else:
+                table.add_row(k, str(v))
+        _console.print(table)
+except Exception:
+    _RICH = False
+    def pretty_table(title, metrics: dict):
+        keys = list(metrics.keys())
+        w = max(len(k) for k in keys) if keys else 10
+        print("\n" + "=" * (w + 22))
+        print(f"{title}")
+        print("-" * (w + 22))
+        for k in keys:
+            v = metrics[k]
+            if isinstance(v, float):
+                v = f"{v:.6f}"
+            print(f"{k:<{w}} : {v}")
+        print("=" * (w + 22))
+
 
 def parse_args():
     p = argparse.ArgumentParser("JAX Latent Diffusion Model (CXR) Trainer")
@@ -144,6 +175,8 @@ def load_autoencoder(config_path, ckpt_path):
 
 def main():
     args = parse_args()
+    print(f"[config] latent_scale_factor = {args.latent_scale_factor}")
+
     rng = jax.random.PRNGKey(args.seed)
 
     # --- Setup Directories ---
@@ -249,15 +282,8 @@ def main():
             if precomputed_z0 is not None:
                 z = precomputed_z0
             else:
-                # Regular path: encode each batch to latents and sample
-                jax.debug.print("x_batch_stats | min: {mn}, max: {mx}, mean: {m}",
-                                mn=jnp.min(x_batch), mx=jnp.max(x_batch), m=jnp.mean(x_batch))
                 posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
-                z = posterior.sample(rng_ae) * args.latent_scale_factor
-                # Or deterministic: z = posterior.mode() * args.latent_scale_factor
-
-            jax.debug.print("z_stats | mean: {m}, std: {d}, min: {mn}, max: {mx}",
-                            m=jnp.mean(z), d=jnp.std(z), mn=jnp.min(z), mx=jnp.max(z))
+                z = posterior.sample(rng_ae) * args.latent_scale_factor  # or .mode()
 
             # ε-prediction training
             rng_t, rng_noise = jax.random.split(rng_diff)
@@ -266,21 +292,29 @@ def main():
             std = marginal_prob_std_fn(t)
             perturbed_z = z + noise * std[:, None, None, None]
             predicted_noise = ldm_model.apply({'params': ldm_params}, perturbed_z, t)
-            jax.debug.print(
-                "noise_stats | target_mean: {tm}, target_std: {ts} | pred_mean: {pm}, pred_std: {ps}",
-                tm=jnp.mean(noise), ts=jnp.std(noise), pm=jnp.mean(predicted_noise), ps=jnp.std(predicted_noise)
-            )
-            return jnp.mean((predicted_noise - noise) ** 2)
 
-        loss, grads = jax.value_and_grad(loss_fn)(ldm_state.params)
+            loss = jnp.mean((predicted_noise - noise) ** 2)
+
+            # aux metrics (scalars) — pmean-able pytree
+            aux = {
+                "z_mean": jnp.mean(z), "z_std": jnp.std(z), "z_min": jnp.min(z), "z_max": jnp.max(z),
+                "target_mean": jnp.mean(noise), "target_std": jnp.std(noise),
+                "pred_mean": jnp.mean(predicted_noise), "pred_std": jnp.std(predicted_noise),
+            }
+            return loss, aux
+
+        (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(ldm_state.params)
         grad_norm = optax.global_norm(grads)
-        jax.debug.print("train_step | loss: {l}, grad_norm: {g}", l=loss, g=grad_norm)
-        grads = jax.lax.pmean(grads, axis_name='device')
+        # include grad_norm in aux and average across devices
+        aux = jax.tree_util.tree_map(lambda x: jax.lax.pmean(x, axis_name='device'), aux)
+        aux = {**aux, "grad_norm": jax.lax.pmean(grad_norm, axis_name='device')}
         loss = jax.lax.pmean(loss, axis_name='device')
+
         new_ldm_state = ldm_state.apply_gradients(grads=grads)
-        return new_ldm_state, loss
+        return new_ldm_state, loss, aux
 
     pmapped_train_step = jax.pmap(train_step, axis_name='device')
+
 
     # --- Training Loop ---
     global_step = int(ldm_state.step[0])
@@ -295,20 +329,22 @@ def main():
 
             rng, step_rng = jax.random.split(rng)
             rng_sharded = jax.random.split(step_rng, jax.local_device_count())
-            ldm_state, loss = pmapped_train_step(rng_sharded, ldm_state, ae_params, x_sharded, precomputed_z0)
+            # ldm_state, loss = pmapped_train_step(rng_sharded, ldm_state, ae_params, x_sharded, precomputed_z0)
+            ldm_state, loss, aux = pmapped_train_step(rng_sharded, ldm_state, ae_params, x_sharded, precomputed_z0)
 
             if global_step % args.log_every == 0:
-                loss_val = np.asarray(loss[0])
-                progress_bar.set_postfix(loss=f"{loss_val:.4f}")
-                # quick z-stats peek for the first shard
-                unrep_ae_params_dbg = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
-                posterior_dbg = ae_model.apply({'params': unrep_ae_params_dbg}, x_sharded[0], method=ae_model.encode, train=False)
-                z_dbg = posterior_dbg.sample(jax.random.PRNGKey(global_step)) * args.latent_scale_factor
-                z_mean = float(jnp.mean(z_dbg))
-                z_std = float(jnp.std(z_dbg))
-                z_min = float(jnp.min(z_dbg))
-                z_max = float(jnp.max(z_dbg))
-                progress_bar.set_postfix_str(f"loss={loss_val:.4f} | zμ={z_mean:.3f} zσ={z_std:.3f} [{z_min:.3f},{z_max:.3f}]")
+                loss_val = float(np.asarray(loss[0]))
+                aux_host = jax.tree_map(lambda x: float(np.asarray(x[0])), aux)  # take device 0
+                metrics = {
+                    "step": global_step,
+                    "loss": loss_val,
+                    "grad_norm": aux_host["grad_norm"],
+                    "z.mean": aux_host["z_mean"], "z.std": aux_host["z_std"],
+                    "z.min": aux_host["z_min"], "z.max": aux_host["z_max"],
+                    "ε.target_mean": aux_host["target_mean"], "ε.target_std": aux_host["target_std"],
+                    "ε.pred_mean": aux_host["pred_mean"], "ε.pred_std": aux_host["pred_std"],
+                }
+                pretty_table("train step", metrics)
                 if use_wandb:
                     wandb.log({"train/loss": loss_val, "train/step": global_step})
             global_step += 1
@@ -316,13 +352,40 @@ def main():
         # --- Sampling & Checkpointing ---
         if (ep + 1) % args.sample_every == 0:
             print(f"Sampling at epoch {ep + 1}...")
+            print(f"[sampling] using z_std = {1.0 / args.latent_scale_factor}")
+
             rng, sample_rng = jax.random.split(rng)
 
             # Unreplicate params for inference
             unrep_ldm_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ldm_state.params))
             unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
 
-            # Use corrected Euler–Maruyama PF-ODE sampler
+            # --- sanity A: decode the fixed training latent (z0) directly ---
+            if precomputed_z0 is not None:
+                # take device-0 slice and undo sharding
+                z0_host = jax.device_get(precomputed_z0[0, 0:1, ...])  # shape (1,H,W,C) on host
+                # IMPORTANT: the AE expects latents divided by the scale factor
+                z0_for_decode = z0_host / args.latent_scale_factor
+                x0_hat = ae_model.apply({'params': unrep_ae_params}, z0_for_decode, method=ae_model.decode, train=False)
+                x0_hat = jnp.clip(x0_hat, 0., 1.)
+                x0_hat = jnp.transpose(x0_hat, (0, 3, 1, 2))  # NHWC -> NCHW
+                x0_hat_t = torch.from_numpy(np.asarray(x0_hat))
+                save_image(x0_hat_t, os.path.join(samples_dir, f"sanityA_recon_z0_ep{ep + 1:04d}.png"))
+
+            # --- sanity B: decode a noisy latent at mid-time (t=0.5) ---
+            if precomputed_z0 is not None:
+                mid_t = jnp.ones((1,)) * 0.5
+                std_mid = marginal_prob_std_fn(mid_t)[0]
+                rng_tmp = jax.random.PRNGKey(123)
+                noisy = z0_host + std_mid * jax.random.normal(rng_tmp, z0_host.shape)
+                noisy_for_decode = noisy / args.latent_scale_factor
+                x_mid = ae_model.apply({'params': unrep_ae_params}, noisy_for_decode, method=ae_model.decode,
+                                       train=False)
+                x_mid = jnp.clip(x_mid, 0., 1.)
+                x_mid = jnp.transpose(x_mid, (0, 3, 1, 2))
+                x_mid_t = torch.from_numpy(np.asarray(x_mid))
+                save_image(x_mid_t, os.path.join(samples_dir, f"sanityB_decode_noisy_latent_ep{ep + 1:04d}.png"))
+
             samples_grid = Euler_Maruyama_sampler(
                 rng=sample_rng,
                 ldm_model=ldm_model,

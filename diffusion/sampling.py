@@ -9,6 +9,7 @@ from diffusion.equations import diffusion, drift, score_function_hutchinson_esti
     dlogqdt, marginal_prob_std_fn, diffusion_coeff_fn
 
 
+
 def _sum_except_batch(x):
     axes = tuple(range(1, x.ndim))
     return jnp.sum(x, axis=axes, keepdims=True)
@@ -165,7 +166,7 @@ def Euler_Maruyama_sampler(
     ae_params,
     marginal_prob_std_fn,
     diffusion_coeff_fn,
-    n_steps=150,
+    n_steps=300,
     latent_size=32,
     batch_size=16,
     z_std=1.0,
@@ -201,11 +202,20 @@ def Euler_Maruyama_sampler(
 
     # Unscale to the AE latent scale then decode to image space
     z = z * z_std
-    decoded = ae_model.apply({'params': ae_params}, z, method=ae_model.decode, train=False)
-    decoded = jnp.clip(decoded, 0.0, 1.0)                   # images in [0,1]
-    decoded = jnp.transpose(decoded, (0, 3, 1, 2))          # NHWC -> NCHW for grid
+    # Debug: what are we decoding?
+    from run.ldm import pretty_table
+    z_stats = dict(mean=float(jnp.mean(z)), std=float(jnp.std(z)),
+                   min=float(jnp.min(z)), max=float(jnp.max(z)))
+    pretty_table("sampler | latent z @ t≈0", z_stats)
 
-    samples_torch = torch.from_numpy(np.asarray(jax.device_get(decoded)))
+    decoded = ae_model.apply({'params': ae_params}, z, method=ae_model.decode, train=False)
+    decoded = jnp.clip(decoded, 0.0, 1.0)
+    decoded_nchw = jnp.transpose(decoded, (0, 3, 1, 2))
+    img_stats = dict(mean=float(jnp.mean(decoded)), std=float(jnp.std(decoded)),
+                     min=float(jnp.min(decoded)), max=float(jnp.max(decoded)))
+    pretty_table("sampler | decoded image", img_stats)
+
+    samples_torch = torch.from_numpy(np.asarray(jax.device_get(decoded_nchw)))
     grid = make_grid(samples_torch, nrow=int(jnp.sqrt(batch_size)), padding=2, normalize=False)
     return grid
 
