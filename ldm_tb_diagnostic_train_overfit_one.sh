@@ -34,7 +34,7 @@ export IMG_SIZE="256"              # matches AE training
 # ────────────────────────────────────────────────────────────────────────────────
 export OVERFIT_ONE="1"             # enable fixed-latent path in ldm.py
 export OVERFIT_K="0"
-export REPEAT_LEN="400"            # virtual length for the repeated single sample
+export REPEAT_LEN="200"            # virtual length for the repeated single sample
 
 # IMPORTANT: use COMMAS (ldm.py splits on ',')
 export LDM_CH_MULTS="1,2,4,4"
