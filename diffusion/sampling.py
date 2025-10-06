@@ -203,17 +203,20 @@ def Euler_Maruyama_sampler(
     # Unscale to the AE latent scale then decode to image space
     z = z * z_std
     # Debug: what are we decoding?
-    from run.ldm import pretty_table
+    from run.ldm import pretty_table, open_block, close_block
+    open_block("sampler", step=-1, epoch=-1, note="end-of-trajectory stats")
+
     z_stats = dict(mean=float(jnp.mean(z)), std=float(jnp.std(z)),
                    min=float(jnp.min(z)), max=float(jnp.max(z)))
-    pretty_table("sampler | latent z @ t≈0", z_stats)
+    pretty_table("latent z @ t≈0", z_stats)
 
     decoded = ae_model.apply({'params': ae_params}, z, method=ae_model.decode, train=False)
     decoded = jnp.clip(decoded, 0.0, 1.0)
     decoded_nchw = jnp.transpose(decoded, (0, 3, 1, 2))
     img_stats = dict(mean=float(jnp.mean(decoded)), std=float(jnp.std(decoded)),
                      min=float(jnp.min(decoded)), max=float(jnp.max(decoded)))
-    pretty_table("sampler | decoded image", img_stats)
+    pretty_table("decoded image", img_stats)
+    close_block("sampler", step=-1)
 
     samples_torch = torch.from_numpy(np.asarray(jax.device_get(decoded_nchw)))
     grid = make_grid(samples_torch, nrow=int(jnp.sqrt(batch_size)), padding=2, normalize=False)

@@ -36,36 +36,61 @@ def ensure_dir(p):
     os.makedirs(p, exist_ok=True)
     return p
 
-# Pretty logger (Rich → fallback)
+# ── Pretty + parseable step blocks ─────────────────────────────────────────────
+from datetime import datetime
+
 try:
     from rich.console import Console
     from rich.table import Table
+    from rich.rule import Rule
     _RICH = True
     _console = Console(log_time=False, log_path=False)
-    def pretty_table(title, metrics: dict):
+except Exception:
+    _RICH = False
+    _console = None
+
+def _now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def open_block(kind: str, step: int = None, epoch: int = None, note: str = ""):
+    tag = f"{kind.upper()} | step={step} epoch={epoch} time={_now()}"
+    # machine-parsable sentinels (easy to grep):
+    print(f"\n<<<{kind.upper()}_BEGIN step={step} epoch={epoch}>>>", flush=True)
+    if _RICH:
+        _console.rule(f"[bold cyan]{tag}")
+        if note:
+            _console.print(note, style="dim")
+    else:
+        print("=" * 100)
+        print(tag)
+        if note: print(note)
+        print("-" * 100)
+    # keep stdout unbuffered on clusters: export PYTHONUNBUFFERED=1
+
+def close_block(kind: str, step: int = None):
+    tag = f"END {kind.upper()} | step={step} time={_now()}"
+    if _RICH:
+        _console.rule(f"[bold cyan]{tag}")
+    else:
+        print("-" * 100)
+    print(f"<<<{kind.upper()}_END step={step}>>>", flush=True)
+
+def pretty_table(title: str, metrics: dict):
+    if _RICH:
         table = Table(title=title, show_header=True, header_style="bold magenta")
         table.add_column("Metric", justify="left")
         table.add_column("Value", justify="right")
         for k, v in metrics.items():
-            if isinstance(v, (float, int)):
-                table.add_row(k, f"{v:.6f}" if isinstance(v, float) else str(v))
-            else:
-                table.add_row(k, str(v))
+            table.add_row(k, f"{float(v):.6f}" if isinstance(v, (float, int)) else str(v))
         _console.print(table)
-except Exception:
-    _RICH = False
-    def pretty_table(title, metrics: dict):
+    else:
         keys = list(metrics.keys())
         w = max(len(k) for k in keys) if keys else 10
-        print("\n" + "=" * (w + 22))
         print(f"{title}")
-        print("-" * (w + 22))
         for k in keys:
             v = metrics[k]
-            if isinstance(v, float):
-                v = f"{v:.6f}"
+            v = f"{float(v):.6f}" if isinstance(v, (float, int)) else str(v)
             print(f"{k:<{w}} : {v}")
-        print("=" * (w + 22))
 
 
 def parse_args():
@@ -344,7 +369,9 @@ def main():
                     "ε.target_mean": aux_host["target_mean"], "ε.target_std": aux_host["target_std"],
                     "ε.pred_mean": aux_host["pred_mean"], "ε.pred_std": aux_host["pred_std"],
                 }
-                pretty_table("train step", metrics)
+                open_block("train", step=global_step, epoch=ep + 1, note="per-device means (pmean)")
+                pretty_table("train/metrics", metrics)
+                close_block("train", step=global_step)
                 if use_wandb:
                     wandb.log({"train/loss": loss_val, "train/step": global_step})
             global_step += 1
@@ -386,6 +413,7 @@ def main():
                 x_mid_t = torch.from_numpy(np.asarray(x_mid))
                 save_image(x_mid_t, os.path.join(samples_dir, f"sanityB_decode_noisy_latent_ep{ep + 1:04d}.png"))
 
+            open_block("sample", step=global_step, epoch=ep + 1, note="Euler–Maruyama (PF-ODE)")
             samples_grid = Euler_Maruyama_sampler(
                 rng=sample_rng,
                 ldm_model=ldm_model,
@@ -399,9 +427,9 @@ def main():
                 z_channels=z_channels,
                 z_std=(1.0 / args.latent_scale_factor)
             )
-
             out_path = os.path.join(samples_dir, f"sample_ep{ep + 1:04d}.png")
             save_image(samples_grid, out_path)
+            close_block("sample", step=global_step)
             if use_wandb:
                 wandb.log({"samples": wandb.Image(out_path), "epoch": ep + 1})
 
