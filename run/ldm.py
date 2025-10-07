@@ -136,7 +136,13 @@ def parse_args():
     p.add_argument("--img_size", type=int, default=256)
     p.add_argument("--class_filter", type=int, default=1,
                    help="Optional: keep a class index only (e.g., 1 for disease, 0 for normal)")
-    p.add_argument("--overfit_one", action="store_true", help="Repeat a single sample to overfit.")
+    # p.add_argument("--overfit_one", action="store_true", help="Repeat a single sample to overfit.")
+    p.add_argument(
+        "--overfit_one",
+        type=bool,
+        default=False,
+        help="Overfit on a single batch of data."
+    )
     p.add_argument("--overfit_k", type=int, default=0, help="If >0, train on a fixed tiny subset of size K.")
     p.add_argument("--repeat_len", type=int, default=500,
                    help="Virtual length for the repeated one-sample dataset.")
