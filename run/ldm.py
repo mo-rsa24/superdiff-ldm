@@ -323,8 +323,13 @@ def main():
     # --- Setup W&B ---
     use_wandb = bool(args.wandb and _WANDB)
     if use_wandb:
+        tags = []
+        if args.wandb_tags:  # Check if the string is not None and not empty
+            tags = [tag.strip() for tag in args.wandb_tags.split(',') if tag.strip()]
+        if not tags:
+            tags = None
         wandb.init(project=args.wandb_project, name=args.run_name or f"{args.exp_name}-{ts}",
-                   config=args, tags=args.wandb_tags.split(','))
+                   config=args, tags=tags)
 
     # ---------------------------------------------------------
     # Precompute a fixed latent z0 for overfit-one (deterministic)
