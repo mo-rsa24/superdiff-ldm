@@ -6,8 +6,8 @@ metric:
 parameters:
   lr:
     distribution: log_uniform_values
-    min: 1e-5
-    max: 5e-4
+    min: 0.00001
+    max: 0.0005
   weight_decay:
     distribution: uniform
     min: 0.0
