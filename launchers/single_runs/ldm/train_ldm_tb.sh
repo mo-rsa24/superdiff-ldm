@@ -24,6 +24,8 @@ shift # Shift away the TRAINING_MODE argument
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --lr) LR="$2"; shift ;;
+        --weight-decay) WEIGHT_DECAY="$2"; shift ;;
+        --ldm-base-ch) LDM_BASE_CH="$2"; shift ;;
         --job-name) SLURM_JOB_NAME="$2"; shift ;;
         --partition) SLURM_PARTITION="$2"; shift ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
@@ -46,6 +48,8 @@ export WANDB_TAGS="ldm,${TASK,,},${TRAINING_MODE}"
 # --- Submit to SLURM ---
 echo "Submitting LDM Training for ${TASK} (${TRAINING_MODE})"
 echo "  LR: ${LR}"
+echo "  Weight Decay: ${WEIGHT_DECAY}"
+echo "  LDM Base CH: ${LDM_BASE_CH}"
 echo "  SLURM Job Name: ${SLURM_JOB_NAME}"
 echo "  SLURM Partition: ${SLURM_PARTITION}"
 
