@@ -162,7 +162,7 @@ def Euler_Maruyama_sampler(
     rng, ldm_model, ldm_params, ae_model, ae_params,
     marginal_prob_std_fn, diffusion_coeff_fn,
     latent_size, batch_size, z_channels, z_std=1.0,
-    n_steps=300, eps=1e-3  # Use eps=1e-3 for stability with this SDE
+    n_steps=1000, eps=1e-3  # Use eps=1e-3 for stability with this SDE
 ):
     """
     Corrected Euler-Maruyama sampler using the correct reverse-time SDE.
@@ -176,8 +176,8 @@ def Euler_Maruyama_sampler(
     step_size = time_steps[0] - time_steps[1]
     x = init_x
 
-    for t in tqdm(time_steps, desc="Sampling"):
-        rng, step_rng = jax.random.split(rng)
+    for i, t in enumerate(tqdm(time_steps, desc="Sampling")):
+        step_key = jax.random.fold_in(rng, i)
         vec_t = jnp.ones(batch_size) * t
         g = diffusion_coeff_fn(vec_t)
 
@@ -186,7 +186,7 @@ def Euler_Maruyama_sampler(
         score = -predicted_noise / (std[:, None, None, None] + 1e-8)
         drift = -0.5 * beta(vec_t)[:, None, None, None] * x - (g**2)[:, None, None, None] * score
 
-        diffusion = g[:, None, None, None] * jax.random.normal(step_rng, x.shape)
+        diffusion = g[:, None, None, None] * jax.random.normal(step_key, x.shape)
         x_mean = x - drift * step_size
         x = x_mean + diffusion * jnp.sqrt(step_size)
     final_z_for_decode = x # The sampler already produces a latent at the correct scale

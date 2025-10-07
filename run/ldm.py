@@ -2,8 +2,6 @@
 import argparse
 import os
 import json
-from datetime import datetime
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -92,6 +90,40 @@ def pretty_table(title: str, metrics: dict):
             v = f"{float(v):.6f}" if isinstance(v, (float, int)) else str(v)
             print(f"{k:<{w}} : {v}")
 
+def log_sample_diversity(samples_np: np.ndarray, step: int, epoch: int):
+    """Calculates and logs pairwise MSE to check for sample collapse."""
+    if samples_np.ndim != 4:
+        raise ValueError(f"Expected samples_np to be 4D (B, H, W, C), but got {samples_np.shape}")
+    if samples_np.shape[0] <= 1:
+        print("[diversity] Batch size is 1, skipping diversity check.")
+        return
+
+    batch_size = samples_np.shape[0]
+    # Flatten each image into a vector
+    flattened_samples = samples_np.reshape(batch_size, -1)
+
+    # Calculate pairwise Mean Squared Error (MSE)
+    # Using broadcasting for an efficient calculation: (a - b)^2 = a^2 - 2ab + b^2
+    sum_sq = np.sum(flattened_samples**2, axis=1, keepdims=True)
+    dot_prod = flattened_samples @ flattened_samples.T
+    # mse[i, j] = mean((img[i] - img[j])^2)
+    mse_matrix = (sum_sq + sum_sq.T - 2 * dot_prod) / flattened_samples.shape[1]
+
+    # We only need the upper triangle of the matrix (excluding the diagonal)
+    # as the matrix is symmetric and mse(i, i) is 0.
+    indices = np.triu_indices(batch_size, k=1)
+    pairwise_mse_vals = mse_matrix[indices]
+
+    metrics = {
+        "pairwise_mse_mean": float(np.mean(pairwise_mse_vals)),
+        "pairwise_mse_std": float(np.std(pairwise_mse_vals)),
+        "pairwise_mse_min": float(np.min(pairwise_mse_vals)),
+        "pairwise_mse_max": float(np.max(pairwise_mse_vals)),
+    }
+
+    open_block("diversity", step=step, epoch=epoch, note="Pairwise MSE between generated samples in the batch")
+    pretty_table("sample_diversity/metrics", metrics)
+    close_block("diversity", step=step)
 
 def parse_args():
     p = argparse.ArgumentParser("JAX Latent Diffusion Model (CXR) Trainer")
@@ -415,6 +447,8 @@ def main():
                 save_image(x_mid_t, os.path.join(samples_dir, f"sanityB_decode_noisy_latent_ep{ep + 1:04d}.png"))
 
             open_block("sample", step=global_step, epoch=ep + 1, note="Euler-Maruyama SDE Sampler")
+            sample_rng = jax.random.fold_in(rng, ep + 1)
+            sample_rng = jax.random.fold_in(sample_rng, global_step)
             samples_grid, final_latent = Euler_Maruyama_sampler(
                 rng=sample_rng,
                 ldm_model=ldm_model,
@@ -429,6 +463,7 @@ def main():
                 z_std=(1.0 / args.latent_scale_factor)
             )
             final_latent_np = np.asarray(final_latent)
+            log_sample_diversity(final_latent_np, step=global_step, epoch=ep + 1)
             stats = {
                 "mean": np.mean(final_latent_np),
                 "std": np.std(final_latent_np),
