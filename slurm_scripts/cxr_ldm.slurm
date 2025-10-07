@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=cxr-ldm
-#SBATCH --partition=bigbatch
 #SBATCH --exclude=mscluster65,mscluster76
 #SBATCH --time=72:00:00
 #SBATCH --output=logs/%x-%j.out
@@ -101,7 +99,7 @@ ARGS=(
 )
 
 # Debugging
-if [[ "$OVERFIT_ONE" == "1" ]]; then ARGS+=( --overfit_one --repeat_len "$REPEAT_LEN" );
+if [[ "$OVERFIT_ONE" == "1" || "$OVERFIT_ONE" == "true" ]]; then ARGS+=( --overfit_one --repeat_len "$REPEAT_LEN" );
 elif (( OVERFIT_K > 0 )); then ARGS+=( --overfit_k "$OVERFIT_K" );
 fi
 

@@ -124,6 +124,8 @@ def log_sample_diversity(samples_np: np.ndarray, step: int, epoch: int):
     open_block("diversity", step=step, epoch=epoch, note="Pairwise MSE between generated samples in the batch")
     pretty_table("sample_diversity/metrics", metrics)
     close_block("diversity", step=step)
+    if _WANDB and wandb.run is not None:
+        wandb.log({"sample_diversity/metrics": metrics, "epoch": epoch, "step": step})
 
 def parse_args():
     p = argparse.ArgumentParser("JAX Latent Diffusion Model (CXR) Trainer")
@@ -471,7 +473,6 @@ def main():
                 "max": np.max(final_latent_np),
             }
             pretty_table("final_latent_stats", stats)
-            close_block("sample", step=global_step)
             out_path = os.path.join(samples_dir, f"sample_ep{ep + 1:04d}.png")
             save_image(samples_grid, out_path)
             close_block("sample", step=global_step)

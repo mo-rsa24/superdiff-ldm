@@ -75,7 +75,11 @@ def main():
     print("\n--- Results ---")
     print(f"Unscaled Latent Standard Deviation (over {len(ds_subset)} images): {unscaled_std:.6f}")
     print(f"Calculated Scale Factor (1.0 / std): {scale_factor:.6f}")
-
+    run_dir = os.path.dirname(os.path.dirname(args.ae_ckpt_path))
+    output_path = os.path.join(run_dir, "latent_scale_factor.txt")
+    with open(output_path, "w") as f:
+        f.write(str(scale_factor))
+    print(f"Verification: Saved scale factor to {output_path}")
     scaled_z = full_latents * scale_factor
     print(f"Verification: Scaled Latent Std Dev: {np.std(scaled_z):.6f}")
 
