@@ -176,7 +176,13 @@ def parse_args():
     p.add_argument("--sample_batch_size", type=int, default=16)
 
     # --- W&B ---
-    p.add_argument("--wandb", action="store_true")
+    # p.add_argument("--wandb", action="store_true")
+    p.add_argument(
+        "--wandb",
+        type=bool,  # CHANGE THIS from action='store_true'
+        default=False,  # Add a default value
+        help="Enable W&B logging."
+    )
     p.add_argument("--wandb_project", default="cxr-ldm")
     p.add_argument("--wandb_tags", default="")
     return p.parse_args()
