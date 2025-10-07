@@ -3,11 +3,12 @@ set -euo pipefail
 
 # --- Defaults ---
 export TASK="TB"
+export ENV_NAME="jax115"
 export IMG_SIZE="256"
 export TRAINING_MODE="${1:-full_train}"
 export LR="1e-4"
-export WEIGHT_DECAY="0.01"
-export LDM_BASE_CH="128"
+export WEIGHT_DECAY="0.05"
+export LDM_BASE_CH="96"
 export GRAD_CLIP="1.0"
 export BATCH_PER_DEVICE="16"
 # SLURM Defaults
