@@ -51,6 +51,35 @@ The `train_ldm_[task].sh` scripts accept a training mode as an argument.
     ```bash
     ./launchers/single_runs/ldm/train_ldm_pneumonia.sh full_train
     ```
+--- 
+### How to Use the New Flexible Launcher
+
+You can now override the learning rate, job name, and partition directly from your terminal.
+
+Run with default settings:
+(This will use LR=1e-4, partition="bigbatch", and a generated job name)
+```bash
+./launchers/single_runs/ldm/train_ldm_tb.sh full_train
+```
+
+Override the Learning Rate:
+```bash
+./launchers/single_runs/ldm/train_ldm_tb.sh full_train --lr 3e-5
+```
+
+Specify a different partition and a custom job name:
+```bash
+./launchers/single_runs/ldm/train_ldm_tb.sh overfit_16 --partition "gpu_short" --job-name "ldm-overfit-test"
+```
+
+Combine all overrides:
+```bash
+./launchers/single_runs/ldm/train_ldm_tb.sh overfit_32 --lr 5e-5 --partition "gpu_long" --job-name "ldm-overfit32-newlr"
+```
+
+This structure gives you the best of both worlds: sensible defaults for quick runs and full command-line control for specific experiments. 
+
+You can apply the same pattern to the train_ae_tb.sh and cxr_ae.slurm scripts.
 
 -----
 

@@ -162,7 +162,7 @@ def Euler_Maruyama_sampler(
     rng, ldm_model, ldm_params, ae_model, ae_params,
     marginal_prob_std_fn, diffusion_coeff_fn,
     latent_size, batch_size, z_channels, z_std=1.0,
-    n_steps=2, eps=1e-3  # Use eps=1e-3 for stability with this SDE
+    n_steps=700, eps=1e-3  # Use eps=1e-3 for stability with this SDE
 ):
     """
     Corrected Euler-Maruyama sampler using the correct reverse-time SDE.
