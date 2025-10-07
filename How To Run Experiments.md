@@ -127,3 +127,38 @@ After initializing the sweep, run the `wandb agent` on your cluster's login node
     ```
 
 The agent will continue to run in your terminal, submitting new jobs as old ones finish, until the sweep is complete or you stop it. You can monitor all runs from the W\&B dashboard.
+
+---
+
+### How to Use the Training & Sweeps Framework
+
+This guide explains how to run individual training jobs, how to calculate the necessary scaling factor for your autoencoder, and how to launch large-scale hyperparameter sweeps using Weights & Biases.
+
+1. VAE Training (Single Runs):
+The train_ae_[task].sh scripts accept the number of latent channels (z_channels) as an argument. 
+- Train a VAE for TB with z_channels=1:
+```bash
+./launchers/single_runs/vae/train_ae_tb.sh 1
+```
+
+Train a VAE for Pneumonia with z_channels=3:
+```bash
+./launchers/single_runs/vae/train_ae_pneumonia.sh 3
+```
+
+2. Calculate Latent Scale Factor (Crucial Step)
+After each VAE model finishes training, you must calculate its latent scale factor. 
+- This value is essential for stable LDM training. 
+- The find_latent_scale.py script will encode a subset of the dataset, measure the standard deviation of the VAE's output, and save the correct scaling factor to a file (latent_scale_factor.txt) inside the VAE's run directory.
+
+How to Run:
+You need to provide the paths to the VAE's config file and the final checkpoint.
+```bash
+export PYTHONPATH="$(pwd)"
+python scripts/find_latent_scale.py \
+    --ae_config_path "runs/ae_tb_z1_.../run_meta.json" \
+    --ae_ckpt_path "runs/ae_tb_z1_.../ckpts/last.flax" \
+    --data_root "/datasets/mmolefe/cleaned" \
+    --task "TB"
+```
+Note: Repeat this step for every VAE you train.
