@@ -16,14 +16,14 @@ export LOG_EVERY="100"
 export SAMPLE_EVERY="10"
 export SAMPLE_BATCH_SIZE="16"
 export WANDB="1" # Use 1 for 'true', 0 for 'false
-export LATENT_SCALE_FACTOR="1.951791"
+export LATENT_SCALE_FACTOR="8.97676989056676"
 # SLURM Defaults
 export SLURM_PARTITION="bigbatch"
 export SLURM_JOB_NAME="cxr-ldm-${TASK,,}-${TRAINING_MODE}" # Default job name, e.g., cxr-ldm-tb-full_train
 
 # --- VAE Checkpoint (❗ IMPORTANT: Update this path) ---
-export AE_CKPT_PATH="runs/ae_tb_full_kl_1.0e-5_zchannels_3/20251003-125631/ckpts/last.flax"
-export AE_CONFIG_PATH="runs/ae_tb_full_kl_1.0e-5_zchannels_3/20251003-125631/run_meta.json"
+export AE_CKPT_PATH="runs/unified-ae-128_z4_20251008-135847/20251008-140403/ckpts/last.flax"
+export AE_CONFIG_PATH="runs/unified-ae-128_z4_20251008-135847/20251008-140403/run_meta.json"
 
 # --- Parse Command-Line Overrides ---
 shift # Shift away the TRAINING_MODE argument
