@@ -116,11 +116,11 @@ def main():
     parser.add_argument("--ae_ckpt_path", type=str, required=True, help="Path to the AE checkpoint (.flax).")
     parser.add_argument("--data_root", type=str, required=True, help="Path to the root of the dataset.")
     parser.add_argument("--task", type=str, required=True, help="Dataset task (e.g., TB).")
-    parser.add_argument("--img_size", type=int, default=256, help="Image size.")
+    parser.add_argument("--img_size", type=int, default=128, help="Image size.")
     parser.add_argument("--class_filter", type=int, default=None, help="Class to filter for.")
-    parser.add_argument("--num_samples_for_scale", type=int, default=1000,
+    parser.add_argument("--num_samples_for_scale", type=int, default=2259,
                         help="Number of images to use for scale calculation.")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for processing.")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for processing.")
     args = parser.parse_args()
 
     run_dir = Path(args.ae_ckpt_path).parent.parent
