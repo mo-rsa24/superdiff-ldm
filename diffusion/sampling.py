@@ -168,8 +168,9 @@ def Euler_Maruyama_sampler(
     Corrected Euler-Maruyama sampler using the correct reverse-time SDE.
     """
     print("Running CORRECTED Euler-Maruyama sampler with stable equations...")
-    rng, step_rng = jax.random.split(rng)
-    init_x = jax.random.normal(step_rng, (batch_size, latent_size, latent_size, z_channels))
+    rngs = jax.random.split(rng, batch_size)
+    single_sample_shape = (latent_size, latent_size, z_channels)
+    init_x = jax.vmap(lambda key: jax.random.normal(key, single_sample_shape))(rngs)
     init_x = init_x * marginal_prob_std_fn(jnp.ones(batch_size))[:, None, None, None]
 
     time_steps = jnp.linspace(1., eps, n_steps)
@@ -199,69 +200,69 @@ def Euler_Maruyama_sampler(
     grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
     return grid, x
 
-def Euler_Maruyama_sampler_(
-    rng,
-    ldm_model,
-    ldm_params,
-    ae_model,
-    ae_params,
-    marginal_prob_std_fn,
-    diffusion_coeff_fn,
-    n_steps=500,
-    latent_size=32,
-    batch_size=16,
-    z_std=1.0,
-    z_channels=3,
-):
-    """
-    Reverse-time Probability-Flow ODE sampler (deterministic).
-    Uses ε-prediction and converts to a score on-the-fly:
-      score(z,t) = -ε̂(z,t)/σ(t)
-      dz = -0.5 * g(t)^2 * score(z,t) * dt
-    """
-    # Start from p_1
-    latent_shape = (batch_size, latent_size, latent_size, z_channels)
-    rng, step_rng = jax.random.split(rng)
-    std_1 = marginal_prob_std_fn(jnp.ones(batch_size))[:, None, None, None]
-    z = jax.random.normal(step_rng, latent_shape) * std_1
-
-    time_steps = jnp.linspace(1.0, 1e-3, n_steps)
-    dt = time_steps[0] - time_steps[1]
-
-    for t_val in tqdm(time_steps, desc="Sampling (PF-ODE)"):
-        t = jnp.ones(batch_size) * t_val                    # shape [B]
-        g = diffusion_coeff_fn(t)[:, None, None, None]      # [B,1,1,1]
-        std = marginal_prob_std_fn(t)[:, None, None, None]
-        std = jnp.maximum(std, 1e-3)
-        # Model predicts noise ε̂; convert to score = -ε̂/σ(t)
-        eps_pred = ldm_model.apply({'params': ldm_params}, z, t)  # [B,H,W,C]
-        score = -eps_pred / std
-
-        # PF-ODE drift (no stochastic term)
-        drift = -0.5 * (g ** 2) * score
-        z = z + drift * dt
-
-    # Unscale to the AE latent scale then decode to image space
-    z = z * z_std
-    # Debug: what are we decoding?
-    from run.ldm import pretty_table, open_block, close_block
-    open_block("sampler", step=-1, epoch=-1, note="end-of-trajectory stats")
-
-    z_stats = dict(mean=float(jnp.mean(z)), std=float(jnp.std(z)),
-                   min=float(jnp.min(z)), max=float(jnp.max(z)))
-    pretty_table("latent z @ t≈0", z_stats)
-
-    decoded = ae_model.apply({'params': ae_params}, z, method=ae_model.decode, train=False)
-    decoded = jnp.clip(decoded, 0.0, 1.0)
-    decoded_nchw = jnp.transpose(decoded, (0, 3, 1, 2))
-    img_stats = dict(mean=float(jnp.mean(decoded)), std=float(jnp.std(decoded)),
-                     min=float(jnp.min(decoded)), max=float(jnp.max(decoded)))
-    pretty_table("decoded image", img_stats)
-    close_block("sampler", step=-1)
-
-    samples_torch = torch.from_numpy(np.asarray(jax.device_get(decoded_nchw)))
-    grid = make_grid(samples_torch, nrow=int(jnp.sqrt(batch_size)), padding=2, normalize=False)
-    return grid
+# def Euler_Maruyama_sampler_(
+#     rng,
+#     ldm_model,
+#     ldm_params,
+#     ae_model,
+#     ae_params,
+#     marginal_prob_std_fn,
+#     diffusion_coeff_fn,
+#     n_steps=500,
+#     latent_size=32,
+#     batch_size=16,
+#     z_std=1.0,
+#     z_channels=3,
+# ):
+#     """
+#     Reverse-time Probability-Flow ODE sampler (deterministic).
+#     Uses ε-prediction and converts to a score on-the-fly:
+#       score(z,t) = -ε̂(z,t)/σ(t)
+#       dz = -0.5 * g(t)^2 * score(z,t) * dt
+#     """
+#     # Start from p_1
+#     latent_shape = (batch_size, latent_size, latent_size, z_channels)
+#     rng, step_rng = jax.random.split(rng)
+#     std_1 = marginal_prob_std_fn(jnp.ones(batch_size))[:, None, None, None]
+#     z = jax.random.normal(step_rng, latent_shape) * std_1
+#
+#     time_steps = jnp.linspace(1.0, 1e-3, n_steps)
+#     dt = time_steps[0] - time_steps[1]
+#
+#     for t_val in tqdm(time_steps, desc="Sampling (PF-ODE)"):
+#         t = jnp.ones(batch_size) * t_val                    # shape [B]
+#         g = diffusion_coeff_fn(t)[:, None, None, None]      # [B,1,1,1]
+#         std = marginal_prob_std_fn(t)[:, None, None, None]
+#         std = jnp.maximum(std, 1e-3)
+#         # Model predicts noise ε̂; convert to score = -ε̂/σ(t)
+#         eps_pred = ldm_model.apply({'params': ldm_params}, z, t)  # [B,H,W,C]
+#         score = -eps_pred / std
+#
+#         # PF-ODE drift (no stochastic term)
+#         drift = -0.5 * (g ** 2) * score
+#         z = z + drift * dt
+#
+#     # Unscale to the AE latent scale then decode to image space
+#     z = z * z_std
+#     # Debug: what are we decoding?
+#     from run.ldm import pretty_table, open_block, close_block
+#     open_block("sampler", step=-1, epoch=-1, note="end-of-trajectory stats")
+#
+#     z_stats = dict(mean=float(jnp.mean(z)), std=float(jnp.std(z)),
+#                    min=float(jnp.min(z)), max=float(jnp.max(z)))
+#     pretty_table("latent z @ t≈0", z_stats)
+#
+#     decoded = ae_model.apply({'params': ae_params}, z, method=ae_model.decode, train=False)
+#     decoded = jnp.clip(decoded, 0.0, 1.0)
+#     decoded_nchw = jnp.transpose(decoded, (0, 3, 1, 2))
+#     img_stats = dict(mean=float(jnp.mean(decoded)), std=float(jnp.std(decoded)),
+#                      min=float(jnp.min(decoded)), max=float(jnp.max(decoded)))
+#     pretty_table("decoded image", img_stats)
+#     close_block("sampler", step=-1)
+#
+#     samples_torch = torch.from_numpy(np.asarray(jax.device_get(decoded_nchw)))
+#     grid = make_grid(samples_torch, nrow=int(jnp.sqrt(batch_size)), padding=2, normalize=False)
+#     return grid
 
 # @title Define the Predictor-Corrector sampler (double click to expand or collapse)
 
