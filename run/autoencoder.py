@@ -1,4 +1,4 @@
-# run/autoencoder.py
+# run/autoencoder.py for shared latent representation
 import argparse, os, json, math
 from datetime import datetime
 from collections import Counter
