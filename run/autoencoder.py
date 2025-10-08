@@ -38,6 +38,16 @@ def make_grid_torch(imgs_tensor, nrow=None):
         nrow = int(math.sqrt(max(1, N)))
     return make_grid(imgs_tensor, nrow=nrow)
 
+
+def int_or_none(value):
+    """Helper type for argparse that accepts an int or the string 'None'."""
+    if str(value).lower() == 'none':
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a valid integer or 'None'")
+
 def parse_args():
     p = argparse.ArgumentParser("JAX AutoencoderKL (CXR) trainer")
 
@@ -46,7 +56,7 @@ def parse_args():
     p.add_argument("--task", choices=["TB","PNEUMONIA", "All_CXR"], default="TB")
     p.add_argument("--split", choices=["train","val","test"], default="train")
     p.add_argument("--img_size", type=int, default=256)
-    p.add_argument("--class_filter", type=int, default=1)
+    p.add_argument("--class_filter", type=int_or_none, default=None, help="Train only on one class (e.g., 0 or 1), or 'None' for no filter")
     p.add_argument("--overfit_one", action="store_true",
                                        help = "Repeat a single sample to overfit the AE.")
     p.add_argument("--overfit_k", type=int, default=0,
