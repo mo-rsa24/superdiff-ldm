@@ -58,7 +58,10 @@ class ChestXrayDataset(Dataset):
             # Flat layout
             for p in _list_images(root):
                 img_paths.append(p)
-                labels.append(0)
+                if p.name.startswith("TB."):
+                    labels.append(1)  # TB class
+                else:
+                    labels.append(0)  # Normal class
 
         if not img_paths:
             raise RuntimeError(f"No images found under {root}")

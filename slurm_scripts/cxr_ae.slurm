@@ -163,7 +163,7 @@ kv "Epochs"         "$EPOCHS"
 kv "W&B Enabled"    "$WANDB"
 
 banner "AE Training Run"
-srun python -u "$PYFILE" "${ARGS[@]}"
+srun python -u "$PYFILE" "$@" "${ARGS[@]}"
 RC=$?
 
 banner "Done (ExitCode: $RC)"
