@@ -6,7 +6,7 @@ export TASK="TB"
 export ENV_NAME="jax115"
 export IMG_SIZE="256"
 export TRAINING_MODE="${1:-full_train}"
-export DISEASE="1"
+export DISEASE="0"
 
 # --- Hyperparameters ---
 export LR="1e-4"
