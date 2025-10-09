@@ -1,526 +1,340 @@
 #!/usr/bin/env python3
 # compose.py — compose two pretrained CXR score models and sample images
 # Usage examples:
-#   python compose.py --run_a tb256-of1-... --run_b pn256-of1-... --alpha 0.5 --mode fixed --sampler pc
-#   python compose.py --run_a tb256-full-... --run_b pn256-full-... --sampler em --batch_size 16
-#   python compose.py --run_a A --run_b B --estimate_ll 1 --batch_size 8
-#   python compose.py --run_a tb256-tiny8-r2-tb-train-cxr256-of1-ch96x192x384x768-ve-pc-lr0.0002-b8x1-slurm155813 --run_b pn256-tiny8-r2-pneumonia-train-cxr256-of1-ch96x192x384x768-ve-pc-lr0.0002-b8x1-slurm155812 --estimate_ll 1 --batch_size 8
-# Place this file at the repo root (same level as cxr_sde.slurm). It will add repo root to PYTHONPATH.
+#   python run/compose.py --mode superdiff --sampler em --batch_size 16
+#   python run/compose.py --mode fixed --alpha 0.5 --sampler pc
+# Place this file in the `run/` directory.
 
 import os, sys, json, math, functools
 from datetime import datetime
 from typing import Tuple, Optional
-
-# --- ensure repo root on sys.path (so 'diffusion', 'models' import cleanly) ---
-_REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
 import argparse
+from tqdm import tqdm
 import numpy as np
+
+# --- ensure repo root on sys.path (so 'diffusion', 'models', etc. can be resolved)
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if repo_root not in sys.path:
+    sys.path.append(repo_root)
+
 import jax
 import jax.numpy as jnp
-import optax
-import tensorflow as tf
+from flax.training import checkpoints
+from diffusion import sde_lib, sampling
+from models import unet, ae_kl
+from config import lib as config_lib
+from utils import image_manipulation
 
-from flax.training.train_state import TrainState
-from flax.serialization import to_bytes, from_bytes
-
-# Project modules
-from models.cxr_unet import ScoreNet
-from diffusion.equations import marginal_prob_std, diffusion_coeff
-
-# If you have VPSDE variants, you can extend build_sde_from_cfg below.
-
-try:
-    # Optional: LL composition (if you patched your sampling/equations as in earlier step)
-    from diffusion.sampling import compose_and_estimate_log_likelihood_along_superposed_trajectory as compose_ll_images
-
-    _HAS_LL = True
-except Exception:
-    _HAS_LL = False
-
-
-# ------------------ utils ------------------
-
-def n_local_devices() -> int:
-    return jax.local_device_count()
-
-
-def ensure_dir(p: str) -> str:
-    os.makedirs(p, exist_ok=True)
-    return p
+# --- arg parsing ---
+parser = argparse.ArgumentParser(description="Compose two pretrained CXR diffusion models.")
+parser.add_argument("--run_tb", type=str, default="ldm-tb-proto-3_lr3e-5_wd0.01_ch96_20251008-192534",
+                    help="Name of the TB model run directory.")
+parser.add_argument("--run_normal", type=str, default="ldm-normal-proto-3_lr3e-5_wd0.01_ch96_20251008-192824",
+                    help="Name of the Normal model run directory.")
+parser.add_argument("--mode", type=str, default="superdiff", choices=["fixed", "time", "superdiff"],
+                    help="Composition mode.")
+parser.add_argument("--alpha", type=float, default=0.5, help="Alpha for 'fixed' composition.")
+parser.add_argument("--guidance_scale", type=float, default=1.0, help="Guidance scale for Superdiff kappa calculation.")
+parser.add_argument("--sampler", type=str, default="em", choices=["em", "pc"],
+                    help="Sampler to use (Euler-Maruyama or Predictor-Corrector).")
+parser.add_argument("--batch_size", type=int, default=16, help="Batch size for sampling.")
+parser.add_argument("--steps", type=int, default=1000, help="Number of sampling steps.")
+parser.add_argument("--eps", type=float, default=1e-3, help="SDE terminal time.")
+parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+parser.add_argument("--diagnostics", action='store_true', default=True,
+                    help="Enable diagnostic logging and plotting for Superdiff.")
+args = parser.parse_args()
 
 
-def parse_channels(s: str):
-    return tuple(int(c.strip()) for c in str(s).split(",") if c.strip())
+def load_model_and_params(run_name: str) -> Tuple[config_lib.Config, unet.UNet, ae_kl.AutoencoderKL, dict, dict]:
+    """Loads config, models, and parameters for a given run."""
+    run_dir = os.path.join("runs", run_name)
+    if not os.path.isdir(run_dir):
+        raise FileNotFoundError(f"Run directory not found: {run_dir}")
+
+    # Load config
+    cfg = config_lib.Config(config_lib.config_from_json(os.path.join(run_dir, "config.json")))
+
+    # Load models
+    score_model = unet.UNet(cfg.model.unet)
+    vae = ae_kl.AutoencoderKL(cfg.model.vae)
+
+    # Load checkpoints
+    score_params = checkpoints.restore_checkpoint(os.path.join(run_dir, "checkpoints", "score_model"), target=None)
+    vae_params = checkpoints.restore_checkpoint(os.path.join(cfg.model.vae_ckpt_path, "checkpoints", "vae"),
+                                                target=None)
+
+    if score_params is None or vae_params is None:
+        raise ValueError(f"Failed to load checkpoints from {run_dir} or {cfg.model.vae_ckpt_path}")
+
+    print(f"Successfully loaded model '{run_name}'")
+    return cfg, score_model, vae, score_params, vae_params
 
 
-def latest_subdir(path: str) -> str:
-    """Return newest timestamped subdir if exists, else the dir itself."""
-    if not os.path.isdir(path):
-        raise FileNotFoundError(f"No such directory: {path}")
-    subs = [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))]
-    if not subs:
-        return path
-    subs.sort()
-    return os.path.join(path, subs[-1])
+def get_composed_sampler(sde, score_fn_a, score_fn_b, sampler_name: str, batch_size: int, img_size: int,
+                         steps: int, eps: float, alpha: float, mode: str):
+    """Creates a sampler with a composed score function."""
+    if mode == "fixed":
+        composed_score_fn = sampling.get_fixed_composed_score_fn(score_fn_a, score_fn_b, alpha)
+    elif mode == "time":
+        composed_score_fn = sampling.get_time_composed_score_fn(sde, score_fn_a, score_fn_b)
+    else:
+        raise ValueError(f"Unknown composition mode: {mode}")
+
+    shape = (batch_size, img_size, img_size, 1)
+    if sampler_name == "em":
+        sampler = sampling.get_em_sampler(sde, composed_score_fn, shape, inverse_scaler=lambda x: x,
+                                          denoise=True, steps=steps, eps=eps)
+    elif sampler_name == "pc":
+        sampler = sampling.get_pc_sampler(sde, composed_score_fn, shape, inverse_scaler=lambda x: x,
+                                          denoise=True, steps=steps, eps=eps, predictor='em', corrector='none')
+    else:
+        raise ValueError(f"Unknown sampler: {sampler_name}")
+
+    return sampler
 
 
-def resolve_run_dir(runs_root: str, run_name_or_path: str) -> str:
-    """Accept either a name under runs_root or an absolute/relative path."""
-    candidate = os.path.join(runs_root, run_name_or_path)
-    if os.path.isdir(candidate):
-        return latest_subdir(candidate)
-    # else: user passed a full path already
-    return latest_subdir(run_name_or_path)
-
-
-def latest_ckpt(ckpt_dir: str) -> str:
-    last = os.path.join(ckpt_dir, "last.flax")
-    if tf.io.gfile.exists(last):
-        return last
-    eps = [p for p in tf.io.gfile.listdir(ckpt_dir) if p.startswith("ep") and p.endswith(".flax")]
-    if not eps:
-        # raise FileNotFoundError(f"No checkpoints in {ckpt_dir}")
-        pass
-    eps.sort()
-    return os.path.join(ckpt_dir, eps[-1])
-
-
-def load_config(run_dir: str) -> dict:
-    meta = os.path.join(run_dir, "run_meta.json")
-    if not tf.io.gfile.exists(meta):
-        raise FileNotFoundError(f"Missing run_meta.json in {run_dir}")
-    with tf.io.gfile.GFile(meta, "r") as f:
-        return json.load(f)
-
-
-def build_sde_from_cfg(cfg: dict):
-    """Return (marginal_prob_std_fn, diffusion_coeff_fn, label). Currently VE(σmax)."""
-    sigma_max = float(cfg.get("sigma_max", 25.0))
-    mstd = functools.partial(marginal_prob_std, sigma=sigma_max)
-    dcoeff = functools.partial(diffusion_coeff, sigma=sigma_max)
-    return mstd, dcoeff, f"VE(σmax={sigma_max:g})"
-
-
-def instantiate_model_from_cfg(cfg: dict, marginal_prob_std_fn):
-    ch = parse_channels(cfg.get("channels", "64,128,256,512"))
-    emb = int(cfg.get("embed_dim", 256))
-    model = ScoreNet(marginal_prob_std_fn, channels=ch, embed_dim=emb)
-    return model, ch, emb
-
-
-def load_params_tuple(path: str, state_template, ema_template, ema_decay_default=0.9995):
-    """Supports two formats: (TrainState, ema_params, ema_decay) OR TrainState only."""
-    with tf.io.gfile.GFile(path, "rb") as f:
-        blob = f.read()
-    # Try tuple first
-    try:
-        ts, ema, decay = from_bytes((state_template, ema_template, ema_decay_default), blob)
-        return ts.params, ema, decay
-    except Exception:
-        ts = from_bytes(state_template, blob)
-        return ts.params, ts.params, ema_decay_default
-
-
-def load_model_from_run(runs_root: str, run_name_or_path: str):
-    """Return (model, params_for_sampling, cfg, run_dir, (mstd,dcoeff,label))."""
-    run_dir = resolve_run_dir(runs_root, run_name_or_path)
-    cfg = load_config(run_dir)
-    mstd, dcoeff, sde_label = build_sde_from_cfg(cfg)
-
-    model, ch, emb = instantiate_model_from_cfg(cfg, mstd)
-    H = int(cfg.get("img_size", 256))
-    C = 1
-    per_dev = max(1, int(cfg.get("batch_per_device", 4)))
-    batch = per_dev * max(1, n_local_devices())
-
-    fake_x = jnp.ones((batch, H, H, C), dtype=jnp.float32)
-    fake_t = jnp.ones((batch,), dtype=jnp.float32)
-    params = model.init({'params': jax.random.PRNGKey(0)}, fake_x, fake_t)
-    state_tmpl = TrainState.create(apply_fn=model.apply, params=params, tx=optax.adam(1e-4))
-    ema_tmpl = params
-
-    ckpt_dir = os.path.join(run_dir, "ckpts")
-    ckpt = latest_ckpt(ckpt_dir)
-    params_model, ema_params, decay = load_params_tuple(ckpt, state_tmpl, ema_tmpl, cfg.get("ema_decay", 0.9995))
-    return model, params, cfg, run_dir, (mstd, dcoeff, sde_label)
-
-
-def assert_compat(cfg_a: dict, cfg_b: dict):
-    keys = ["img_size", "channels", "embed_dim", "sde", "sigma_max"]
-    mismatches = []
-    for k in keys:
-        if str(cfg_a.get(k)) != str(cfg_b.get(k)):
-            mismatches.append((k, cfg_a.get(k), cfg_b.get(k)))
-    if mismatches:
-        msg = "Incompatible runs for composition:\n" + "\n".join([f"  {k}: A={a} vs B={b}" for k, a, b in mismatches])
-        raise ValueError(msg)
-
-
-def make_composed_score_fn(score_model):
+def get_superdiff_sampler_and_diagnostics(sde, score_fn_tb, score_fn_normal, guidance_scale,
+                                          shape, key, steps, eps):
     """
-    Returns a vmapped score(x,t) that blends two models' scores:
-      fixed  : s = s_B + α (s_A - s_B)
-      sum    : s = s_A + s_B
-      normsum: s = (s_A + s_B) / √2
-    We use vmap (batch) and optionally pmap (devices) via calling code.
+    Creates and runs a sampler implementing the Superdiff algorithm with diagnostics.
+    This is based on the Euler-Maruyama sampler.
     """
+    rng = key
+    batch_size = shape[0]
 
-    def score(params_a, params_b, x, t, alpha: float, mode: str):
-        s_a = score_model.apply(params_a, x, t)
-        s_b = score_model.apply(params_b, x, t)
-        if mode == "sum":
-            s = s_a + s_b
-        elif mode == "normsum":
-            s = (s_a + s_b) / jnp.sqrt(2.0)
-        else:  # fixed
-            s = s_b + alpha * (s_a - s_b)
-        return s
+    # Initialize diagnostics storage
+    diagnostics = {
+        'kappa': jnp.zeros((steps, batch_size)),
+        'score_norm_tb': jnp.zeros((steps, batch_size)),
+        'score_norm_normal': jnp.zeros((steps, batch_size)),
+        'score_norm_composed': jnp.zeros((steps, batch_size)),
+        'dlog_tb': jnp.zeros((steps, batch_size)),
+        'dlog_normal': jnp.zeros((steps, batch_size)),
+        'intermediate_latents': []
+    }
 
-    return jax.vmap(score, in_axes=(None, None, 0, 0, None, None))
+    # Interval to save intermediate latents
+    save_interval = steps // 10
 
+    @jax.jit
+    def superdiff_step_fn(i, state):
+        rng, x, current_diagnostics = state
 
-def make_superdiff_score_fn(score_model, mstd):
-    """
-    Returns a vmapped score function for Superdiff composition.
-    This function calculates the composed velocity field using the
-    Itô density estimator.
-    """
-    def get_velocity_and_divergence(params, x, t, eps):
-        sigma = mstd(t)
+        # 0. Setup for current step
+        rng, step_rng = jax.random.split(rng)
+        t = sde.ts[i]
+        vec_t = jnp.full(batch_size, t)
 
-        def score_fn_for_jvp(xt):
-            return score_model.apply(params, xt, t)
-        s, s_jvp = jax.jvp(score_fn_for_jvp, (x,), (eps,))
-        div_s = jnp.sum(s_jvp * eps, axis=tuple(range(1, x.ndim)))
-        v = -s * sigma ** 2
+        # 1. Get the scores from your two models
+        s_tb = score_fn_tb(x, vec_t)
+        s_normal = score_fn_normal(x, vec_t)
 
-        # The divergence of the velocity is -div(s) * sigma^2
-        div_v = -div_s * sigma ** 2
+        # 2. Compute the divergence (dlog_p) for both models using Hutchinson trace estimator
+        eps_div = jax.random.randint(step_rng, x.shape, 0, 2, dtype=x.dtype) * 2 - 1
 
-        return v, div_v
+        # Divergence for the TB model
+        _, jvp_tb = jax.jvp(lambda xt: score_fn_tb(xt, vec_t), (x,), (eps_div,))
+        dlog_tb = -jnp.sum(eps_div * jvp_tb, axis=(1, 2, 3))
 
-    def composed_score(params_a, params_b, x, t, eps):
-        sigma = mstd(t)
+        # Divergence for the Normal model
+        _, jvp_normal = jax.jvp(lambda xt: score_fn_normal(xt, vec_t), (x,), (eps_div,))
+        dlog_normal = -jnp.sum(eps_normal * jvp_normal, axis=(1, 2, 3)) if 'eps_normal' in locals() else -jnp.sum(
+            eps_div * jvp_normal, axis=(1, 2, 3))
 
-        v_a, div_v_a = get_velocity_and_divergence(params_a, x, t, eps)
-        v_b, div_v_b = get_velocity_and_divergence(params_b, x, t, eps)
-        kappa_numerator = sigma * (div_v_a - div_v_b) + jnp.sum((v_a - v_b) * (v_a + v_b), axis=tuple(range(1, x.ndim)))
-        kappa_denominator = jnp.sum((v_a - v_b) ** 2, axis=tuple(range(1, x.ndim))) + 1e-8
+        # 3. Compute kappa
+        sigma = sde.scheduler.sigmas[i]
+        dsigma = sde.scheduler.sigmas[i + 1] - sigma
 
-        kappa = kappa_numerator / kappa_denominator
+        s_diff = s_tb - s_normal
 
-        # The final composed velocity
-        vf = v_b + kappa[:, None, None, None] * (v_a - v_b)
+        kappa_numerator = sigma * (dlog_tb - dlog_normal) + jnp.sum((s_tb - s_normal) * (s_tb + s_normal),
+                                                                    axis=(1, 2, 3))
+        kappa_numerator += -jnp.sum((s_tb - s_normal) * (guidance_scale * s_normal), axis=(1, 2, 3))
+        kappa_denominator = guidance_scale * jnp.sum((s_tb - s_normal) ** 2, axis=(1, 2, 3))
 
-        # Convert the composed velocity back to a score
-        s_composed = -vf / (sigma ** 2 + 1e-8)
+        # Avoid division by zero
+        kappa = kappa_numerator / (kappa_denominator + 1e-9)
 
-        return s_composed
+        # 4. Compute the composed score
+        kappa_reshaped = kappa[:, None, None, None]
+        composed_score = s_normal + kappa_reshaped * (s_tb - s_normal)
 
-    return jax.vmap(composed_score, in_axes=(None, None, 0, 0, 0))
+        # 5. Update latents using Euler-Maruyama step
+        rng, noise_rng = jax.random.split(rng)
+        noise = jax.random.normal(noise_rng, x.shape)
+        drift = sde.g2[i] * composed_score * sde.dt
+        diffusion = sde.g[i] * jnp.sqrt(sde.dt) * noise
+        x_mean = x + drift
+        x = x_mean + diffusion
 
+        # 6. Log diagnostics
+        current_diagnostics['kappa'] = current_diagnostics['kappa'].at[i].set(kappa)
+        current_diagnostics['score_norm_tb'] = current_diagnostics['score_norm_tb'].at[i].set(
+            jnp.linalg.norm(s_tb.reshape(batch_size, -1), axis=-1))
+        current_diagnostics['score_norm_normal'] = current_diagnostics['score_norm_normal'].at[i].set(
+            jnp.linalg.norm(s_normal.reshape(batch_size, -1), axis=-1))
+        current_diagnostics['score_norm_composed'] = current_diagnostics['score_norm_composed'].at[i].set(
+            jnp.linalg.norm(composed_score.reshape(batch_size, -1), axis=-1))
+        current_diagnostics['dlog_tb'] = current_diagnostics['dlog_tb'].at[i].set(dlog_tb)
+        current_diagnostics['dlog_normal'] = current_diagnostics['dlog_normal'].at[i].set(dlog_normal)
 
-def to_device_batch(x_np, H, W, C):
-    """(B,H,W,C) -> (n_dev, B//n_dev, H,W,C) for pmap, padding if needed."""
-    devices = n_local_devices()
-    B = x_np.shape[0]
-    if B % devices != 0:
-        pad = devices - (B % devices)
-        x_np = np.concatenate([x_np, np.repeat(x_np[:1], pad, axis=0)], axis=0)
-        B = x_np.shape[0]
-    return x_np.reshape(devices, B // devices, H, W, C)
+        return rng, x, current_diagnostics
 
+    # --- Main Sampling Loop ---
+    # We cannot save intermediate latents inside a jitted loop.
+    # So we run the loop manually to capture them.
+    rng, x_rng = jax.random.split(rng)
+    x = sde.prior_sampling(x_rng, shape)
 
-def from_device_batch(x):
-    """Inverse of to_device_batch; drop any padded samples."""
-    if isinstance(x, (jax.Array, jnp.ndarray)):
-        x = np.asarray(x)
-    n_dev, per, *rest = x.shape
-    return x.reshape(n_dev * per, *rest)
+    state = (rng, x, diagnostics)
 
+    # Manual loop with tqdm for progress bar
+    for i in tqdm(range(sde.N - 1, -1, -1), desc="Superdiff Sampling"):
+        # We cannot jit the entire loop if we want to save intermediate states
+        state = superdiff_step_fn(i, state)
 
-# ------------------ samplers (PC/EM/ODE/Superdiff) ------------------
+        # Save intermediate latent state
+        if i % save_interval == 0:
+            diagnostics['intermediate_latents'].append(state[1])  # append x
 
-def pc_sampler(rng, composed_score, params_a, params_b, mstd, dcoeff,
-               batch_size: int, img_size: int, snr: float = 0.16, steps: int = 500, eps: float = 1e-3,
-               alpha: float = 0.5, mode: str = "fixed"):
-    H = W = img_size
-    C = 1
-    devs = n_local_devices()
-    per_dev = max(1, batch_size // devs)
-    batch_size = per_dev * devs
+    final_rng, final_x, final_diagnostics = state
 
-    rng, sub = jax.random.split(rng)
-    init = jax.random.normal(sub, (devs, per_dev, H, W, C)) * mstd(1.)
-    x = init
+    # Denoise final step
+    t_eps = jnp.full(batch_size, eps)
+    final_score = score_fn_normal(final_x, t_eps) + (final_diagnostics['kappa'][-1, :, None, None, None] * (
+                score_fn_tb(final_x, t_eps) - score_fn_normal(final_x, t_eps)))
+    final_x = final_x + sde.scheduler.get_g2(eps) * final_score * (
+                sde.scheduler.get_sigma(eps) ** 2 - sde.scheduler.get_sigma(0) ** 2) / (
+                          2 * sde.scheduler.get_sigma(eps))
 
-    t_grid = jnp.linspace(1., eps, steps)
-    step_size = float(t_grid[0] - t_grid[1])
-
-    for t in t_grid:
-        bt = jnp.ones((devs, per_dev)) * t
-
-        # Corrector (Langevin)
-        score = jax.pmap(composed_score)(params_a, params_b, x, bt, alpha, mode)
-        # grad norm estimate per device (flatten per sample)
-        grad_norm = jnp.sqrt(jnp.mean(jnp.sum(score ** 2, axis=(2, 3, 4))))
-        noise_norm = np.sqrt(H * W * C)
-        langevin_step = 2 * (snr * noise_norm / (grad_norm + 1e-8)) ** 2
-        rng, sub = jax.random.split(rng)
-        z = jax.random.normal(sub, x.shape)
-        x = x + langevin_step * score + jnp.sqrt(2 * langevin_step) * z
-
-        # Predictor (reverse SDE Euler step)
-        g = dcoeff(t)
-        score = jax.pmap(composed_score)(params_a, params_b, x, bt, alpha, mode)
-        x_mean = x + (g ** 2) * score * step_size
-        rng, sub = jax.random.split(rng)
-        z = jax.random.normal(sub, x.shape)
-        x = x_mean + jnp.sqrt(g ** 2 * step_size) * z
-
-    return from_device_batch(x_mean)
-
-
-def em_sampler(rng, composed_score, params_a, params_b, mstd, dcoeff,
-               batch_size: int, img_size: int, steps: int = 500, eps: float = 1e-3,
-               alpha: float = 0.5, mode: str = "fixed"):
-    H = W = img_size
-    C = 1
-    devs = n_local_devices()
-    per_dev = max(1, batch_size // devs)
-    batch_size = per_dev * devs
-
-    rng, sub = jax.random.split(rng)
-    x = jax.random.normal(sub, (devs, per_dev, H, W, C)) * mstd(1.)
-    t_grid = jnp.linspace(1., eps, steps)
-    step_size = float(t_grid[0] - t_grid[1])
-
-    for t in t_grid:
-        bt = jnp.ones((devs, per_dev)) * t
-        g = dcoeff(t)
-        score = jax.pmap(composed_score)(params_a, params_b, x, bt, alpha, mode)
-        mean_x = x + (g ** 2) * score * step_size
-        rng, sub = jax.random.split(rng)
-        x = mean_x + jnp.sqrt(step_size) * g * jax.random.normal(sub, x.shape)
-
-    return from_device_batch(mean_x)
-
-
-def ode_sampler(rng, composed_score, params_a, params_b, mstd, dcoeff,
-                batch_size: int, img_size: int, steps: int = 500, eps: float = 1e-3,
-                alpha: float = 0.5, mode: str = "fixed"):
-    # A simple fixed-step RK2 for probability-flow ODE
-    H = W = img_size
-    C = 1
-    devs = n_local_devices()
-    per_dev = max(1, batch_size // devs)
-    batch_size = per_dev * devs
-
-    rng, sub = jax.random.split(rng)
-    x = jax.random.normal(sub, (devs, per_dev, H, W, C)) * mstd(1.)
-    t_grid = jnp.linspace(1., eps, steps)
-    h = float(t_grid[0] - t_grid[1])
-
-    def drift(x, t):
-        bt = jnp.ones((devs, per_dev)) * t
-        g = dcoeff(t)
-        s = jax.pmap(composed_score)(params_a, params_b, x, bt, alpha, mode)
-        return -0.5 * (g ** 2) * s
-
-    for t in t_grid:
-        k1 = drift(x, t)
-        k2 = drift(x + 0.5 * h * k1, t - 0.5 * h)
-        x = x + h * k2
-
-    return from_device_batch(x)
-
-
-def superdiff_sampler(rng, composed_score, params_a, params_b, mstd, dcoeff,
-                      batch_size: int, img_size: int, steps: int = 500, eps: float = 1e-3):
-    H = W = img_size
-    C = 1
-    devs = n_local_devices()
-    per_dev = max(1, batch_size // devs)
-    batch_size = per_dev * devs
-
-    rng, sub = jax.random.split(rng)
-    x = jax.random.normal(sub, (devs, per_dev, H, W, C)) * mstd(1.)
-    t_grid = jnp.linspace(1., eps, steps)
-    step_size = float(t_grid[0] - t_grid[1])
-
-    for t in t_grid:
-        bt = jnp.ones((devs, per_dev)) * t
-        g = dcoeff(t)
-
-        # Hutchinson noise for divergence estimation
-        rng, sub = jax.random.split(rng)
-        eps_hutchinson = jax.random.randint(sub, x.shape, 0, 2) * 2 - 1
-
-        score = jax.pmap(composed_score)(params_a, params_b, x, bt, eps_hutchinson)
-        mean_x = x + (g ** 2) * score * step_size
-        rng, sub = jax.random.split(rng)
-        x = mean_x + jnp.sqrt(step_size) * g * jax.random.normal(sub, x.shape)
-
-    return from_device_batch(mean_x)
-
-
-# ------------------ CLI & main ------------------
-
-def parse_args():
-    p = argparse.ArgumentParser("Compose two pretrained CXR SDE models and sample images")
-    p.add_argument("--runs_root", default="runs")
-    p.add_argument("--run_a", required=True, help="Run folder name under runs/ or absolute path")
-    p.add_argument("--run_b", required=True, help="Run folder name under runs/ or absolute path")
-
-    p.add_argument("--alpha", type=float, default=0.5, help="Mixing for 'fixed' mode")
-    p.add_argument("--mode", choices=["fixed", "sum", "normsum", "superdiff"], default="fixed")
-
-    p.add_argument("--sampler", choices=["pc", "em", "ode"], default="pc")
-    p.add_argument("--steps", type=int, default=500)
-    p.add_argument("--batch_size", type=int, default=8)
-    p.add_argument("--snr", type=float, default=0.16)
-    p.add_argument("--eps", type=float, default=1e-3)
-
-    p.add_argument("--seed", type=int, default=0)
-
-    p.add_argument("--exp_name", default=None, help="Name for compose run dir; default auto from inputs")
-    p.add_argument("--run_name", default=None, help="Optional sub-name for compose run dir")
-
-    # Optional: estimate log-likelihood with superposed PF-ODE (needs patched diffusion.sampling/equations)
-    p.add_argument("--estimate_ll", type=int, default=0)
-
-    # --- Visualization (train batches) ---
-    p.add_argument("--viz_train_grid", action="store_true",
-                   help="Periodically save a grid of the current training batch (B,1,H,W).")
-    p.add_argument("--viz_train_grid_every_steps", type=int, default=200,
-                   help="How often (in global steps) to save a training grid.")
-    p.add_argument("--viz_train_grid_max_images", type=int, default=64,
-                   help="Cap the number of images shown in the grid.")
-    p.add_argument("--viz_train_grid_nrow", type=int, default=0,
-                   help="Grid columns; 0 means auto sqrt.")
-    p.add_argument("--viz_train_grid_dir", default=None,
-                   help="Output dir for training grids (defaults to run_dir/train_grids).")
-
-    return p.parse_args()
+    return final_x, final_diagnostics
 
 
 def main():
-    args = parse_args()
-
-    # Load both models from their latest checkpoints
-    model_a, params_a, cfg_a, dir_a, (mstd_a, dcoeff_a, sde_a) = load_model_from_run(args.runs_root, args.run_a)
-    model_b, params_b, cfg_b, dir_b, (mstd_b, dcoeff_b, sde_b) = load_model_from_run(args.runs_root, args.run_b)
-
-    # Sanity: same architecture/schedule
-    assert_compat(cfg_a, cfg_b)
-
-    # Use schedule from A (they match by assertion)
-    mstd, dcoeff = mstd_a, dcoeff_a
-    H = int(cfg_a.get("img_size", 256))
-    img_size = H
-
-    # Build composed score (vmap) and wrap with pmap at call sites
-    if args.mode == "superdiff":
-        composed_score = make_superdiff_score_fn(model_a, mstd)
-    else:
-        composed_score = make_composed_score_fn(model_a)
-
-    # Create output run dir
-    base_name = args.exp_name or f"COMPOSE-{args.mode}-a[{os.path.basename(args.run_a)}]_b[{os.path.basename(args.run_b)}]_alpha{args.alpha:g}"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_dir = os.path.join(args.runs_root, base_name, ts)
-    samples_dir = ensure_dir(os.path.join(out_dir, "samples"))
+    key = jax.random.PRNGKey(args.seed)
 
-    # Optional: superposed PF-ODE with LL accumulation (image-space)
-    if args.estimate_ll:
-        if not _HAS_LL:
-            print(
-                "[warn] --estimate_ll requested but diffusion.sampling.compose_and_estimate_log_likelihood_along_superposed_trajectory not found. Skipping.")
-        else:
-            # Make tiny TrainState wrappers that expose .apply_fn/.params
-            state_a = TrainState.create(apply_fn=model_a.apply, params=params_a, tx=optax.sgd(0.0))
-            state_b = TrainState.create(apply_fn=model_b.apply, params=params_b, tx=optax.sgd(0.0))
+    # --- Load models ---
+    print("Loading TB model...")
+    cfg_a, score_model_a, vae, params_a, vae_params = load_model_and_params(args.run_tb)
 
-            B = max(1, args.batch_size)
-            shape = (B, H, H, 1)
-            rng = jax.random.PRNGKey(args.seed)
-            traj, lla, llb = compose_ll_images(state_a, state_b, rng, dt=1e-3, t=1.0, shape=shape)
+    print("\nLoading Normal model...")
+    cfg_b, score_model_b, _, params_b, _ = load_model_and_params(args.run_normal)
 
-            # Final slice to image grid (assuming model domain in [0,1]; if [-1,1], map accordingly)
-            x_final = traj[:, -1, ...]
-            x_vis = jnp.clip(x_final, 0.0, 1.0)
+    # --- Create SDE and score functions ---
+    sde = sde_lib.VESDE(beta_min=cfg_a.model.sde.beta_min, beta_max=cfg_a.model.sde.beta_max, N=args.steps)
+    img_size = cfg_a.data.image_size
 
-            import torch
-            from torchvision.utils import make_grid, save_image
-            x_t = torch.tensor(np.asarray(jnp.transpose(x_vis, (0, 3, 1, 2))))  # NCHW
-            grid = make_grid(x_t, nrow=int(math.sqrt(max(1, x_t.shape[0]))))
-            grid_np = grid.permute(1, 2, 0).numpy()
+    # Create individual score functions
+    score_fn_a = sampling.get_score_fn(sde, score_model_a, params_a, train=False)
+    score_fn_b = sampling.get_score_fn(sde, score_model_b, params_b, train=False)
 
-            import matplotlib.pyplot as plt
-            plt.figure(figsize=(6, 6));
-            plt.axis("off")
-            plt.imshow(grid_np, vmin=0., vmax=1.);
-            plt.tight_layout()
-            out_png = os.path.join(samples_dir, f"composeLL_grid_{ts}.png")
-            plt.savefig(out_png, bbox_inches="tight", pad_inches=0);
-            plt.close()
-            save_image(grid, os.path.join(samples_dir, f"composeLL_grid_{ts}_tv.png"))
-            print(f"[compose-LL] saved {out_png}")
-            print(f"[compose-LL] mean LL A: {lla[:, -1].mean():.4f}  |  mean LL B: {llb[:, -1].mean():.4f}")
+    # VAE decoding function
+    vae_decode_fn = functools.partial(vae.apply, {'params': vae_params}, method=vae.decode)
 
-    # Standard composed sampling (PC/EM/ODE/Superdiff)
-    rng = jax.random.PRNGKey(args.seed)
-    if args.mode == "superdiff":
-        imgs = superdiff_sampler(rng, composed_score, params_a, params_b, mstd, dcoeff,
-                                 batch_size=args.batch_size, img_size=img_size,
-                                 steps=args.steps, eps=args.eps)
-    elif args.sampler == "pc":
-        imgs = pc_sampler(rng, composed_score, params_a, params_b, mstd, dcoeff,
-                          batch_size=args.batch_size, img_size=img_size, snr=args.snr,
-                          steps=args.steps, eps=args.eps, alpha=args.alpha, mode=args.mode)
-    elif args.sampler == "em":
-        imgs = em_sampler(rng, composed_score, params_a, params_b, mstd, dcoeff,
-                          batch_size=args.batch_size, img_size=img_size,
-                          steps=args.steps, eps=args.eps, alpha=args.alpha, mode=args.mode)
-    else:
-        imgs = ode_sampler(rng, composed_score, params_a, params_b, mstd, dcoeff,
-                           batch_size=args.batch_size, img_size=img_size,
-                           steps=args.steps, eps=args.eps, alpha=args.alpha, mode=args.mode)
+    # --- Create output directory ---
+    samples_dir = os.path.join("samples", f"composition_{ts}")
+    os.makedirs(samples_dir, exist_ok=True)
+    print(f"Saving samples and diagnostics to: {samples_dir}")
+
+    # --- Sampling ---
+    key, sample_key = jax.random.split(key)
+
+    if args.mode == 'superdiff':
+        shape = (args.batch_size, img_size // 8, img_size // 8, cfg_a.model.vae.z_channels)
+        latents, diagnostics = get_superdiff_sampler_and_diagnostics(
+            sde, score_fn_a, score_fn_b, args.guidance_scale, shape, sample_key, args.steps, args.eps
+        )
+    else:  # Handle older composition modes
+        sampler = get_composed_sampler(sde, score_fn_a, score_fn_b, args.sampler, args.batch_size,
+                                       img_size // 8, args.steps, args.eps, args.alpha, args.mode)
+        latents, _ = sampler(sample_key)
+
+    # --- Decode and Save final images ---
+    # Use the appropriate latent scale factor from your training run, not the LDM default.
+    # This is the reciprocal of the factor used to scale latents *before* training the UNet.
+    latent_scale_factor = 3.133603
+    latents = 1 / latent_scale_factor * latents
+    imgs = vae_decode_fn(latents)
 
     # NHWC [0,1] -> NCHW tensor grid
     imgs = jnp.clip(imgs, 0.0, 1.0)
     imgs = jnp.transpose(imgs.reshape((-1, img_size, img_size, 1)), (0, 3, 1, 2))
+
     import torch
     from torchvision.utils import make_grid, save_image
     imgs_t = torch.tensor(np.asarray(imgs))
     grid = make_grid(imgs_t, nrow=int(math.sqrt(max(1, imgs_t.shape[0]))))
 
-    # Save
-    import matplotlib.pyplot as plt
-    grid_np = grid.permute(1, 2, 0).numpy()
-    plt.figure(figsize=(6, 6));
-    plt.axis("off")
-    plt.imshow(grid_np, vmin=0., vmax=1.);
-    plt.tight_layout()
     out_png = os.path.join(samples_dir, f"compose_{args.mode}_alpha{args.alpha:g}_{ts}.png")
-    plt.savefig(out_png, bbox_inches="tight", pad_inches=0);
-    plt.close()
-    save_image(grid, os.path.join(samples_dir, f"compose_{args.mode}_alpha{args.alpha:g}_{ts}_tv.png"))
-    print(f"[compose] saved {out_png}")
+    save_image(grid, out_png)
+    print(f"Saved final image grid to {out_png}")
 
-    # Also save a minimal meta for provenance
-    with open(os.path.join(out_dir, "compose_meta.json"), "w") as f:
-        json.dump({
-            "run_a": dir_a, "run_b": dir_b,
-            "mode": args.mode, "alpha": args.alpha,
-            "sampler": args.sampler, "steps": args.steps,
-            "batch_size": args.batch_size, "eps": args.eps,
-            "seed": args.seed
-        }, f, indent=2)
+    # --- Process and save diagnostics for Superdiff ---
+    if args.mode == 'superdiff' and args.diagnostics:
+        import matplotlib.pyplot as plt
+
+        # 1. Save raw diagnostics data
+        np.savez(os.path.join(samples_dir, "diagnostics.npz"), **diagnostics)
+
+        # 2. Create and save plots
+        fig, axs = plt.subplots(4, 1, figsize=(10, 20))
+        steps_axis = np.arange(args.steps)
+
+        # Kappa Stability
+        axs[0].plot(steps_axis, diagnostics['kappa'].mean(axis=-1))
+        axs[0].set_title("Kappa Stability (mean over batch)")
+        axs[0].set_xlabel("Sampling Step")
+        axs[0].set_ylabel("Kappa Value")
+
+        # Score Norms
+        axs[1].plot(steps_axis, diagnostics['score_norm_tb'].mean(axis=-1), label="TB Score Norm")
+        axs[1].plot(steps_axis, diagnostics['score_norm_normal'].mean(axis=-1), label="Normal Score Norm")
+        axs[1].plot(steps_axis, diagnostics['score_norm_composed'].mean(axis=-1), label="Composed Score Norm",
+                    linestyle='--')
+        axs[1].set_title("Score Norms (mean over batch)")
+        axs[1].set_xlabel("Sampling Step")
+        axs[1].set_ylabel("L2 Norm")
+        axs[1].legend()
+
+        # Divergence Values
+        axs[2].plot(steps_axis, diagnostics['dlog_tb'].mean(axis=-1), label="TB Divergence")
+        axs[2].plot(steps_axis, diagnostics['dlog_normal'].mean(axis=-1), label="Normal Divergence")
+        axs[2].set_title("Divergence Values (mean over batch)")
+        axs[2].set_xlabel("Sampling Step")
+        axs[2].set_ylabel("Divergence")
+        axs[2].legend()
+
+        # Kappa Dist
+        axs[3].hist(diagnostics['kappa'].flatten(), bins=50)
+        axs[3].set_title("Distribution of Kappa values")
+        axs[3].set_xlabel("Kappa")
+        axs[3].set_ylabel("Frequency")
+
+        plt.tight_layout()
+        plot_path = os.path.join(samples_dir, "diagnostics_plot.png")
+        plt.savefig(plot_path)
+        plt.close()
+        print(f"Saved diagnostics plot to {plot_path}")
+
+        # 3. Decode and save intermediate latents
+        intermediate_imgs = []
+        for inter_latents in diagnostics['intermediate_latents']:
+            inter_latents = 1 / 0.18215 * inter_latents
+            inter_imgs = vae_decode_fn(inter_latents)
+            inter_imgs = jnp.clip(inter_imgs, 0.0, 1.0)
+            inter_imgs = jnp.transpose(inter_imgs.reshape((-1, img_size, img_size, 1)), (0, 3, 1, 2))
+            intermediate_imgs.append(torch.tensor(np.asarray(inter_imgs)))
+
+        if intermediate_imgs:
+            # Take the first image from each saved batch to show its evolution
+            evolution_grid = make_grid([imgs[0] for imgs in intermediate_imgs], nrow=len(intermediate_imgs))
+            evo_path = os.path.join(samples_dir, "intermediate_samples.png")
+            save_image(evolution_grid, evo_path)
+            print(f"Saved intermediate sample evolution to {evo_path}")
 
 
 if __name__ == "__main__":
     main()
+
