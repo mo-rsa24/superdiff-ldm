@@ -32,18 +32,20 @@ from run.ldm import load_autoencoder  # Directly import the trusted loader
 
 def load_ldm(config_path: str, ckpt_path: str) -> Tuple[ScoreNet, Dict]:
     """
-    FIXED: Loads a ScoreNet LDM by perfectly replicating the model and optimizer
-    setup from ldm.py to prevent deserialization errors.
+    FIXED: Loads a ScoreNet LDM by correctly handling different JSON
+    metadata structures to prevent KeyError.
     """
     print(f"Loading LDM from config: {config_path}")
     with open(config_path, 'r') as f:
-        # The training arguments are saved in the 'args' sub-dictionary
-        meta = json.load(f)['args']
+        loaded_json = json.load(f)
+        # Handle both cases: metadata nested under 'args' or at the top level
+        meta = loaded_json.get('args', loaded_json)
 
     # --- Load VAE metadata to get parameters required by the U-Net ---
     vae_config_path = meta['ae_config_path']
     with open(vae_config_path, 'r') as f:
-        vae_meta = json.load(f)['args']
+        vae_loaded_json = json.load(f)
+        vae_meta = vae_loaded_json.get('args', vae_loaded_json)
 
     embed_dim = vae_meta['embed_dim']
     z_channels = vae_meta['z_channels']
@@ -63,7 +65,7 @@ def load_ldm(config_path: str, ckpt_path: str) -> Tuple[ScoreNet, Dict]:
         num_heads=4
     )
 
-    # --- Create a dummy state with a PERFECTLY MATCHING optimizer structure ---
+    # --- Create a dummy state to load checkpoint ---
     rng = jax.random.PRNGKey(0)
     latent_size = meta['img_size'] // 8
 
@@ -71,7 +73,6 @@ def load_ldm(config_path: str, ckpt_path: str) -> Tuple[ScoreNet, Dict]:
     fake_time = jnp.ones((1,))
     ldm_variables = ldm_model.init({'params': rng, 'dropout': rng}, fake_latents, fake_time)
 
-    # This optimizer definition MUST match the one in ldm.py
     tx = optax.chain(
         optax.clip_by_global_norm(meta.get('grad_clip', 1.0)),
         optax.adamw(meta.get('lr', 3e-5), weight_decay=meta.get('weight_decay', 0.01))
@@ -82,20 +83,7 @@ def load_ldm(config_path: str, ckpt_path: str) -> Tuple[ScoreNet, Dict]:
     with tf.io.gfile.GFile(ckpt_path, "rb") as f:
         blob = f.read()
 
-    try:
-        restored_state = from_bytes(dummy_state, blob)
-    except KeyError as e:
-        print("\n--- FLAX DESERIALIZATION ERROR ---")
-        print(f"A `KeyError` occurred: {e}")
-        print(
-            "This almost always means the model architecture defined in the script does not match the one in the saved checkpoint.")
-        print("Please check the following in your `run_meta.json` and `cxr_unet.py`:")
-        print(f"  - `ldm_num_res_blocks`: {num_res_blocks}")
-        print(f"  - `ldm_base_ch`: {meta['ldm_base_ch']}")
-        print(f"  - `ldm_ch_mults`: {ch_mults}")
-        print("----------------------------------\n")
-        raise e
-
+    restored_state = from_bytes(dummy_state, blob)
     print("✅ LDM loaded successfully.")
     return ldm_model, restored_state.params
 
@@ -132,7 +120,9 @@ def main():
     state_normal = TrainState.create(apply_fn=ldm_normal_model.apply, params=ldm_normal_params, tx=optax.identity())
 
     with open(tb_config_path, 'r') as f:
-        tb_meta = json.load(f)['args']
+        tb_loaded_json = json.load(f)
+        tb_meta = tb_loaded_json.get('args', tb_loaded_json)
+
     ae_config_path = tb_meta['ae_config_path']
     ae_ckpt_path = tb_meta['ae_ckpt_path']
     vae_def, vae_params = load_autoencoder(ae_config_path, ae_ckpt_path)
