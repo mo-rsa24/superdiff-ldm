@@ -32,17 +32,18 @@ from run.ldm import load_autoencoder  # Directly import the trusted loader
 
 def load_ldm(config_path: str, ckpt_path: str) -> Tuple[ScoreNet, Dict]:
     """
-    FIXED: Loads a ScoreNet LDM by correctly parsing arguments from metadata,
-    respecting the actual ScoreNet definition in cxr_unet.py and ldm.py.
+    FIXED: Loads a ScoreNet LDM by perfectly replicating the model and optimizer
+    setup from ldm.py to prevent deserialization errors.
     """
     print(f"Loading LDM from config: {config_path}")
     with open(config_path, 'r') as f:
-        meta = json.load(f).get('args', json.load(open(config_path, 'r')))
+        # The training arguments are saved in the 'args' sub-dictionary
+        meta = json.load(f)['args']
 
     # --- Load VAE metadata to get parameters required by the U-Net ---
     vae_config_path = meta['ae_config_path']
     with open(vae_config_path, 'r') as f:
-        vae_meta = json.load(f).get('args', json.load(open(vae_config_path, 'r')))
+        vae_meta = json.load(f)['args']
 
     embed_dim = vae_meta['embed_dim']
     z_channels = vae_meta['z_channels']
@@ -53,8 +54,7 @@ def load_ldm(config_path: str, ckpt_path: str) -> Tuple[ScoreNet, Dict]:
     attn_res = tuple(int(r) for r in meta['ldm_attn_res'].split(',') if r)
     num_res_blocks = meta['ldm_num_res_blocks']
 
-    # --- Instantiate ScoreNet with the correct arguments ---
-    # marginal_prob_std_fn is NOT a model parameter.
+    # --- Instantiate ScoreNet ---
     ldm_model = ScoreNet(
         embed_dim=embed_dim,
         channels=ldm_chans,
@@ -63,22 +63,39 @@ def load_ldm(config_path: str, ckpt_path: str) -> Tuple[ScoreNet, Dict]:
         num_heads=4
     )
 
-    # --- Create dummy state to load checkpoint ---
+    # --- Create a dummy state with a PERFECTLY MATCHING optimizer structure ---
     rng = jax.random.PRNGKey(0)
-    latent_size = meta['img_size'] // 4
+    latent_size = meta['img_size'] // 8
 
     fake_latents = jnp.ones((1, latent_size, latent_size, z_channels))
     fake_time = jnp.ones((1,))
     ldm_variables = ldm_model.init({'params': rng, 'dropout': rng}, fake_latents, fake_time)
 
-    tx = optax.adamw(learning_rate=meta.get('lr', 3e-5))
+    # This optimizer definition MUST match the one in ldm.py
+    tx = optax.chain(
+        optax.clip_by_global_norm(meta.get('grad_clip', 1.0)),
+        optax.adamw(meta.get('lr', 3e-5), weight_decay=meta.get('weight_decay', 0.01))
+    )
     dummy_state = TrainState.create(apply_fn=ldm_model.apply, params=ldm_variables['params'], tx=tx)
 
     print(f"Loading LDM checkpoint from: {ckpt_path}")
     with tf.io.gfile.GFile(ckpt_path, "rb") as f:
         blob = f.read()
 
-    restored_state = from_bytes(dummy_state, blob)
+    try:
+        restored_state = from_bytes(dummy_state, blob)
+    except KeyError as e:
+        print("\n--- FLAX DESERIALIZATION ERROR ---")
+        print(f"A `KeyError` occurred: {e}")
+        print(
+            "This almost always means the model architecture defined in the script does not match the one in the saved checkpoint.")
+        print("Please check the following in your `run_meta.json` and `cxr_unet.py`:")
+        print(f"  - `ldm_num_res_blocks`: {num_res_blocks}")
+        print(f"  - `ldm_base_ch`: {meta['ldm_base_ch']}")
+        print(f"  - `ldm_ch_mults`: {ch_mults}")
+        print("----------------------------------\n")
+        raise e
+
     print("✅ LDM loaded successfully.")
     return ldm_model, restored_state.params
 
@@ -103,9 +120,9 @@ def main():
     print(f"🚀 Starting composition run. Outputs will be saved to: {output_dir}")
 
     # --- Load Models using the robust, consistent loaders ---
-    tb_config_path = os.path.join(args.run_tb, "ldm_meta.json")
+    tb_config_path = os.path.join(args.run_tb, "run_meta.json")
     tb_ckpt_path = os.path.join(args.run_tb, "ckpts/last.flax")
-    normal_config_path = os.path.join(args.run_normal, "ldm_meta.json")
+    normal_config_path = os.path.join(args.run_normal, "run_meta.json")
     normal_ckpt_path = os.path.join(args.run_normal, "ckpts/last.flax")
 
     ldm_tb_model, ldm_tb_params = load_ldm(tb_config_path, tb_ckpt_path)
@@ -126,7 +143,7 @@ def main():
         return vae_def.apply({'params': params}, latents, method=vae_def.decode)
 
     # --- Prepare for Composition Sampling ---
-    latent_size = tb_meta['img_size'] // 4
+    latent_size = tb_meta['img_size'] // 8
     z_channels = vae_def.enc_cfg['z_ch']
     sample_shape = (args.batch_size, latent_size, latent_size, z_channels)
 
