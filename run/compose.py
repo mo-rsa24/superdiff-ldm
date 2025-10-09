@@ -120,9 +120,9 @@ def main():
     print(f"🚀 Starting composition run. Outputs will be saved to: {output_dir}")
 
     # --- Load Models using the robust, consistent loaders ---
-    tb_config_path = os.path.join(args.run_tb, "run_meta.json")
+    tb_config_path = os.path.join(args.run_tb, "ldm_meta.json")
     tb_ckpt_path = os.path.join(args.run_tb, "ckpts/last.flax")
-    normal_config_path = os.path.join(args.run_normal, "run_meta.json")
+    normal_config_path = os.path.join(args.run_normal, "ldm_meta.json")
     normal_ckpt_path = os.path.join(args.run_normal, "ckpts/last.flax")
 
     ldm_tb_model, ldm_tb_params = load_ldm(tb_config_path, tb_ckpt_path)
