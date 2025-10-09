@@ -126,7 +126,7 @@ def main():
         return vae_def.apply({'params': params}, latents, method=vae_def.decode)
 
     # --- Prepare for Composition Sampling ---
-    latent_size = tb_meta['img_size'] // 8
+    latent_size = tb_meta['img_size'] // 4
     z_channels = vae_def.enc_cfg['z_ch']
     sample_shape = (args.batch_size, latent_size, latent_size, z_channels)
 
