@@ -62,12 +62,11 @@ def load_ldm(config_path: str, ckpt_path: str) -> Tuple[ScoreNet, Dict]:
         channels=ldm_chans,
         num_res_blocks=num_res_blocks,
         attn_resolutions=attn_res,
-        num_heads=4
     )
 
     # --- Create a dummy state to load checkpoint ---
     rng = jax.random.PRNGKey(0)
-    latent_size = meta['img_size'] // 8
+    latent_size = meta['img_size'] // 4
 
     fake_latents = jnp.ones((1, latent_size, latent_size, z_channels))
     fake_time = jnp.ones((1,))
@@ -133,7 +132,7 @@ def main():
         return vae_def.apply({'params': params}, latents, method=vae_def.decode)
 
     # --- Prepare for Composition Sampling ---
-    latent_size = tb_meta['img_size'] // 8
+    latent_size = tb_meta['img_size'] // 4
     z_channels = vae_def.enc_cfg['z_ch']
     sample_shape = (args.batch_size, latent_size, latent_size, z_channels)
 
@@ -146,8 +145,7 @@ def main():
         score_normal = -eps_normal / sigma_t
         key, div_key_tb, div_key_normal = jax.random.split(key, 3)
         dlog_p_tb = score_function_hutchinson_estimator(x, t, state_tb.apply_fn, state_tb.params, div_key_tb)[0]
-        dlog_p_normal = \
-        score_function_hutchinson_estimator(x, t, state_normal.apply_fn, state_normal.params, div_key_normal)[0]
+        dlog_p_normal = score_function_hutchinson_estimator(x, t, state_normal.apply_fn, state_normal.params, div_key_normal)[0]
         kappa = get_kappa(t, (dlog_p_tb, dlog_p_normal), (score_tb, score_normal))
         kappa = jnp.clip(kappa, 0.0, 1.0)
         composed_score = (1 - kappa) * score_normal + kappa * score_tb
@@ -164,8 +162,7 @@ def main():
     key, sample_key = jax.random.split(key)
     time_steps = jnp.linspace(1., 1e-3, args.steps)
     dt = time_steps[0] - time_steps[1]
-    x = jax.random.normal(sample_key, sample_shape) * marginal_prob_std_fn(jnp.ones((args.batch_size,)))[
-        :, None, None, None]
+    x = jax.random.normal(sample_key, sample_shape) * marginal_prob_std_fn(jnp.ones((args.batch_size,)))[:, None, None, None]
     diagnostics_history = []
     for t in tqdm(time_steps, desc="Sampling"):
         key, step_key, noise_key = jax.random.split(key, 3)
@@ -174,7 +171,7 @@ def main():
         diagnostics_history.append(jax.device_get(diagnostics))
         g_t = diffusion_coeff_fn(t_batch)[:, None, None, None]
         noise = jax.random.normal(noise_key, x.shape)
-        x = x + (g_t ** 2 * score * dt) + g_t * jnp.sqrt(dt) * noise
+        x = x + (g_t**2 * score * dt) + g_t * jnp.sqrt(dt) * noise
     print("✅ Sampling complete.")
 
     # --- Decode and Save ---
@@ -193,21 +190,14 @@ def main():
         steps_axis = np.arange(len(diagnostics_history))
         axs[0].plot(steps_axis, diag_agg['score_norm_tb'].mean(axis=-1), label="TB")
         axs[0].plot(steps_axis, diag_agg['score_norm_normal'].mean(axis=-1), label="Normal")
-        axs[0].plot(steps_axis, diag_agg['score_norm_composed'].mean(axis=-1), label="Composed", linestyle='--',
-                    alpha=0.8)
-        axs[0].set_title("Score Norms")
-        axs[0].legend()
-        axs[0].set_xlabel("Step")
+        axs[0].plot(steps_axis, diag_agg['score_norm_composed'].mean(axis=-1), label="Composed", linestyle='--', alpha=0.8)
+        axs[0].set_title("Score Norms"); axs[0].legend(); axs[0].set_xlabel("Step")
         axs[1].plot(steps_axis, diag_agg['dlog_tb'].mean(axis=-1), label="TB")
         axs[1].plot(steps_axis, diag_agg['dlog_normal'].mean(axis=-1), label="Normal")
-        axs[1].set_title("Divergence (dlog p)")
-        axs[1].legend()
-        axs[1].set_xlabel("Step")
+        axs[1].set_title("Divergence (dlog p)"); axs[1].legend(); axs[1].set_xlabel("Step")
         axs[2].plot(steps_axis, diag_agg['kappa'].mean(axis=-1))
-        axs[2].set_title("Kappa (mean over batch)")
-        axs[2].set_xlabel("Step")
-        axs[2].set_ylim(0, 1)
-        axs[3].hist(diag_agg['kappa'].flatten(), bins=50, range=(0, 1))
+        axs[2].set_title("Kappa (mean over batch)"); axs[2].set_xlabel("Step"); axs[2].set_ylim(0, 1)
+        axs[3].hist(diag_agg['kappa'].flatten(), bins=50, range=(0, 1));
         axs[3].set_title("Kappa Distribution")
         diag_plot_path = os.path.join(output_dir, "diagnostics_plot.png")
         plt.tight_layout()
