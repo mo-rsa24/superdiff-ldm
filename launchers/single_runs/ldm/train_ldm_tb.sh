@@ -26,7 +26,7 @@ export WANDB="1"
 # --- Shared VAE and Scale Factor (❗ IMPORTANT: Update these values) ---
 export AE_CKPT_PATH="runs/unified-ae-128_z4_20251008-135847/20251008-140403/ckpts/last.flax"
 export AE_CONFIG_PATH="runs/unified-ae-128_z4_20251008-135847/20251008-140403/run_meta.json"
-export LATENT_SCALE_FACTOR="1.95179"
+export LATENT_SCALE_FACTOR="1.001650"
 
 # --- SLURM Defaults ---
 export SLURM_PARTITION="bigbatch"
@@ -55,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     --log_every)          export LOG_EVERY="$2"; shift 2 ;;
     --sample_every)       export SAMPLE_EVERY="$2"; shift 2 ;;
     --sample_batch_size)  export SAMPLE_BATCH_SIZE="$2"; shift 2 ;;
+    --latent_scale_factor) export LATENT_SCALE_FACTOR="$2"; shift 2 ;;
     *)                    OTHER_ARGS+=("$1"); shift ;; # Save unrecognized arg
   esac
 done
@@ -88,7 +89,10 @@ kv "Batch Size" "${BATCH_PER_DEVICE}"
 kv "Log Every (Steps)" "${LOG_EVERY}"
 kv "Sample Every (Epochs)" "${SAMPLE_EVERY}"
 kv "Sample Batch Size" "${SAMPLE_BATCH_SIZE}"
+kv "Latent Scale Factor" "${LATENT_SCALE_FACTOR}"
 rule
 
-sbatch --partition="$SLURM_PARTITION" --job-name="$SLURM_JOB_NAME" slurm_scripts/cxr_ldm.slurm "${OTHER_ARGS[@]}"
+sbatch --partition="$SLURM_PARTITION" --job-name="$SLURM_JOB_NAME" \
+  slurm_scripts/cxr_ldm.slurm \
+  --latent_scale_factor "$LATENT_SCALE_FACTOR" \
 echo "✅ Job successfully submitted!"
