@@ -391,13 +391,13 @@ def main():
                 return num / den
 
             aux = dict(
-                t_mean=float(jnp.mean(t)),
-                sigma_mean=float(jnp.mean(sigma)),
-                alpha_mean=float(jnp.mean(alpha)),
-                cos_eps=float(jnp.mean(_cos(eps_hat, noise))),
-                z_mean=float(jnp.mean(z)), z_std=float(jnp.std(z)),
-                xt_mean=float(jnp.mean(x_t)), xt_std=float(jnp.std(x_t)),
-                eps_hat_mean=float(jnp.mean(eps_hat)), eps_hat_std=float(jnp.std(eps_hat)),
+                t_mean=jnp.mean(t),
+                sigma_mean=jnp.mean(sigma),
+                alpha_mean=jnp.mean(alpha),
+                cos_eps=jnp.mean(_cos(eps_hat, noise)),
+                z_mean=jnp.mean(z), z_std=jnp.std(z),
+                xt_mean=jnp.mean(x_t), xt_std=jnp.std(x_t),
+                eps_hat_mean=jnp.mean(eps_hat), eps_hat_std=jnp.std(eps_hat),
             )
             return loss, aux
         (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(ldm_state.params)
