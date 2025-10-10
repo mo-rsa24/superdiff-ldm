@@ -13,12 +13,11 @@ from torch.utils.data import DataLoader, Dataset, Subset
 from tqdm import tqdm
 from torchvision.utils import save_image
 import torch
-
-# Local imports
+from typing import Any
 from datasets.ChestXRay import ChestXrayDataset
+from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn
 from models.ae_kl import AutoencoderKL
 from models.cxr_unet import ScoreNet
-from diffusion.equations import marginal_prob_std_fn, diffusion_coeff_fn
 from diffusion.sampling import Euler_Maruyama_sampler  # make sure this has the corrected drift
 
 # W&B is optional
@@ -127,6 +126,9 @@ def log_sample_diversity(samples_np: np.ndarray, step: int, epoch: int):
     if _WANDB and wandb.run is not None:
         wandb.log({"sample_diversity/metrics": metrics, "epoch": epoch, "step": step})
 
+class TrainStateWithEMA(TrainState):
+    ema_params: Any = None
+
 def parse_args():
     p = argparse.ArgumentParser("JAX Latent Diffusion Model (CXR) Trainer")
     # --- Data & Debugging ---
@@ -174,7 +176,9 @@ def parse_args():
     p.add_argument("--log_every", type=int, default=100)
     p.add_argument("--sample_every", type=int, default=5)
     p.add_argument("--sample_batch_size", type=int, default=16)
-
+    # 2. Add EMA command-line arguments
+    p.add_argument("--use_ema", action="store_true", help="Enable EMA for model parameters.")
+    p.add_argument("--ema_decay", type=float, default=0.999, help="Decay rate for EMA.")
     p.add_argument("--wandb", action="store_true", help="Enable logging to Weights & Biases")
     p.add_argument("--wandb_project", default="cxr-ldm")
     p.add_argument("--wandb_tags", default="")
@@ -240,7 +244,10 @@ def load_autoencoder(config_path, ckpt_path):
 def main():
     args = parse_args()
     print(f"[config] latent_scale_factor = {args.latent_scale_factor}")
-
+    if args.use_ema:
+        print(f"✅ EMA is enabled with a decay rate of {args.ema_decay}")
+    else:
+        print("❌ EMA is disabled for this run.")
     rng = jax.random.PRNGKey(args.seed)
 
     # --- Setup Directories ---
@@ -305,7 +312,13 @@ def main():
 
     # --- Setup TrainState ---
     tx = optax.chain(optax.clip_by_global_norm(args.grad_clip), optax.adamw(args.lr, weight_decay=args.weight_decay))
-    ldm_state = TrainState.create(apply_fn=ldm_model.apply, params=ldm_params, tx=tx)
+    ema_params = ldm_params if args.use_ema else None
+    ldm_state = TrainStateWithEMA.create(
+        apply_fn=ldm_model.apply,
+        params=ldm_params,
+        ema_params=ema_params,  # Add this line
+        tx=tx
+    )
     if args.resume_dir and tf.io.gfile.exists(ckpt_latest):
         print(f"[info] Resuming LDM from {ckpt_latest}")
         with tf.io.gfile.GFile(ckpt_latest, "rb") as f:
@@ -345,42 +358,58 @@ def main():
 
     # --- Define Training Step ---
     def train_step(rng, ldm_state, ae_params, x_batch, precomputed_z0):
-        def loss_fn(ldm_params):
-            rng_ae, rng_diff = jax.random.split(rng)
+        """One pmap-ed training step."""
+        # x_batch: images in [0,1]; you already encode -> z elsewhere if needed.
+        rng, rng_diff = jax.random.split(rng, 2)
 
+        def loss_fn(ldm_params):
             if precomputed_z0 is not None:
                 z = precomputed_z0
             else:
                 posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
-                z = posterior.sample(rng_ae) * args.latent_scale_factor
-                # z = posterior.sample(rng_ae)
+                z = posterior.sample(rng) * args.latent_scale_factor
 
-            # ε-prediction training
-            rng_t, rng_noise = jax.random.split(rng_diff)
+            # Sample t ~ U(1e-5, 1) and ε ~ N(0, I)
+            rng_t, rng_noise = jax.random.split(rng_diff, 2)
             t = jax.random.uniform(rng_t, (z.shape[0],), minval=1e-5, maxval=1.0)
             noise = jax.random.normal(rng_noise, z.shape)
-            std = marginal_prob_std_fn(t)
-            perturbed_z = z + noise * std[:, None, None, None]
-            predicted_noise = ldm_model.apply({'params': ldm_params}, perturbed_z, t)
 
-            loss = jnp.mean((predicted_noise - noise) ** 2)
+            # VP forward perturbation
+            sigma = marginal_prob_std_fn(t)  # σ(t)  [B]
+            alpha = alpha_fn(t)  # α(t)  [B]
+            sigma_b = sigma[:, None, None, None]
+            alpha_b = alpha[:, None, None, None]
+            x_t = alpha_b * z + sigma_b * noise  # x_t = α z + σ ε
 
-            # aux metrics (scalars) — pmean-able pytree
-            aux = {
-                "z_mean": jnp.mean(z), "z_std": jnp.std(z), "z_min": jnp.min(z), "z_max": jnp.max(z),
-                "target_mean": jnp.mean(noise), "target_std": jnp.std(noise),
-                "pred_mean": jnp.mean(predicted_noise), "pred_std": jnp.std(predicted_noise),
-            }
+            # Predict ε and compute simple ε-MSE
+            eps_hat = ldm_model.apply({'params': ldm_params}, x_t, t)  # [B,H,W,C]
+            loss = jnp.mean((eps_hat - noise) ** 2)
+            def _cos(a, b, eps=1e-8):
+                num = jnp.sum(a * b, axis=tuple(range(1, a.ndim)))
+                den = jnp.linalg.norm(a.reshape(a.shape[0], -1), axis=-1) * \
+                      jnp.linalg.norm(b.reshape(b.shape[0], -1), axis=-1) + eps
+                return num / den
+
+            aux = dict(
+                t_mean=float(jnp.mean(t)),
+                sigma_mean=float(jnp.mean(sigma)),
+                alpha_mean=float(jnp.mean(alpha)),
+                cos_eps=float(jnp.mean(_cos(eps_hat, noise))),
+                z_mean=float(jnp.mean(z)), z_std=float(jnp.std(z)),
+                xt_mean=float(jnp.mean(x_t)), xt_std=float(jnp.std(x_t)),
+                eps_hat_mean=float(jnp.mean(eps_hat)), eps_hat_std=float(jnp.std(eps_hat)),
+            )
             return loss, aux
-
         (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(ldm_state.params)
         grad_norm = optax.global_norm(grads)
-        # include grad_norm in aux and average across devices
         aux = jax.tree_util.tree_map(lambda x: jax.lax.pmean(x, axis_name='device'), aux)
         aux = {**aux, "grad_norm": jax.lax.pmean(grad_norm, axis_name='device')}
         loss = jax.lax.pmean(loss, axis_name='device')
-
         new_ldm_state = ldm_state.apply_gradients(grads=grads)
+        if args.use_ema:
+            new_ema_params = optax.incremental_update(new_ldm_state.params, ldm_state.ema_params, args.ema_decay)
+            new_ldm_state = new_ldm_state.replace(ema_params=new_ema_params)
+
         return new_ldm_state, loss, aux
 
     pmapped_train_step = jax.pmap(train_step, axis_name='device')
@@ -432,6 +461,12 @@ def main():
             unrep_ldm_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ldm_state.params))
             unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
 
+            if args.use_ema and ldm_state.ema_params is not None:
+                print("[info] Using EMA parameters for sampling.")
+                sampling_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ldm_state.ema_params))
+            else:
+                sampling_params = unrep_ldm_params
+
             # --- sanity A: decode the fixed training latent (z0) directly ---
             if precomputed_z0 is not None:
                 # take device-0 slice and undo sharding
@@ -457,6 +492,18 @@ def main():
                 x_mid = jnp.transpose(x_mid, (0, 3, 1, 2))
                 x_mid_t = torch.from_numpy(np.asarray(x_mid))
                 save_image(x_mid_t, os.path.join(samples_dir, f"sanityB_decode_noisy_latent_ep{ep + 1:04d}.png"))
+            if args.use_ema:
+                open_block("ema", step=global_step, epoch=ep + 1, note="Validate EMA Impact")
+                flat_params = jnp.concatenate([jnp.ravel(x) for x in jax.tree_util.tree_leaves(unrep_ldm_params)])
+                flat_ema_params = jnp.concatenate([jnp.ravel(x) for x in jax.tree_util.tree_leaves(sampling_params)])
+                cosine_sim = jnp.dot(flat_params, flat_ema_params) / (
+                            jnp.linalg.norm(flat_params) * jnp.linalg.norm(flat_ema_params))
+                print(f"[info] Cosine similarity between base and EMA weights: {cosine_sim:.6f}")
+                pretty_table("ema", metrics)
+                close_block("ema", step=global_step)
+
+                if use_wandb:
+                    wandb.log({"train/cosine_similarity": float(cosine_sim), "epoch": ep + 1})
 
             open_block("sample", step=global_step, epoch=ep + 1, note="Euler-Maruyama SDE Sampler")
             sample_rng = jax.random.fold_in(rng, ep + 1)
@@ -464,7 +511,7 @@ def main():
             samples_grid, final_latent = Euler_Maruyama_sampler(
                 rng=sample_rng,
                 ldm_model=ldm_model,
-                ldm_params=unrep_ldm_params,
+                ldm_params=sampling_params,
                 ae_model=ae_model,
                 ae_params=unrep_ae_params,
                 marginal_prob_std_fn=marginal_prob_std_fn,

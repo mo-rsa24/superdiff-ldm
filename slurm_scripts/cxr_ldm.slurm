@@ -44,6 +44,8 @@ LR="${LR:-1e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-1e-4}"
 GRAD_CLIP="${GRAD_CLIP:-1.0}"
 EPOCHS="${EPOCHS:-500}"
+USE_EMA="${USE_EMA:-0}" # Default to off if not set
+EMA_DECAY="${EMA_DECAY:-0.999}"
 BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-4}"
 SAMPLE_EVERY="${SAMPLE_EVERY:-5}"
 LOG_EVERY="${LOG_EVERY:-100}"
@@ -103,6 +105,12 @@ if [[ "$OVERFIT_ONE" == "1" || "$OVERFIT_ONE" == "true" ]]; then ARGS+=( --overf
 elif (( OVERFIT_K > 0 )); then ARGS+=( --overfit_k "$OVERFIT_K" );
 fi
 
+# --- Add EMA arguments if enabled ---
+if [[ "$USE_EMA" == "1" ]]; then
+  ARGS+=(--use_ema --ema_decay "$EMA_DECAY")
+fi
+
+
 # Optional run name / resume
 [[ -n "$RUN_NAME" ]] && ARGS+=( --run_name "$RUN_NAME" )
 [[ -n "$RESUME_DIR" ]] && ARGS+=( --resume_dir "$RESUME_DIR" )
@@ -130,6 +138,9 @@ kv "BATCHxDEVS"     "$BATCH_PER_DEVICE x $(nvidia-smi --query-gpu=name --format=
 kv "AE_CHECKPOINT"  "$AE_CKPT_PATH"
 kv "OVERFIT"        "(of1=$OVERFIT_ONE, tinyK=$OVERFIT_K)"
 kv "W&B"            "$WANDB (${WANDB_PROJECT}) tags=[$WANDB_TAGS]"
-
+kv "EMA Enabled" "${USE_EMA}"
+if [[ "$USE_EMA" == "1" ]]; then
+  kv "EMA Decay" "${EMA_DECAY}"
+fi
 banner "Run"
 srun python -u "$PYFILE" "${ARGS[@]}"

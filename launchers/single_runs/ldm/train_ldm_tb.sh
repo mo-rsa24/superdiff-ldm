@@ -26,12 +26,15 @@ export WANDB="1"
 # --- Shared VAE and Scale Factor (❗ IMPORTANT: Update these values) ---
 export AE_CKPT_PATH="runs/unified-ae-128_z4_20251008-135847/20251008-140403/ckpts/last.flax"
 export AE_CONFIG_PATH="runs/unified-ae-128_z4_20251008-135847/20251008-140403/run_meta.json"
-export LATENT_SCALE_FACTOR="3.133603"
+export LATENT_SCALE_FACTOR="1.95179"
 
 # --- SLURM Defaults ---
 export SLURM_PARTITION="bigbatch"
 export SLURM_JOB_NAME="ldm-${TASK,,}-proto"
 
+# --- EMA Configuration ---
+export USE_EMA="1" # Use "1" for true, "0" for false
+export EMA_DECAY="0.999"
 # --- Robust Argument Parsing Loop ---
 OTHER_ARGS=()
 shift # Shift away the first argument (training_mode)
