@@ -29,9 +29,10 @@ def _save_reconstruction_grid(ae_model, ae_params, loader, output_dir, n_samples
     x_real, _ = next(iter(loader))
     x_real = x_real[:n_samples]
     x_np = x_real.numpy().transpose(0, 2, 3, 1)
-    x_jax = jnp.asarray(x_np)
+    x_jax = (jnp.asarray(x_np) + 1.0) / 2.0  #
     posterior = ae_model.apply({'params': ae_params}, x_jax, method=ae_model.encode, train=False)
-    z = posterior.mode()
+    rng = jax.random.PRNGKey(0)
+    z = posterior.sample(rng)
     x_rec_jax = ae_model.apply({'params': ae_params}, z, method=ae_model.decode, train=False)
     x_rec_torch = torch.from_numpy(np.asarray(x_rec_jax)).permute(0, 3, 1, 2).clamp(0, 1)
     x_real_norm = (x_real + 1.0) / 2.0
@@ -117,7 +118,7 @@ def main():
     parser.add_argument("--data_root", type=str, required=True, help="Path to the root of the dataset.")
     parser.add_argument("--task", type=str, required=True, help="Dataset task (e.g., TB).")
     parser.add_argument("--img_size", type=int, default=128, help="Image size.")
-    parser.add_argument("--class_filter", type=int, default=None, help="Class to filter for.")
+    parser.add_argument("--class_filter", type=int, default=1, help="Class to filter for.")
     parser.add_argument("--num_samples_for_scale", type=int, default=2259,
                         help="Number of images to use for scale calculation.")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for processing.")
@@ -144,9 +145,10 @@ def main():
     for batch in tqdm(loader, desc="Encoding batches"):
         x_torch, _ = batch
         x_np = x_torch.numpy().transpose(0, 2, 3, 1)
-        x_jax = jnp.asarray(x_np)
+        x_jax = (jnp.asarray(x_np) + 1.0) / 2.0  # <-- scale to [0,1]
         posterior = ae_model.apply({'params': ae_params}, x_jax, method=ae_model.encode, train=False)
-        z = posterior.mode()
+        rng = jax.random.PRNGKey(0)
+        z = posterior.sample(rng)
         all_latents.append(np.asarray(z))
 
     full_latents = np.concatenate(all_latents, axis=0)
