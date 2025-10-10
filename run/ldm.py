@@ -438,10 +438,13 @@ def main():
                     "step": global_step,
                     "loss": loss_val,
                     "grad_norm": aux_host["grad_norm"],
+                    "t.mean": aux_host["t_mean"],
+                    "sigma.mean": aux_host["sigma_mean"],
+                    "alpha.mean": aux_host["alpha_mean"],
+                    "cos_eps.mean": aux_host["cos_eps"],
                     "z.mean": aux_host["z_mean"], "z.std": aux_host["z_std"],
-                    "z.min": aux_host["z_min"], "z.max": aux_host["z_max"],
-                    "ε.target_mean": aux_host["target_mean"], "ε.target_std": aux_host["target_std"],
-                    "ε.pred_mean": aux_host["pred_mean"], "ε.pred_std": aux_host["pred_std"],
+                    "x_t.mean": aux_host["xt_mean"], "x_t.std": aux_host["xt_std"],
+                    "eps_hat.mean": aux_host["eps_hat_mean"], "eps_hat.std": aux_host["eps_hat_std"],
                 }
                 open_block("train", step=global_step, epoch=ep + 1, note="per-device means (pmean)")
                 pretty_table("train/metrics", metrics)
