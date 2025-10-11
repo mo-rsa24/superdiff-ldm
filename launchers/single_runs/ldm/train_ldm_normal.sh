@@ -24,9 +24,9 @@ export LDM_ATTN_RES="16"
 export WANDB="1"
 
 # --- Shared VAE and Scale Factor (❗ IMPORTANT: Update these values) ---
-export AE_CKPT_PATH="runs/unified-ae-128_z4_20251008-135847/20251008-140403/ckpts/last.flax"
-export AE_CONFIG_PATH="runs/unified-ae-128_z4_20251008-135847/20251008-140403/run_meta.json"
-export LATENT_SCALE_FACTOR="1.001650"
+export AE_CKPT_PATH="runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/ckpts/last.flax"
+export AE_CONFIG_PATH="runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/run_meta.json"
+export LATENT_SCALE_FACTOR="0.994534"
 
 # --- SLURM Defaults ---
 export SLURM_PARTITION="bigbatch"
