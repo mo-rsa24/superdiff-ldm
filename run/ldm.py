@@ -522,7 +522,7 @@ def main():
                 latent_size=latent_size,
                 batch_size=args.sample_batch_size,
                 z_channels=z_channels,
-                z_std=(1.0 / args.latent_scale_factor)
+                z_std=args.latent_scale_factor
             )
             final_latent_np = np.asarray(final_latent)
             log_sample_diversity(final_latent_np, step=global_step, epoch=ep + 1)
