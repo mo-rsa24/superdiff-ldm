@@ -2,7 +2,7 @@ from typing import Callable
 import jax
 import jax.numpy as jnp
 from jax import vmap
-
+import functools
 # ---------------------------
 # Cosine VP schedule (Nichol-Dhariwal)
 #   alpha_bar(t) = cos^2( (t + s)/(1 + s) * pi/2 ),  t in [0,1]
@@ -55,6 +55,52 @@ def diffusion_coeff(t: jnp.ndarray) -> jnp.ndarray:
     g(t) = sqrt(β(t)) for VP-SDE.
     """
     return jnp.sqrt(beta(t))
+
+@functools.partial(jax.jit, static_argnums=(2,))
+def score_function_hutchinson_estimator(x, t, score_fn, params, key):
+  v = jax.random.normal(key, x.shape)
+  def epsilon_fn(y):
+      return score_fn({'params': params}, y, t)
+  _, jvp_val = jax.jvp(epsilon_fn, (x,), (v,))
+  sigma_t = marginal_prob_std_fn(t)[:, None, None, None]
+  divergence = -jnp.sum(v * jvp_val, axis=(1, 2, 3)) / sigma_t.squeeze()
+
+  return divergence, divergence
+
+def _sum_except_batch(x):
+  """Sum over all non-batch axes, keep batch axis."""
+  axes = tuple(range(1, x.ndim))
+  return jnp.sum(x, axis=axes, keepdims=True)
+
+
+@jax.jit
+def get_kappa(t, divlogs, scores):
+  """
+  Calculates the optimal mixing coefficient kappa for Superdiffusion, consistent
+  with the VP-SDE defined in this file.
+
+  Args:
+    t: The current timestep, a JAX array of shape (N,).
+    divlogs: A tuple of two JAX arrays (div_score1, div_score2),
+             representing the divergence of the two score functions.
+             Shape of each is (N,).
+    scores: A tuple of two JAX arrays (score1, score2), representing the
+            score functions of the two models. Shape of each is (N, H, W, C).
+
+  Returns:
+    A JAX array of shape (N, 1, 1, 1) representing kappa, which can be
+    broadcast to the shape of the latents.
+  """
+  div1, div2 = divlogs
+  s1, s2 = scores
+  div1 = div1[:, None, None, None]
+  div2 = div2[:, None, None, None]
+  g_t_squared = diffusion_coeff_fn(t)[:, None, None, None]**2
+  numerator = g_t_squared * (div1 - div2) + _sum_except_batch(s1 * (s1 - s2))
+  denominator = _sum_except_batch((s1 - s2)**2) + 1e-12 # Add epsilon for stability
+
+  kappa = numerator / denominator
+  return kappa
 
 # Vectorized (batch) versions used everywhere
 marginal_prob_std_fn = vmap(marginal_prob_std)

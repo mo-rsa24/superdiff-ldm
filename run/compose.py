@@ -9,7 +9,15 @@ import argparse
 from tqdm import tqdm
 import numpy as np
 import tensorflow as tf
+from typing import Any
+from flax.training.train_state import TrainState
 
+from diffusion.vp_equation import marginal_prob_std_fn, score_function_hutchinson_estimator, diffusion_coeff_fn, \
+    get_kappa
+
+
+class TrainStateWithEMA(TrainState):
+    ema_params: Any = None
 # --- ensure repo root on sys.path ---
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if repo_root not in sys.path:
@@ -25,66 +33,66 @@ import matplotlib.pyplot as plt
 import optax
 
 # --- Use the project's actual modules, following ldm.py's structure ---
-from diffusion.equations import get_kappa, score_function_hutchinson_estimator, marginal_prob_std_fn, diffusion_coeff_fn
+
 from models.cxr_unet import ScoreNet
 from run.ldm import load_autoencoder  # Directly import the trusted loader
 
 
 def load_ldm(config_path: str, ckpt_path: str) -> Tuple[ScoreNet, Dict]:
-    """
-    FIXED: Loads a ScoreNet LDM by correctly handling different JSON
-    metadata structures to prevent KeyError.
-    """
     print(f"Loading LDM from config: {config_path}")
     with open(config_path, 'r') as f:
         loaded_json = json.load(f)
-        # Handle both cases: metadata nested under 'args' or at the top level
         meta = loaded_json.get('args', loaded_json)
 
-    # --- Load VAE metadata to get parameters required by the U-Net ---
+    # --- Load VAE metadata ---
     vae_config_path = meta['ae_config_path']
     with open(vae_config_path, 'r') as f:
         vae_loaded_json = json.load(f)
         vae_meta = vae_loaded_json.get('args', vae_loaded_json)
-
-    embed_dim = vae_meta['embed_dim']
     z_channels = vae_meta['z_channels']
 
-    # --- Construct U-Net parameters from LDM metadata ---
-    ch_mults = tuple(int(c) for c in meta['ldm_ch_mults'].split(',') if c)
-    ldm_chans = tuple([meta['ldm_base_ch']] + [meta['ldm_base_ch'] * m for m in ch_mults])
+    # --- Construct U-Net parameters ---
+    ldm_chans = tuple(meta['ldm_base_ch'] * int(m) for m in meta['ldm_ch_mults'].split(','))
     attn_res = tuple(int(r) for r in meta['ldm_attn_res'].split(',') if r)
     num_res_blocks = meta['ldm_num_res_blocks']
 
     # --- Instantiate ScoreNet ---
     ldm_model = ScoreNet(
-        embed_dim=embed_dim,
+        z_channels=z_channels,
         channels=ldm_chans,
         num_res_blocks=num_res_blocks,
         attn_resolutions=attn_res,
     )
-
-    # --- Create a dummy state to load checkpoint ---
     rng = jax.random.PRNGKey(0)
     latent_size = meta['img_size'] // 4
-
     fake_latents = jnp.ones((1, latent_size, latent_size, z_channels))
     fake_time = jnp.ones((1,))
     ldm_variables = ldm_model.init({'params': rng, 'dropout': rng}, fake_latents, fake_time)
-
     tx = optax.chain(
         optax.clip_by_global_norm(meta.get('grad_clip', 1.0)),
         optax.adamw(meta.get('lr', 3e-5), weight_decay=meta.get('weight_decay', 0.01))
     )
-    dummy_state = TrainState.create(apply_fn=ldm_model.apply, params=ldm_variables['params'], tx=tx)
+    dummy_state = TrainStateWithEMA.create(
+        apply_fn=ldm_model.apply,
+        params=ldm_variables['params'],
+        ema_params=ldm_variables['params'],
+        tx=tx
+    )
 
     print(f"Loading LDM checkpoint from: {ckpt_path}")
     with tf.io.gfile.GFile(ckpt_path, "rb") as f:
         blob = f.read()
-
     restored_state = from_bytes(dummy_state, blob)
     print("✅ LDM loaded successfully.")
-    return ldm_model, restored_state.params
+    use_ema = meta.get('use_ema', False)
+    if use_ema and hasattr(restored_state, 'ema_params') and restored_state.ema_params is not None:
+        print("INFO: Using EMA parameters for composition.")
+        params_to_return = restored_state.ema_params
+    else:
+        print("INFO: Using standard model parameters for composition.")
+        params_to_return = restored_state.params
+
+    return ldm_model, params_to_return
 
 
 def main():
@@ -93,7 +101,7 @@ def main():
     parser.add_argument("--run_tb", type=str, required=True, help="Path to the TB model run directory.")
     parser.add_argument("--run_normal", type=str, required=True, help="Path to the Normal model run directory.")
     parser.add_argument("--batch_size", type=int, default=16, help="Number of samples to generate.")
-    parser.add_argument("--steps", type=int, default=1000, help="Number of reverse diffusion steps.")
+    parser.add_argument("--steps", type=int, default=700, help="Number of reverse diffusion steps.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
     parser.add_argument("--output_dir", type=str, default="composed_output",
                         help="Directory to save generated samples.")
@@ -136,16 +144,17 @@ def main():
     z_channels = vae_def.enc_cfg['z_ch']
     sample_shape = (args.batch_size, latent_size, latent_size, z_channels)
 
-    @functools.partial(jax.jit, static_argnums=(3,))
-    def composed_score_fn(x, t, key, batch_size):
-        eps_tb = state_tb.apply_fn({'params': state_tb.params}, x, t)
-        eps_normal = state_normal.apply_fn({'params': state_normal.params}, x, t)
+    @functools.partial(jax.jit, static_argnums=(3, 4, 5))
+    def composed_score_fn(x, t, key, batch_size, score_fn_tb, score_fn_normal):
+        eps_tb = score_fn_tb({'params': state_tb.params}, x, t)
+        eps_normal = score_fn_normal({'params': state_normal.params}, x, t)
         sigma_t = marginal_prob_std_fn(t)[:, None, None, None]
         score_tb = -eps_tb / sigma_t
         score_normal = -eps_normal / sigma_t
         key, div_key_tb, div_key_normal = jax.random.split(key, 3)
-        dlog_p_tb = score_function_hutchinson_estimator(x, t, state_tb.apply_fn, state_tb.params, div_key_tb)[0]
-        dlog_p_normal = score_function_hutchinson_estimator(x, t, state_normal.apply_fn, state_normal.params, div_key_normal)[0]
+        dlog_p_tb = score_function_hutchinson_estimator(x, t, score_fn_tb, state_tb.params, div_key_tb)[0]
+        dlog_p_normal = score_function_hutchinson_estimator(x, t, score_fn_normal, state_normal.params, div_key_normal)[
+            0]
         kappa = get_kappa(t, (dlog_p_tb, dlog_p_normal), (score_tb, score_normal))
         kappa = jnp.clip(kappa, 0.0, 1.0)
         composed_score = (1 - kappa) * score_normal + kappa * score_tb
@@ -167,7 +176,14 @@ def main():
     for t in tqdm(time_steps, desc="Sampling"):
         key, step_key, noise_key = jax.random.split(key, 3)
         t_batch = jnp.ones(args.batch_size) * t
-        score, diagnostics = composed_score_fn(x, t_batch, step_key, args.batch_size)
+        score, diagnostics = composed_score_fn(
+            x,
+            t_batch,
+            step_key,
+            args.batch_size,
+            state_tb.apply_fn,  # Pass the function for the TB model
+            state_normal.apply_fn  # Pass the function for the Normal model
+        )
         diagnostics_history.append(jax.device_get(diagnostics))
         g_t = diffusion_coeff_fn(t_batch)[:, None, None, None]
         noise = jax.random.normal(noise_key, x.shape)
@@ -195,9 +211,9 @@ def main():
         axs[1].plot(steps_axis, diag_agg['dlog_tb'].mean(axis=-1), label="TB")
         axs[1].plot(steps_axis, diag_agg['dlog_normal'].mean(axis=-1), label="Normal")
         axs[1].set_title("Divergence (dlog p)"); axs[1].legend(); axs[1].set_xlabel("Step")
-        axs[2].plot(steps_axis, diag_agg['kappa'].mean(axis=-1))
+        axs[2].plot(steps_axis, diag_agg['kappa'].mean(axis=(1, 2, 3)))
         axs[2].set_title("Kappa (mean over batch)"); axs[2].set_xlabel("Step"); axs[2].set_ylim(0, 1)
-        axs[3].hist(diag_agg['kappa'].flatten(), bins=50, range=(0, 1));
+        axs[3].hist(diag_agg['kappa'].flatten(), bins=50, range=(0, 1))
         axs[3].set_title("Kappa Distribution")
         diag_plot_path = os.path.join(output_dir, "diagnostics_plot.png")
         plt.tight_layout()
