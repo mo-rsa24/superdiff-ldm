@@ -40,22 +40,24 @@ from run.ldm import load_autoencoder  # Directly import the trusted loader
 
 
 def load_ldm(config_path: str, ckpt_path: str) -> Tuple[ScoreNet, Dict]:
-    """Loads a pre-trained Latent Diffusion Model."""
     print(f"Loading LDM from config: {config_path}")
     with open(config_path, 'r') as f:
         loaded_json = json.load(f)
         meta = loaded_json.get('args', loaded_json)
 
+    # --- Load VAE metadata ---
     vae_config_path = meta['ae_config_path']
     with open(vae_config_path, 'r') as f:
         vae_loaded_json = json.load(f)
         vae_meta = vae_loaded_json.get('args', vae_loaded_json)
     z_channels = vae_meta['z_channels']
 
+    # --- Construct U-Net parameters ---
     ldm_chans = tuple(meta['ldm_base_ch'] * int(m) for m in meta['ldm_ch_mults'].split(','))
     attn_res = tuple(int(r) for r in meta['ldm_attn_res'].split(',') if r)
     num_res_blocks = meta['ldm_num_res_blocks']
 
+    # --- Instantiate ScoreNet ---
     ldm_model = ScoreNet(
         z_channels=z_channels,
         channels=ldm_chans,
@@ -67,16 +69,31 @@ def load_ldm(config_path: str, ckpt_path: str) -> Tuple[ScoreNet, Dict]:
     fake_latents = jnp.ones((1, latent_size, latent_size, z_channels))
     fake_time = jnp.ones((1,))
     ldm_variables = ldm_model.init({'params': rng, 'dropout': rng}, fake_latents, fake_time)
-    tx = optax.identity()
-    dummy_state = TrainState.create(apply_fn=ldm_model.apply, params=ldm_variables['params'], tx=tx)
+    tx = optax.chain(
+        optax.clip_by_global_norm(meta.get('grad_clip', 1.0)),
+        optax.adamw(meta.get('lr', 3e-5), weight_decay=meta.get('weight_decay', 0.01))
+    )
+    dummy_state = TrainStateWithEMA.create(
+        apply_fn=ldm_model.apply,
+        params=ldm_variables['params'],
+        ema_params=ldm_variables['params'],
+        tx=tx
+    )
 
     print(f"Loading LDM checkpoint from: {ckpt_path}")
     with tf.io.gfile.GFile(ckpt_path, "rb") as f:
         blob = f.read()
     restored_state = from_bytes(dummy_state, blob)
     print("✅ LDM loaded successfully.")
+    use_ema = meta.get('use_ema', False)
+    if use_ema and hasattr(restored_state, 'ema_params') and restored_state.ema_params is not None:
+        print("INFO: Using EMA parameters for composition.")
+        params_to_return = restored_state.ema_params
+    else:
+        print("INFO: Using standard model parameters for composition.")
+        params_to_return = restored_state.params
 
-    return ldm_model, restored_state.params
+    return ldm_model, params_to_return
 
 # ----------------------------------------------------------------------------
 # MODIFICATION: Abstracted the sampling and diagnostics logic
@@ -214,10 +231,9 @@ def main():
 
     state_tb = TrainState.create(apply_fn=ldm_tb_model.apply, params=ldm_tb_params, tx=optax.identity())
     state_normal = TrainState.create(apply_fn=ldm_normal_model.apply, params=ldm_normal_params, tx=optax.identity())
-
     with open(tb_config_path, 'r') as f:
-        tb_meta = json.load(f).get('args', {})
-
+        tb_loaded_json = json.load(f)
+        tb_meta = tb_loaded_json.get('args', tb_loaded_json)
     ae_config_path = tb_meta['ae_config_path']
     ae_ckpt_path = tb_meta['ae_ckpt_path']
     vae_def, vae_params = load_autoencoder(ae_config_path, ae_ckpt_path)
