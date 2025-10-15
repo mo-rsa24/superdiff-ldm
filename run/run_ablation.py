@@ -18,7 +18,7 @@ import os, sys, json, math, functools, argparse
 from datetime import datetime
 import numpy as np, matplotlib.pyplot as plt, torch
 from torchvision.utils import save_image
-from tqdm import tqdm
+from typing import Any, Dict, Tuple
 import jax, jax.numpy as jnp, optax
 from flax.training.train_state import TrainState
 from flax.serialization import from_bytes
@@ -35,27 +35,67 @@ from diffusion.vp_equation import (
 from models.cxr_unet import ScoreNet
 from run.ldm import load_autoencoder
 
+
+class TrainStateWithEMA(TrainState):
+    ema_params: Any = None
 # --------------------------------------------------------------------------- #
 # Helpers: model loader
 # --------------------------------------------------------------------------- #
-def load_ldm(config_path:str, ckpt_path:str):
-    with open(config_path) as f: meta = json.load(f).get("args", json.load(f))
-    with open(meta["ae_config_path"]) as f: vae_meta = json.load(f)
-    zc = vae_meta.get("z_channels", 4)
-    chans = tuple(meta["ldm_base_ch"]*int(m) for m in meta["ldm_ch_mults"].split(","))
-    attn = tuple(int(r) for r in meta["ldm_attn_res"].split(",") if r)
-    unet = ScoreNet(z_channels=zc, channels=chans,
-                    num_res_blocks=meta["ldm_num_res_blocks"],
-                    attn_resolutions=attn)
+def load_ldm(config_path: str, ckpt_path: str) -> Tuple[ScoreNet, Dict]:
+    print(f"Loading LDM from config: {config_path}")
+    with open(config_path, 'r') as f:
+        loaded_json = json.load(f)
+        meta = loaded_json.get('args', loaded_json)
+
+    # --- Load VAE metadata ---
+    vae_config_path = meta['ae_config_path']
+    with open(vae_config_path, 'r') as f:
+        vae_loaded_json = json.load(f)
+        vae_meta = vae_loaded_json.get('args', vae_loaded_json)
+    z_channels = vae_meta['z_channels']
+
+    # --- Construct U-Net parameters ---
+    ldm_chans = tuple(meta['ldm_base_ch'] * int(m) for m in meta['ldm_ch_mults'].split(','))
+    attn_res = tuple(int(r) for r in meta['ldm_attn_res'].split(',') if r)
+    num_res_blocks = meta['ldm_num_res_blocks']
+
+    # --- Instantiate ScoreNet ---
+    ldm_model = ScoreNet(
+        z_channels=z_channels,
+        channels=ldm_chans,
+        num_res_blocks=num_res_blocks,
+        attn_resolutions=attn_res,
+    )
     rng = jax.random.PRNGKey(0)
-    h = meta["img_size"]//4
-    vars = unet.init({"params":rng,"dropout":rng},
-                     jnp.ones((1,h,h,zc)), jnp.ones((1,)))
-    tx = optax.adamw(meta.get("lr",3e-5), weight_decay=meta.get("weight_decay",0.01))
-    state = TrainState.create(apply_fn=unet.apply, params=vars["params"], tx=tx)
-    with tf.io.gfile.GFile(ckpt_path,"rb") as f: blob=f.read()
-    state = from_bytes(state, blob)
-    return unet, state.params
+    latent_size = meta['img_size'] // 4
+    fake_latents = jnp.ones((1, latent_size, latent_size, z_channels))
+    fake_time = jnp.ones((1,))
+    ldm_variables = ldm_model.init({'params': rng, 'dropout': rng}, fake_latents, fake_time)
+    tx = optax.chain(
+        optax.clip_by_global_norm(meta.get('grad_clip', 1.0)),
+        optax.adamw(meta.get('lr', 3e-5), weight_decay=meta.get('weight_decay', 0.01))
+    )
+    dummy_state = TrainStateWithEMA.create(
+        apply_fn=ldm_model.apply,
+        params=ldm_variables['params'],
+        ema_params=ldm_variables['params'],
+        tx=tx
+    )
+
+    print(f"Loading LDM checkpoint from: {ckpt_path}")
+    with tf.io.gfile.GFile(ckpt_path, "rb") as f:
+        blob = f.read()
+    restored_state = from_bytes(dummy_state, blob)
+    print("✅ LDM loaded successfully.")
+    use_ema = meta.get('use_ema', False)
+    if use_ema and hasattr(restored_state, 'ema_params') and restored_state.ema_params is not None:
+        print("INFO: Using EMA parameters for composition.")
+        params_to_return = restored_state.ema_params
+    else:
+        print("INFO: Using standard model parameters for composition.")
+        params_to_return = restored_state.params
+
+    return ldm_model, params_to_return
 
 # --------------------------------------------------------------------------- #
 # Samplers (item 1)
@@ -135,32 +175,62 @@ def ablation_grid(seed,t_grid,state_tb,state_norm,decoder,outdir,sampler):
 # --------------------------------------------------------------------------- #
 #  2-D latent slice visualization (item 4)
 # --------------------------------------------------------------------------- #
-def plot_latent_quiver(x,t,state_tb,state_norm,outfile):
+# --------------------------------------------------------------------------- #
+#  2-D latent slice visualization (item 4, FIXED)
+# --------------------------------------------------------------------------- #
+def plot_latent_quiver(x, t, state_tb, state_norm, outfile):
+    """
+    Plot 2D latent vector fields for Normal, TB, and AND composition at time t.
+    Projects scores onto a PCA plane for visual intuition.
+    """
     from sklearn.decomposition import PCA
-    x_flat=x.reshape(1,-1)
-    rng=jax.random.PRNGKey(0)
-    X=x_flat+0.01*jax.random.normal(rng,(256,x_flat.size))
-    e1,e2=PCA(2).fit(X).components_
-    span=2.5; n=15
-    u=np.linspace(-span,span,n); v=np.linspace(-span,span,n)
-    U,V=np.meshgrid(u,v)
-    FN=np.zeros(U.shape+(2,)); FT=np.zeros_like(FN); FA=np.zeros_like(FN)
+
+    # Flatten latent and pick 2D PCA basis
+    x_flat = np.asarray(x).reshape(1, -1)
+    rng = np.random.default_rng(0)
+    X = x_flat + 0.01 * rng.standard_normal((256, x_flat.size))
+    e1, e2 = PCA(2).fit(X).components_
+
+    span, n = 2.5, 15
+    u = np.linspace(-span, span, n)
+    v = np.linspace(-span, span, n)
+    U, V = np.meshgrid(u, v)
+
+    FN = np.zeros(U.shape + (2,))
+    FT = np.zeros_like(FN)
+    FA = np.zeros_like(FN)
+
+    def get_score(x_in, state):
+        """Helper to compute score = -eps / σ(t)."""
+        eps = state.apply_fn({'params': state.params}, x_in, t)
+        sigma_t = np.asarray(marginal_prob_std_fn(t))[None, None, None, None]
+        return -np.asarray(eps) / sigma_t
+
     for i in range(n):
         for j in range(n):
-            pt=x_flat+U[i,j]*e1+V[i,j]*e2
-            xj=pt.reshape(x.shape)
-            sA=_s(xj,state_tb,t); sB=_s(xj,state_norm,t)
-            sA,sB=np.array(sA),np.array(sB)
-            κ=0.5; sC=κ*sA+(1-κ)*sB
-            FN[i,j]=[sB.ravel()@e1,sB.ravel()@e2]
-            FT[i,j]=[sA.ravel()@e1,sA.ravel()@e2]
-            FA[i,j]=[sC.ravel()@e1,sC.ravel()@e2]
-    plt.figure(figsize=(6,6))
-    plt.quiver(U,V,FN[...,0],FN[...,1],alpha=.5,label="Normal")
-    plt.quiver(U,V,FT[...,0],FT[...,1],alpha=.5,label="TB")
-    plt.quiver(U,V,FA[...,0],FA[...,1],color="red",label="AND")
-    plt.legend(); plt.title(f"Latent slice at t={float(t):.3f}")
-    plt.savefig(outfile); plt.close()
+            # Point in PCA plane
+            point = x_flat + U[i, j] * e1 + V[i, j] * e2
+            xj = point.reshape(x.shape)
+
+            sT = get_score(xj, state_tb)
+            sN = get_score(xj, state_norm)
+            sA = 0.5 * sT + 0.5 * sN  # simple average AND
+
+            # Project each onto (e1, e2)
+            FN[i, j] = [np.dot(sN.ravel(), e1), np.dot(sN.ravel(), e2)]
+            FT[i, j] = [np.dot(sT.ravel(), e1), np.dot(sT.ravel(), e2)]
+            FA[i, j] = [np.dot(sA.ravel(), e1), np.dot(sA.ravel(), e2)]
+
+    plt.figure(figsize=(6, 6))
+    plt.quiver(U, V, FN[..., 0], FN[..., 1], alpha=0.5, label="Normal")
+    plt.quiver(U, V, FT[..., 0], FT[..., 1], alpha=0.5, label="TB")
+    plt.quiver(U, V, FA[..., 0], FA[..., 1], color="red", label="AND")
+    plt.legend()
+    plt.title(f"Latent slice at t={float(t):.3f}")
+    plt.tight_layout()
+    plt.savefig(outfile)
+    plt.close()
+
 
 # --------------------------------------------------------------------------- #
 #  Grad-CAM overlay placeholder (item 5)
@@ -194,12 +264,14 @@ def main():
     state_tb=TrainState.create(apply_fn=ldm_tb.apply,params=p_tb,tx=optax.identity())
     state_n =TrainState.create(apply_fn=ldm_n.apply, params=p_n ,tx=optax.identity())
 
-    with open(tb_cfg) as f: meta=json.load(f).get("args",json.load(f))
-    vae,vae_p=load_autoencoder(meta["ae_config_path"],meta["ae_ckpt_path"])
+    with open(tb_cfg, 'r') as f:
+        tb_loaded_json = json.load(f)
+        tb_meta = tb_loaded_json.get('args', tb_loaded_json)
+    vae,vae_p=load_autoencoder(tb_meta["ae_config_path"],tb_meta["ae_ckpt_path"])
     decode=lambda z: vae.apply({"params":vae_p},z,method=vae.decode)
 
     t_grid=jnp.linspace(1.,1e-3,args.steps)
-    latent_shape=(1,meta["img_size"]//4,meta["img_size"]//4,vae.enc_cfg["z_ch"])
+    latent_shape=(1,tb_meta["img_size"]//4,tb_meta["img_size"]//4,vae.enc_cfg["z_ch"])
     x0=jax.random.normal(jax.random.PRNGKey(args.seed),latent_shape)
 
     # ---- Run core sampler (item 1 + 3)
