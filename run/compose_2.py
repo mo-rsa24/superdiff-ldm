@@ -178,10 +178,8 @@ def main():
         elif args.mode == "and":
             # AND (Prop.6): solve linear equations G κ = b per-batch
             G, b = gram_and_rhs_from_scores((s_tb, s_norm), (dlog_tb, dlog_norm))  # [B,2,2],[B,2]
-            kappa = solve_kappa_and(G, b)  # [B,2]
-            # nonneg + normalize for stability
-            kappa = jnp.clip(kappa, 0.0, 10.0)
-            kappa = kappa / (jnp.sum(kappa, axis=1, keepdims=True) + 1e-8)
+            eye = jnp.eye(G.shape[-1])[None, :, :]
+            kappa = jax.vmap(lambda Gb, bb: jnp.linalg.solve(Gb + 1e-6 * eye, bb))(G, b)  # [B,2]
             k1, k2 = kappa[:, 0, None, None, None], kappa[:, 1, None, None, None]
             u = k1 * s_tb + k2 * s_norm
             kappa_diag = kappa

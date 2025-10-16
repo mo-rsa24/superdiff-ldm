@@ -127,24 +127,33 @@ def precompute_schedule_and_noise(key, args, sample_shape):
 
 
 # --- Composed score function (PoE-style convex mix). Lambda is static for JIT.
-@functools.partial(jax.jit, static_argnums=(3, 4, 5))
-def composed_score_fn(x, t, batch_size, score_fn_tb, score_fn_normal, lambda_tb_static: float):
+@functools.partial(jax.jit, static_argnums=(5,))
+def composed_score_fn(x, t, params_tb, params_normal, score_fn_tb, score_fn_normal, lambda_tb_static: float):
     """
-    x: [B,H,W,C]
-    t: [B]
-    Returns composed score and simple diagnostics (norms).
+    x: [B,H,W,C], t: [B]
+    params_*: model parameter PyTrees
+    score_fn_*: model apply fns
+    lambda_tb_static: float, treated as static for JIT
+    Returns: (composed_score, diagnostics_dict)
     """
-    eps_tb = score_fn_tb({'params': composed_score_fn.state_tb_params}, x, t)
-    eps_normal = score_fn_normal({'params': composed_score_fn.state_normal_params}, x, t)
+    # eps predicts noise; convert to scores using sigma_t
+    eps_tb = score_fn_tb({'params': params_tb}, x, t)
+    eps_normal = score_fn_normal({'params': params_normal}, x, t)
     sigma_t = marginal_prob_std_fn(t)[:, None, None, None]
     score_tb = -eps_tb / sigma_t
     score_normal = -eps_normal / sigma_t
 
     composed = (1.0 - lambda_tb_static) * score_normal + lambda_tb_static * score_tb
+
+    # ---- avoid reshape with traced sizes; reduce over spatial+channel axes
+    # L2 per-sample norms
+    def l2_per_sample(arr):
+        return jnp.sqrt(jnp.sum(arr * arr, axis=(1, 2, 3)))
+
     diags = {
-        'score_norm_tb': jnp.linalg.norm(score_tb.reshape(batch_size, -1), axis=-1),
-        'score_norm_normal': jnp.linalg.norm(score_normal.reshape(batch_size, -1), axis=-1),
-        'score_norm_composed': jnp.linalg.norm(composed.reshape(batch_size, -1), axis=-1),
+        'score_norm_tb': l2_per_sample(score_tb),
+        'score_norm_normal': l2_per_sample(score_normal),
+        'score_norm_composed': l2_per_sample(composed),
     }
     return composed, diags
 
@@ -163,11 +172,6 @@ def run_sampling_and_diagnostics(
 ):
     """Runs sampling for one λ using the SAME x_init and noise_seq; saves grid + diagnostics."""
     print(f"--- Running for λ_TB = {lambda_tb:.2f} ---")
-
-    # Bind params to the jitted function (so we don't pass dicts through static_argnums)
-    composed_score_fn.state_tb_params = state_tb.params
-    composed_score_fn.state_normal_params = state_normal.params
-
     # Start from the SAME initial latent for every lambda
     x = x_init
     diagnostics_history = []
@@ -175,9 +179,12 @@ def run_sampling_and_diagnostics(
     for k, t in enumerate(tqdm(time_steps, desc=f"Sampling (λ={lambda_tb:.2f})")):
         t_batch = jnp.ones(args.batch_size) * t
         score, diagnostics = composed_score_fn(
-            x, t_batch, args.batch_size,
-            state_tb.apply_fn, state_normal.apply_fn, lambda_tb
+            x, t_batch,
+            state_tb.params, state_normal.params,
+            state_tb.apply_fn, state_normal.apply_fn,
+            lambda_tb
         )
+
         diagnostics_history.append(jax.device_get(diagnostics))
 
         g_t = diffusion_coeff_fn(t_batch)[:, None, None, None]
