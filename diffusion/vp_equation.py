@@ -106,3 +106,28 @@ def get_kappa(t, divlogs, scores):
 marginal_prob_std_fn = vmap(marginal_prob_std)
 diffusion_coeff_fn   = vmap(diffusion_coeff)
 alpha_fn             = vmap(alpha_fn)
+
+
+def sum_except_batch(x):
+    axes = tuple(range(1, x.ndim))
+    return jnp.sum(x, axis=axes, keepdims=True)
+
+def gram_and_rhs_from_scores(scores, dlogs):
+    """
+    scores: tuple/list of M arrays [B,H,W,C]
+    dlogs : tuple/list of M arrays [B]
+    returns:
+      G: [B,M,M] Gram matrix with G_ij = <s_i, s_j>
+      b: [B,M]    RHS vector with b_i = dlog_i
+    """
+    flats = [s.reshape(s.shape[0], -1) for s in scores]          # [B,D] each
+    S = jnp.stack(flats, axis=-1)                                # [B,D,M]
+    G = jnp.einsum("bdm,bdn->bmn", S, S)                         # [B,M,M]
+    b = jnp.stack(dlogs, axis=1)                                 # [B,M]
+    return G, b
+
+def solve_kappa_and(G, b, eps=1e-6):
+    eye = jnp.eye(G.shape[-1])[None]
+    G_reg = G + eps * eye
+    # batched solve
+    return jax.vmap(lambda Gb, bb: jnp.linalg.solve(Gb, bb))(G_reg, b)  # [B,M]
