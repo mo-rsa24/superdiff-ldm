@@ -104,61 +104,47 @@ def kappa_solver(scores, dlogs, mode: str = "and_ls", eps: float = 1e-6):
     """
     Solve for κ given per-model score fields and divergence (d/dx · score) estimates.
 
-    Arguments
-    ---------
-    scores: tuple[jnp.ndarray, ...]
-        Each element has shape [B, H, W, C]. These are ∇_x log q_i^t(x) estimates.
-    dlogs: tuple[jnp.ndarray, ...]
-        Each element has shape [B], Hutchinson divergence estimates of score_i.
-    mode: "and_ls" | "poe" | "softmax_or"
-        - "and_ls": Solve a least-squares linear system G κ = b per batch (AND path).
-            G_ij = <s_i, s_j> aggregated over spatial dims;  b_i = dlog_i
-            This follows the "solve Linear Equations" step in Alg. 1 (Prop. 6).  It is a
-            faithful *structure* copy; if your Prop.6 uses a different 'b', swap it in here.
-        - "poe": κ_i = 1 for all i, so u_t = Σ_i score_i (product-of-experts gradient).
-        - "softmax_or": κ from get_kappa() (Alg.1 OR path), returned in [0,1] for two models.
-
-    Returns
-    -------
-    κ : jnp.ndarray with shape [B, M] in [0, 1]
+    scores: tuple of [B,H,W,C] arrays (∇ log q_i^t(x))
+    dlogs : tuple of [B] arrays (Hutchinson divergence estimates per model)
+    returns: κ with shape [B, M]
     """
     M = len(scores)
     B = scores[0].shape[0]
-
-    # Flatten spatial dims for Gram inner-products
-    flat = [s.reshape(B, -1) for s in scores]
 
     if mode == "poe":
         return jnp.ones((B, M))
 
     if mode == "softmax_or":
-        # Two-model convenience: call get_kappa(t, dlog_tuple, score_tuple) upstream instead.
-        # Here we simply return a placeholder to keep signatures uniform.
         raise ValueError("softmax_or mode of kappa_solver is not called directly; use get_kappa in get_combined_score.")
 
-    # AND least-squares: build Gram matrix and RHS
-    # G[b, i, j] = <s_i, s_j> ; b[b, i] = dlog_i[b]
-    G = jnp.stack([jnp.stack([jnp.sum(flat[i] * flat[j], axis=1) for j in range(M)], axis=1) for i in range(M)], axis=1)
-    # G shape: [M, M, B] after above, fix ordering to [B, M, M]
-    G = jnp.moveaxis(G, -1, 0)  # [B, M, M]
-    b = jnp.stack(dlogs, axis=1)  # [B, M]
+    # ---- AND least-squares via proper Gram matrix per batch ----
+    # Flatten spatial dims and stack into S: [B, D, M]
+    flats = [s.reshape(B, -1) for s in scores]            # each [B, D]
+    S = jnp.stack(flats, axis=-1)                         # [B, D, M]
 
-    # Regularize G to avoid degeneracy
-    eye = jnp.eye(M)[None, :, :]  # [1, M, M]
+    # Gram per batch: G[b] = S[b]^T S[b] -> [M, M]
+    # Result shape: [B, M, M]
+    G = jnp.einsum("bdm,bdn->bmn", S, S)
+
+    # RHS b: stack dlogs -> [B, M]
+    b = jnp.stack(dlogs, axis=1)
+
+    # Regularize to avoid degeneracy and improve conditioning
+    eye = jnp.eye(M)[None, :, :]                          # [1, M, M]
     G_reg = G + eps * eye
 
-    # Solve per batch using Cholesky (M is tiny)
+    # Solve G κ = b per batch
     def solve_one(Gb, bb):
-        L = jnp.linalg.cholesky(Gb)
-        y = jax.scipy.linalg.solve_triangular(L, bb, lower=True)
-        k = jax.scipy.linalg.solve_triangular(L.T, y, lower=False)
-        return k
+        # jnp.linalg.solve is batched via vmap below
+        return jnp.linalg.solve(Gb, bb)
 
-    κ = jax.vmap(solve_one, in_axes=(0, 0))(G_reg, b)  # [B, M]
-    # Non-negativity and clamp for stability; normalize to keep κ magnitudes tame
+    κ = jax.vmap(solve_one, in_axes=(0, 0))(G_reg, b)     # [B, M]
+
+    # Clamp & normalize for stability (remove/adjust if theory prefers unconstrained κ)
     κ = jnp.clip(κ, 0.0, 10.0)
     κ = κ / (jnp.sum(κ, axis=1, keepdims=True) + 1e-8)
     return κ
+
 
 
 def get_combined_score(x, t, score_fns, params_list, key, mode: str = "and_ls"):
