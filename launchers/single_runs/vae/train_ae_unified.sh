@@ -103,12 +103,17 @@ rsync -a \
   --exclude 'superdiff_and_output' \
   "$REPO_ROOT/" "$STAGING_DIR/"
 
+status_line "--------------------------------------------------------"
 mkdir -p "${REPO_ROOT}/logs"
 cd "$STAGING_DIR"
 mkdir -p "${STAGING_DIR}/runs"
 mkdir -p "${STAGING_DIR}/runs_ldm"
 export WORKDIR="${WORKDIR:-$STAGING_DIR}"
-
+status_line "--------------------------------------------------------"
+status_line "📂 Workdir" "$WORKDIR"
+status_line "📌 Commit"  "$GIT_HASH"
+status_line "🏷️  Branch"  "$GIT_BRANCH"
+status_line "🪪 W&B"     "$WANDB_NAME"
 # --- Submit to SLURM ---
 echo "Submitting Unified Autoencoder Training..."
 JOB_ID=$(sbatch --partition="$SLURM_PARTITION" \
