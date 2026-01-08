@@ -93,10 +93,20 @@ rsync -a \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
   --exclude 'wandb' \
+  --exclude 'playground' \
+  --exclude 'composed_output_sweep' \
+  --exclude 'composed_output_single' \
+  --exclude 'composed_output' \
+  --exclude 'runs_ldm' \
+  --exclude 'runs' \
+  --exclude 'and_out' \
+  --exclude 'superdiff_and_output' \
   "$REPO_ROOT/" "$STAGING_DIR/"
 
 mkdir -p "${REPO_ROOT}/logs"
 cd "$STAGING_DIR"
+mkdir -p "${STAGING_DIR}/runs"
+mkdir -p "${STAGING_DIR}/runs_ldm"
 export WORKDIR="${WORKDIR:-$STAGING_DIR}"
 
 # --- Submit to SLURM ---
