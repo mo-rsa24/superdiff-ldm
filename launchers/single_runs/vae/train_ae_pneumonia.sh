@@ -22,10 +22,11 @@ export Z_CHANNELS="${1:-128}"
 export LR="2e-4"
 export KL_WEIGHT="1e-6"
 export EPOCHS="100"
-export BATCH_PER_DEVICE="4"
+export BATCH_PER_DEVICE="2"
 
 export WANDB_PROJECT="cxr-vae"
 export WANDB_RUN_GROUP="pneumonia-ae"
+export WANDB="1"
 
 # SLURM Defaults
 export SLURM_PARTITION="bigbatch"
