@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Using tput for better compatibility and cleaner syntax
+if [[ -t 1 ]]; then
+  BOLD=$(tput bold); CYAN=$(tput setaf 6); BLUE=$(tput setaf 4); RED=$(tput setaf 1); RESET=$(tput sgr0)
+else
+  BOLD=""; CYAN=""; BLUE=""; RED=""; RESET=""
+fi
+
+status_line() { printf "${BLUE}▶${RESET} ${BOLD}%-20s${RESET} %s\n" "$1:" "${2:-}"; }
+rule() { printf "${BLUE}%0.s-${RESET}" {1..50}; printf "\n"; }
+
 # --- Defaults (can be overridden by command-line args) ---
 export ENV_NAME="jax115"
 export DATA_ROOT="../datasets/cleaned"
