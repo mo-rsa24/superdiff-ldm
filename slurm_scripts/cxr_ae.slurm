@@ -80,14 +80,16 @@ WANDB_ID="${WANDB_ID:-}"
 banner "Setup"
 mkdir -p "$WORKDIR/logs"
 cd "$WORKDIR"
-export PYTHONPATH="$WORKDIR${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${PWD}:${PYTHONPATH:-}"
 export JAX_PLATFORMS=cuda
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export TF_FORCE_GPU_ALLOW_GROWTH=true
 export TF_CPP_MIN_LOG_LEVEL=3
 
 kv "Working directory" "$WORKDIR"
 kv "Python path" "$PYTHONPATH"
-
+echo "PYTHONPATH set to: $PYTHONPATH"
+echo "Commit: ${GIT_COMMIT_SHORT:-unknown} | Branch: ${GIT_BRANCH:-unknown} | W&B Name: ${WANDB_NAME:-unset}"
 # Activate Conda/Mamba Environment
 source ~/.bashrc
 mamba activate "${ENV_NAME:?Must set ENV_NAME}"

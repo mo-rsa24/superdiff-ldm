@@ -66,11 +66,17 @@ def parse_args():
 
     # Model arch (no YAML)
     # p.add_argument("--ch_mults", type=str, default="128,256,512")
-    p.add_argument("--num_res_blocks", type=int, default=2)
+    p.add_argument("--num_res_blocks", type=int, default=3)
     p.add_argument("--dropout", type=float, default=0.0)
-    p.add_argument("--z_channels", type=int, default=64)
-    p.add_argument("--attn_res", type=str, default="16", help="Comma-separated resolutions for attention, e.g., '16,8'")
-    p.add_argument("--embed_dim", type=int, default=64, help="Dimension of the latent embedding.")
+    p.add_argument("--z_channels", type=int, default=128)
+    p.add_argument("--attn_res", type=str, default="32,16,8",
+                   help="Comma-separated resolutions for attention, e.g., '32,16,8'")
+    p.add_argument(
+        "--embed_dim",
+        type=int_or_none,
+        default=None,
+        help="Dimension of the latent embedding. Defaults to --z_channels when not set.",
+    )
 
     # Loss settings (LDM-like)
     p.add_argument("--kl_weight", type=float, default=1.0e-6)
@@ -105,8 +111,8 @@ def parse_args():
     p.add_argument("--wandb_tags", default="")
     p.add_argument("--wandb_id", default=None)
 
-    p.add_argument("--base_ch", type=int, default=128)
-    p.add_argument("--ch_mults", type=str, default="1,2,4,4", help="Channel multipliers, e.g., '1,2,4,4'")
+    p.add_argument("--base_ch", type=int, default=192)
+    p.add_argument("--ch_mults", type=str, default="1,2,4", help="Channel multipliers, e.g., '1,2,4'")
     return p.parse_args()
 
 def n_local_devices():
@@ -124,6 +130,7 @@ def main():
 
     ch_mult_factors = tuple(int(c.strip()) for c in args.ch_mults.split(',') if c.strip())
     ch_mults = tuple(args.base_ch * m for m in ch_mult_factors)
+    embed_dim = args.embed_dim if args.embed_dim is not None else args.z_channels
     mode = "full"
     if args.overfit_one:
         mode = "of1"
@@ -135,6 +142,7 @@ def main():
        f"-cxr{H}-{mode}"
        f"-ch{'x'.join(map(str, ch_mults))}"
        f"-z{args.z_channels}"
+       f"-e{embed_dim}"
        f"-lr{args.lr:g}-b{per_dev}x{ndev}")
     run_dir = args.resume_dir if args.resume_dir else os.path.join(args.output_root, args.run_name or exp_slug, ts)
     ckpt_dir = ensure_dir(os.path.join(run_dir, "ckpts"))
@@ -189,16 +197,18 @@ def main():
     attn_res = tuple(int(r.strip()) for r in args.attn_res.split(',') if r.strip())
     enc_cfg = dict(ch_mults=ch_mults,
                    in_ch=1,
+                   z_ch=args.z_channels,
                    num_res_blocks=args.num_res_blocks,
                    dropout=args.dropout,
                    double_z=True,
                    attn_resolutions=attn_res)  # Add attention resolutions
     dec_cfg = dict(ch_mults=ch_mults,
                    out_ch=1,
+                   z_ch=args.z_channels,
                    num_res_blocks=args.num_res_blocks,
                    dropout=args.dropout,
                    attn_resolutions=attn_res)
-    ae = AutoencoderKL(enc_cfg=enc_cfg, dec_cfg=dec_cfg, embed_dim=args.embed_dim)
+    ae = AutoencoderKL(enc_cfg=enc_cfg, dec_cfg=dec_cfg, embed_dim=embed_dim)
 
     # ----- loss -----
     loss_cfg = LPIPSGANConfig(

@@ -5,14 +5,14 @@ set -euo pipefail
 export ENV_NAME="jax115"
 export DATA_ROOT="../datasets/cleaned"
 export TASK="All_CXR"
-export IMG_SIZE="128"
+export IMG_SIZE="256"
 export CLASS_FILTER="None"
-export BASE_CH="32"
+export BASE_CH="192"
 export CH_MULTS="1,2,4"
-export Z_CHANNELS="4"
-export EMBED_DIM="4"
+export Z_CHANNELS="128"
+export EMBED_DIM="128"
 export NUM_RES_BLOCKS="2"
-export ATTN_RES="16"
+export ATTN_RES="32,16,8"
 export LR="1e-4"
 export KL_WEIGHT="1.0e-5"
 export EPOCHS="100"
@@ -20,11 +20,12 @@ export BATCH_PER_DEVICE="8"
 export SAMPLE_EVERY="10"
 export WANDB="1"
 export WANDB_PROJECT="unified-cxr-vae"
-
+export WANDB_RUN_GROUP="unified-ae"
 # SLURM Defaults
 export SLURM_PARTITION="bigbatch"
 export SLURM_JOB_NAME="unified-ae-proto"
-
+export TIME_LIMIT="${TIME_LIMIT:-72:00:00}"
+export STAGING_ROOT="${STAGING_ROOT:-${HOME}/cluster_staging}"
 # --- Parse Command-Line Arguments ---
 # This loop processes arguments like --partition, --job-name, etc.
 # Any other arguments (e.g., --img_size, --base_ch) are passed to the python script via $@
@@ -39,6 +40,30 @@ while [[ $# -gt 0 ]]; do
       export SLURM_JOB_NAME="$2"
       shift 2
       ;;
+    --time)
+      export TIME_LIMIT="$2"
+      shift 2
+      ;;
+    --workdir)
+      export WORKDIR="$2"
+      shift 2
+      ;;
+    --wandb_project)
+      export WANDB_PROJECT="$2"
+      shift 2
+      ;;
+    --wandb_name)
+      export WANDB_NAME="$2"
+      shift 2
+      ;;
+    --wandb_tags)
+      export WANDB_TAGS="$2"
+      shift 2
+      ;;
+    --wandb_group)
+      export WANDB_RUN_GROUP="$2"
+      shift 2
+      ;;
     *)
       OTHER_ARGS+=("$1") # save unrecognized arg
       shift
@@ -47,10 +72,41 @@ while [[ $# -gt 0 ]]; do
 done
 
 # --- Run Naming (uses final values) ---
-export RUN_NAME="${SLURM_JOB_NAME}_z${Z_CHANNELS}_$(date +%Y%m%d-%H%M%S)"
-export WANDB_TAGS="unified-ae,all-cxr,z${Z_CHANNELS}"
+REPO_ROOT=$(pwd)
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+GIT_HASH=$(git rev-parse --short HEAD)
+GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+export WANDB_NAME="${WANDB_NAME:-${SLURM_JOB_NAME}-${GIT_BRANCH}-${GIT_HASH}-${TIMESTAMP}}"
+export RUN_NAME="${RUN_NAME:-$WANDB_NAME}"
+export WANDB_TAGS="${WANDB_TAGS:-unified-ae,all-cxr,z${Z_CHANNELS},${GIT_BRANCH},${GIT_HASH}}"
+
+JOB_NAME="${SLURM_JOB_NAME}-${GIT_HASH}"
+STAGING_DIR="${STAGING_ROOT}/${JOB_NAME}_${TIMESTAMP}"
+
+echo "Staging repo to ${STAGING_DIR}"
+mkdir -p "$STAGING_DIR"
+rsync -a \
+  --exclude 'logs' \
+  --exclude 'runs' \
+  --exclude '.git' \
+  --exclude '__pycache__' \
+  --exclude '*.pyc' \
+  --exclude 'wandb' \
+  "$REPO_ROOT/" "$STAGING_DIR/"
+
+mkdir -p "${REPO_ROOT}/logs"
+cd "$STAGING_DIR"
+export WORKDIR="${WORKDIR:-$STAGING_DIR}"
 
 # --- Submit to SLURM ---
 echo "Submitting Unified Autoencoder Training..."
-sbatch --partition="$SLURM_PARTITION" --job-name="$SLURM_JOB_NAME" slurm_scripts/cxr_ae.slurm "${OTHER_ARGS[@]}"
-echo "✅ Job successfully submitted!"
+JOB_ID=$(sbatch --partition="$SLURM_PARTITION" \
+  --job-name="$SLURM_JOB_NAME" \
+  --time="$TIME_LIMIT" \
+  --output="${REPO_ROOT}/logs/%x-%j.out" \
+  --error="${REPO_ROOT}/logs/%x-%j.err" \
+  --export=ALL,ENV_NAME="$ENV_NAME",WORKDIR="$WORKDIR",GIT_COMMIT_SHORT="$GIT_HASH",GIT_BRANCH="$GIT_BRANCH",WANDB_NAME="$WANDB_NAME",WANDB_TAGS="$WANDB_TAGS",WANDB_RUN_GROUP="$WANDB_RUN_GROUP",WANDB_PROJECT="$WANDB_PROJECT" \
+  slurm_scripts/cxr_ae.slurm "${OTHER_ARGS[@]}" | awk '{print $4}')
+status_line "🎉 Submitted" "Job ID: $JOB_ID"
+status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
