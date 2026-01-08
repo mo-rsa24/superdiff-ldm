@@ -11,16 +11,16 @@ export DISEASE="1" # 1 for TB, 0 for Normal
 # --- Hyperparameter Defaults ---
 export LR="1e-4"
 export WEIGHT_DECAY="0.05"
-export LDM_BASE_CH="64"
+export LDM_BASE_CH="128"
 export GRAD_CLIP="1.0"
 export BATCH_PER_DEVICE="16"
 export EPOCHS="300"
 export LOG_EVERY="100"
 export SAMPLE_EVERY="10"
 export SAMPLE_BATCH_SIZE="16"
-export LDM_CH_MULTS="1,2,4"
+export LDM_CH_MULTS="1,2,4,4"
 export LDM_NUM_RES_BLOCKS="2"
-export LDM_ATTN_RES="16"
+export LDM_ATTN_RES="32,16"
 export WANDB="1"
 
 # --- Shared VAE and Scale Factor (❗ IMPORTANT: Update these values) ---

@@ -6,7 +6,7 @@ from tqdm import tqdm
 import torch
 from torchvision.utils import make_grid
 
-from diffusion.vp_equation import beta
+from diffusion.vp_equation import alpha_fn, beta
 
 
 def _sum_except_batch(x):
@@ -46,9 +46,12 @@ def Euler_Maruyama_sampler(
         g = diffusion_coeff_fn(vec_t)
         std = marginal_prob_std_fn(vec_t)
         assert jnp.all(jnp.isfinite(g))
-        predicted_noise = ldm_model.apply({'params': ldm_params}, x, vec_t)
+        # predicted_noise = ldm_model.apply({'params': ldm_params}, x, vec_t)
+        v_pred = ldm_model.apply({'params': ldm_params}, x, vec_t)
         beta_vec = (g ** 2)[:, None, None, None]
-        score = -predicted_noise / (std[:, None, None, None] + 1e-8)
+        # score = -predicted_noise / (std[:, None, None, None] + 1e-8)
+        alpha = alpha_fn(vec_t)
+        score = -(x + (alpha / (std + 1e-8))[:, None, None, None] * v_pred)
         drift = -0.5 * beta_vec * x - beta_vec * score
 
         # drift = -0.5 * beta(vec_t)[:, None, None, None] * x - (g**2)[:, None, None, None] * score
