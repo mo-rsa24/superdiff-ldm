@@ -160,7 +160,7 @@ def main():
        f"-ch{'x'.join(map(str, ch_mults))}"
        f"-z{args.z_channels}"
        f"-e{embed_dim}"
-       f"-lr{args.lr:g}-b{per_dev}x{ndev}")
+       f"-lr{args.lr:g}-b{per_dev}")
     run_dir = args.resume_dir if args.resume_dir else os.path.join(args.output_root, args.run_name or exp_slug, ts)
     ckpt_dir = ensure_dir(os.path.join(run_dir, "ckpts"))
     samples_dir = ensure_dir(os.path.join(run_dir, "samples"))
@@ -184,7 +184,7 @@ def main():
         def __getitem__(self, idx): return self.x, self.y
 
     # (in autoencoder.py, around line 136)
-    batch_size = per_dev * ndev
+    batch_size = per_dev
     shuffle = True
     drop_last = True
 
