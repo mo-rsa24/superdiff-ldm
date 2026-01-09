@@ -12,7 +12,7 @@ status_line() { printf "${BLUE}▶${RESET} ${BOLD}%-20s${RESET} %s\n" "$1:" "${2
 rule() { printf "${BLUE}%0.s-${RESET}" {1..50}; printf "\n"; }
 
 # --- Defaults (can be overridden by command-line args) ---
-export ENV_NAME="jax115"
+export ENV_NAME="jaxstack"
 export DATA_ROOT="../datasets/cleaned"
 export TASK="All_CXR"
 export IMG_SIZE="256"

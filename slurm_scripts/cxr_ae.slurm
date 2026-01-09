@@ -23,7 +23,7 @@ ok(){ printf "${GRN}** %s${RST}\\n" "$*"; }
 WORKDIR="${WORKDIR:-$PWD}"
 PYFILE="${PYFILE:-run/autoencoder.py}"
 DATA_ROOT="/datasets/mmolefe/cleaned"
-ENV_NAME="${ENV_NAME:-jax115}" # Environment name for mamba
+ENV_NAME="${ENV_NAME:-jaxstack}" # Environment name for mamba
 
 # Data & Debug
 TASK="${TASK:-TB}"

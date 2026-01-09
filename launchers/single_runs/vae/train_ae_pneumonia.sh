@@ -12,7 +12,7 @@ status_line() { printf "${BLUE}▶${RESET} ${BOLD}%-20s${RESET} %s\n" "$1:" "${2
 rule() { printf "${BLUE}%0.s-${RESET}" {1..50}; printf "\n"; }
 header() { printf "\n${BLUE}${BOLD}# %s${RESET}\n" "$1"; rule; }
 
-export ENV_NAME="jax115"
+export ENV_NAME="jaxstack"
 export DATA_ROOT="/datasets/mmolefe/cleaned"
 export TASK="PNEUMONIA"
 export IMG_SIZE="256"
