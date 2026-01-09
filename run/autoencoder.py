@@ -80,8 +80,14 @@ def parse_args():
 
     # Loss settings (LDM-like)
     p.add_argument("--kl_weight", type=float, default=1.0e-6)
+    p.add_argument("--kl_anneal_start", type=int, default=0,
+                   help="Global step to start KL annealing.")
+    p.add_argument("--kl_anneal_steps", type=int, default=0,
+                   help="Number of steps to ramp KL weight to full value (0 disables).")
     p.add_argument("--pixel_weight", type=float, default=1.0)
     p.add_argument("--disc_start", type=int, default=50001)
+    p.add_argument("--disc_warmup_steps", type=int, default=10000,
+                   help="Steps to ramp discriminator weight from 0 to 1 after disc_start.")
     p.add_argument("--disc_factor", type=float, default=1.0)
     p.add_argument("--disc_weight", type=float, default=0.5)
     p.add_argument("--disc_layers", type=int, default=3)
@@ -90,8 +96,19 @@ def parse_args():
 
     # Optimizer
     p.add_argument("--lr", type=float, default=2e-4)
+    p.add_argument("--lr_gen", type=float, default=None,
+                   help="Generator LR (defaults to --lr).")
+    p.add_argument("--lr_disc", type=float, default=None,
+                   help="Discriminator LR (defaults to --lr).")
+    p.add_argument("--adam_beta1", type=float, default=0.9)
+    p.add_argument("--adam_beta2", type=float, default=0.999)
+    p.add_argument("--adam_eps", type=float, default=1e-8)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--grad_clip", type=float, default=1.0)
+    p.add_argument("--max_consecutive_nan_updates", type=int, default=5,
+                   help="Skip optimizer updates when gradients are NaN/Inf (optax.apply_if_finite).")
+    p.add_argument("--min_batch_std", type=float, default=1e-6,
+                   help="Skip batches with near-zero std after normalization to avoid degenerate updates.")
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--batch_per_device", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
@@ -212,7 +229,12 @@ def main():
 
     # ----- loss -----
     loss_cfg = LPIPSGANConfig(
-        disc_start=args.disc_start, kl_weight=args.kl_weight, pixel_weight=args.pixel_weight,
+        disc_start=args.disc_start,
+        disc_warmup_steps=args.disc_warmup_steps,
+        kl_weight=args.kl_weight,
+        kl_anneal_start=args.kl_anneal_start,
+        kl_anneal_steps=args.kl_anneal_steps,
+        pixel_weight=args.pixel_weight,
         disc_num_layers=args.disc_layers, disc_in_channels=1, disc_factor=args.disc_factor,
         disc_weight=args.disc_weight, disc_loss=args.disc_loss, perceptual_weight=args.perceptual_weight
     )
@@ -230,10 +252,17 @@ def main():
 
     # two optimizers (generator vs discriminator) like LDM
     def tx(lr):
-        return optax.chain(
+        base_tx = optax.chain(
             optax.clip_by_global_norm(args.grad_clip) if args.grad_clip>0 else optax.identity(),
-            optax.adamw(lr, weight_decay=args.weight_decay),
+            optax.adamw(
+                lr,
+                weight_decay=args.weight_decay,
+                b1=args.adam_beta1,
+                b2=args.adam_beta2,
+                eps=args.adam_eps,
+            ),
         )
+        return optax.apply_if_finite(base_tx, max_consecutive_errors=args.max_consecutive_nan_updates)
     # group params
     def split_gen_disc(ae_params, loss_params):
         # everything in AE is "gen"; discriminator is in loss_params
@@ -242,8 +271,10 @@ def main():
         return gen, disc
 
     gen_params, disc_params = split_gen_disc(params, loss_params)
-    gen_state  = TrainState.create(apply_fn=None, params=gen_params,  tx=tx(args.lr))
-    disc_state = TrainState.create(apply_fn=None, params=disc_params, tx=tx(args.lr))
+    gen_lr = args.lr if args.lr_gen is None else args.lr_gen
+    disc_lr = args.lr if args.lr_disc is None else args.lr_disc
+    gen_state = TrainState.create(apply_fn=None, params=gen_params, tx=tx(gen_lr))
+    disc_state = TrainState.create(apply_fn=None, params=disc_params, tx=tx(disc_lr))
 
     # ----- resume -----
     if args.resume_dir and tf.io.gfile.exists(ckpt_latest):
@@ -305,7 +336,16 @@ def main():
             x = jnp.asarray(batch.numpy())
             # Permute and normalize in JAX
             x = jnp.transpose(x, (0, 2, 3, 1))  # N, C, H, W -> N, H, W, C
-            x = (x + 1.0) * 0.5  # [-1, 1] -> [0,
+            x = (x + 1.0) * 0.5  # [-1, 1] -> [0, 1]
+
+            x_np = np.asarray(x)
+            if not np.isfinite(x_np).all():
+                print(f"[warn] non-finite inputs at step {global_step}; skipping batch.")
+                continue
+            batch_std = float(x_np.std())
+            if batch_std < args.min_batch_std:
+                print(f"[warn] near-zero batch std ({batch_std:.3e}) at step {global_step}; skipping batch.")
+                continue
 
             gen_state, logs_g, xrec, posterior = gen_step(gen_state, disc_state, x, global_step)
             disc_state, logs_d = disc_step(gen_state.params, disc_state, x, global_step)
