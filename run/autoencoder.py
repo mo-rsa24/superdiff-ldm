@@ -19,6 +19,11 @@ from datasets.ChestXRay import ChestXrayDataset
 from models.ae_kl import AutoencoderKL
 from losses.lpips_gan import LPIPSWithDiscriminatorJAX, LPIPSGANConfig, PerceptualHook
 
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+
+import tensorflow as tf
+tf.config.set_visible_devices([], "GPU")
 # --- Optional W&B ---
 try:
     import wandb
@@ -69,8 +74,8 @@ def parse_args():
     p.add_argument("--num_res_blocks", type=int, default=3)
     p.add_argument("--dropout", type=float, default=0.0)
     p.add_argument("--z_channels", type=int, default=128)
-    p.add_argument("--attn_res", type=str, default="32,16,8",
-                   help="Comma-separated resolutions for attention, e.g., '32,16,8'")
+    p.add_argument("--attn_res", type=str, default="16,8",
+                   help="Comma-separated resolutions for attention, e.g., '16,8'")
     p.add_argument(
         "--embed_dim",
         type=int_or_none,
@@ -85,14 +90,14 @@ def parse_args():
     p.add_argument("--kl_anneal_steps", type=int, default=0,
                    help="Number of steps to ramp KL weight to full value (0 disables).")
     p.add_argument("--pixel_weight", type=float, default=1.0)
-    p.add_argument("--disc_start", type=int, default=50001)
-    p.add_argument("--disc_warmup_steps", type=int, default=10000,
+    p.add_argument("--disc_start", type=int, default=5000)
+    p.add_argument("--disc_warmup_steps", type=int, default=5000,
                    help="Steps to ramp discriminator weight from 0 to 1 after disc_start.")
     p.add_argument("--disc_factor", type=float, default=1.0)
-    p.add_argument("--disc_weight", type=float, default=0.5)
-    p.add_argument("--disc_layers", type=int, default=3)
+    p.add_argument("--disc_weight", type=float, default=0.1)
+    p.add_argument("--disc_layers", type=int, default=2)
     p.add_argument("--disc_loss", choices=["hinge","vanilla"], default="hinge")
-    p.add_argument("--perceptual_weight", type=float, default=0.0)
+    p.add_argument("--perceptual_weight", type=float, default=0.05)
 
     # Optimizer
     p.add_argument("--lr", type=float, default=2e-4)
@@ -110,7 +115,7 @@ def parse_args():
     p.add_argument("--min_batch_std", type=float, default=1e-6,
                    help="Skip batches with near-zero std after normalization to avoid degenerate updates.")
     p.add_argument("--epochs", type=int, default=100)
-    p.add_argument("--batch_per_device", type=int, default=4)
+    p.add_argument("--batch_per_device", type=int, default=2)
     p.add_argument("--seed", type=int, default=0)
 
     # Logging & ckpts
@@ -128,7 +133,7 @@ def parse_args():
     p.add_argument("--wandb_tags", default="")
     p.add_argument("--wandb_id", default=None)
 
-    p.add_argument("--base_ch", type=int, default=192)
+    p.add_argument("--base_ch", type=int, default=128)
     p.add_argument("--ch_mults", type=str, default="1,2,4", help="Channel multipliers, e.g., '1,2,4'")
     return p.parse_args()
 
@@ -203,7 +208,7 @@ def main():
     loader_kwargs = {
         "batch_size": batch_size,
         "shuffle": shuffle,
-        "num_workers": 0 if args.overfit_one else 8,  # Disable workers for the simple RepeatOne dataset
+        "num_workers": 0 if args.overfit_one else 0,  # Disable workers for the simple RepeatOne dataset
         "drop_last": drop_last,
         "pin_memory": True
     }
