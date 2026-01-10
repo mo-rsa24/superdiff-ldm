@@ -90,6 +90,12 @@ def parse_args():
     p.add_argument("--kl_anneal_steps", type=int, default=0,
                    help="Number of steps to ramp KL weight to full value (0 disables).")
     p.add_argument("--pixel_weight", type=float, default=1.0)
+    p.add_argument(
+        "--recon_loss",
+        choices=["l1", "l2", "bce_logits", "logit_l1"],
+        default="l1",
+        help="Reconstruction loss variant (assumes matching decoder output).",
+    )
     p.add_argument("--disc_start", type=int, default=5000)
     p.add_argument("--disc_warmup_steps", type=int, default=5000,
                    help="Steps to ramp discriminator weight from 0 to 1 after disc_start.")
@@ -98,6 +104,18 @@ def parse_args():
     p.add_argument("--disc_layers", type=int, default=2)
     p.add_argument("--disc_loss", choices=["hinge","vanilla"], default="hinge")
     p.add_argument("--perceptual_weight", type=float, default=0.05)
+    p.add_argument(
+        "--decoder_output",
+        choices=["sigmoid", "tanh", "identity"],
+        default="sigmoid",
+        help="Decoder output activation.",
+    )
+    p.add_argument(
+        "--input_range",
+        choices=["zero_one", "neg_one_one"],
+        default="zero_one",
+        help="Input normalization range expected by the decoder.",
+    )
 
     # Optimizer
     p.add_argument("--lr", type=float, default=2e-4)
@@ -229,7 +247,8 @@ def main():
                    z_ch=args.z_channels,
                    num_res_blocks=args.num_res_blocks,
                    dropout=args.dropout,
-                   attn_resolutions=attn_res)
+                   attn_resolutions=attn_res,
+                   out_act=args.decoder_output)
     ae = AutoencoderKL(enc_cfg=enc_cfg, dec_cfg=dec_cfg, embed_dim=embed_dim)
 
     # ----- loss -----
@@ -240,6 +259,7 @@ def main():
         kl_anneal_start=args.kl_anneal_start,
         kl_anneal_steps=args.kl_anneal_steps,
         pixel_weight=args.pixel_weight,
+        recon_loss=args.recon_loss,
         disc_num_layers=args.disc_layers, disc_in_channels=1, disc_factor=args.disc_factor,
         disc_weight=args.disc_weight, disc_loss=args.disc_loss, perceptual_weight=args.perceptual_weight
     )
@@ -304,10 +324,9 @@ def main():
         return ae.apply({'params': ae_params}, x, rng=rng, sample_posterior=True, train=train)
 
     @jax.jit
-    def gen_step(gen_state, disc_state, x, step):
+    def gen_step(gen_state, disc_state, x, step, rng_key):
         def loss_fn(params):
-            rng1, rng2 = jax.random.split(jax.random.PRNGKey(step))
-            xrec, posterior = model_apply(params['ae'], x, rng=rng1, train=True)
+            xrec, posterior = model_apply(params['ae'], x, rng=rng_key, train=True)
             g_loss, logs_g, d_loss, logs_d = loss_mod.apply(
                 {'params': disc_state.params['loss']},
                 x_in=x, x_rec=xrec, posterior=posterior, step=jnp.array(step), train=True, mutable=False
@@ -319,9 +338,8 @@ def main():
         return gen_state, logs_g, xrec, posterior
 
     @jax.jit
-    def disc_step(gen_params, disc_state, x, step):
-        rng1 = jax.random.PRNGKey(step)
-        xrec, posterior = model_apply(gen_params['ae'], x, rng=rng1, train=True)
+    def disc_step(gen_params, disc_state, x, step, rng_key):
+        xrec, posterior = model_apply(gen_params['ae'], x, rng=rng_key, train=True)
         def loss_fn(dparams):
             g_loss, logs_g, d_loss, logs_d = loss_mod.apply(
                 {'params': dparams['loss']},
@@ -341,7 +359,10 @@ def main():
             x = jnp.asarray(batch.numpy())
             # Permute and normalize in JAX
             x = jnp.transpose(x, (0, 2, 3, 1))  # N, C, H, W -> N, H, W, C
-            x = (x + 1.0) * 0.5  # [-1, 1] -> [0, 1]
+            if args.input_range == "zero_one":
+                x = (x + 1.0) * 0.5  # [-1, 1] -> [0, 1]
+            elif args.input_range != "neg_one_one":
+                raise ValueError(f"Unknown input_range: {args.input_range}")
 
             x_np = np.asarray(x)
             if not np.isfinite(x_np).all():
@@ -352,8 +373,10 @@ def main():
                 print(f"[warn] near-zero batch std ({batch_std:.3e}) at step {global_step}; skipping batch.")
                 continue
 
-            gen_state, logs_g, xrec, posterior = gen_step(gen_state, disc_state, x, global_step)
-            disc_state, logs_d = disc_step(gen_state.params, disc_state, x, global_step)
+            step_key = jax.random.fold_in(rng, global_step)
+            gen_key, disc_key = jax.random.split(step_key)
+            gen_state, logs_g, xrec, posterior = gen_step(gen_state, disc_state, x, global_step, gen_key)
+            disc_state, logs_d = disc_step(gen_state.params, disc_state, x, global_step, disc_key)
 
             global_step += 1
             if use_wandb and (global_step % max(1, args.log_every) == 0):
@@ -374,7 +397,14 @@ def main():
         # sampling grid
         if ((ep+1) % max(1, args.sample_every)) == 0:
             with torch.no_grad():
-                xnp = np.asarray(xrec)  # last batch reconstructions (0..1)
+                xnp = np.asarray(xrec)
+                if args.decoder_output == "identity":
+                    if args.input_range == "zero_one":
+                        xnp = 1.0 / (1.0 + np.exp(-xnp))
+                    else:
+                        xnp = np.tanh(xnp)
+                if args.input_range == "neg_one_one":
+                    xnp = (xnp + 1.0) * 0.5
                 xnp = np.transpose(xnp, (0,3,1,2))  # N,1,H,W
                 imgs = torch.tensor(xnp).clamp(0,1)
                 grid = make_grid_torch(imgs, nrow=8)

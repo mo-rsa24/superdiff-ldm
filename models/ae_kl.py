@@ -110,6 +110,7 @@ class Decoder(nn.Module):
     num_res_blocks: int = 2
     dropout: float = 0.0
     attn_resolutions: Sequence[int] = ()  # Add this argument
+    out_act: str = "sigmoid"
 
     @nn.compact
     def __call__(self, z, train=True):
@@ -133,8 +134,13 @@ class Decoder(nn.Module):
         h = nn.GroupNorm(num_groups=32)(h)
         h = nn.swish(h)
         h = nn.Conv(self.out_ch, (3, 3), padding="SAME")(h)
-        h = nn.sigmoid(h)
-        return h
+        if self.out_act == "sigmoid":
+            return jax.nn.sigmoid(h)
+        if self.out_act == "tanh":
+            return jnp.tanh(h)
+        if self.out_act == "identity":
+            return h
+        raise ValueError(f"Unknown decoder output activation: {self.out_act}")
 
 class AutoencoderKL(nn.Module):
     enc_cfg: dict

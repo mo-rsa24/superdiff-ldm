@@ -71,6 +71,7 @@ class LPIPSGANConfig:
     disc_in_channels: int = 1
     disc_loss: str = "hinge"  # or "vanilla"
     perceptual_weight: float = 0.0  # set >0 if you wire PerceptualHook
+    recon_loss: str = "l1"  # l1, l2, bce_logits, logit_l1
 
 class LPIPSWithDiscriminatorJAX(nn.Module):
     cfg: LPIPSGANConfig
@@ -109,9 +110,22 @@ class LPIPSWithDiscriminatorJAX(nn.Module):
 
     def _pixel_loss(self, x, y):
         # L1 + (optional) perceptual
-        rec_l1 = jnp.mean(jnp.abs(x - y), axis=(1,2,3))
+        if self.cfg.recon_loss == "l2":
+            rec = jnp.mean(jnp.square(x - y), axis=(1, 2, 3))
+        elif self.cfg.recon_loss == "bce_logits":
+            rec = jnp.mean(
+                nn.sigmoid_cross_entropy_with_logits(logits=y, labels=x),
+                axis=(1, 2, 3),
+            )
+        elif self.cfg.recon_loss == "logit_l1":
+            eps = 1.0e-4
+            x_clamped = jnp.clip(x, eps, 1.0 - eps)
+            x_logit = jnp.log(x_clamped) - jnp.log1p(-x_clamped)
+            rec = jnp.mean(jnp.abs(x_logit - y), axis=(1, 2, 3))
+        else:
+            rec = jnp.mean(jnp.abs(x - y), axis=(1, 2, 3))
         p = self.perc(x, y)
-        return self.cfg.pixel_weight * rec_l1 + p
+        return self.cfg.pixel_weight * rec + p
 
     def __call__(self, *, x_in, x_rec, posterior, step, last_layer=None, train=True):
         """
