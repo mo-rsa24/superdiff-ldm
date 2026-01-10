@@ -71,7 +71,7 @@ class LPIPSGANConfig:
 
 class LPIPSWithDiscriminatorJAX(nn.Module):
     cfg: LPIPSGANConfig
-    perc: PerceptualHook = PerceptualHook()  # defaults to zero
+    perc: PerceptualHook = field(default_factory=PerceptualHook)  # defaults to zero
 
     def setup(self):
         self.logvar = self.param("logvar", lambda k: jnp.array(0.0))
