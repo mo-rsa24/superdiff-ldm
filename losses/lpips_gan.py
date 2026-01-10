@@ -60,10 +60,7 @@ class PerceptualHook:
 @dataclass
 class LPIPSGANConfig:
     disc_start: int = 0
-    disc_warmup_steps: int = 10000
     kl_weight: float = 1.0
-    kl_anneal_start: int = 0
-    kl_anneal_steps: int = 0
     pixel_weight: float = 1.0
     disc_factor: float = 1.0
     disc_weight: float = 1.0
@@ -71,11 +68,10 @@ class LPIPSGANConfig:
     disc_in_channels: int = 1
     disc_loss: str = "hinge"  # or "vanilla"
     perceptual_weight: float = 0.0  # set >0 if you wire PerceptualHook
-    recon_loss: str = "l1"  # l1, l2, bce_logits, logit_l1
 
 class LPIPSWithDiscriminatorJAX(nn.Module):
     cfg: LPIPSGANConfig
-    perc: PerceptualHook = field(default_factory=PerceptualHook)
+    perc: PerceptualHook = PerceptualHook()  # defaults to zero
 
     def setup(self):
         self.logvar = self.param("logvar", lambda k: jnp.array(0.0))
@@ -88,44 +84,22 @@ class LPIPSWithDiscriminatorJAX(nn.Module):
     # def _adopt_weight(self, step):
     #     return jnp.where(step >= self.cfg.disc_start, self.cfg.disc_factor, 0.0)
 
-    def _adopt_weight(self, step):
+    def _adopt_weight(self, step, threshold=0., value=0.):
         if self.cfg.disc_start < 0:
-            return 1.0
-        warmup_steps = float(max(self.cfg.disc_warmup_steps, 1))
-        return jax.lax.clamp(
-            0.0,
-        (step - self.cfg.disc_start) / warmup_steps,
-        1.0
-    )
-
-    def _kl_weight(self, step):
-        if self.cfg.kl_anneal_steps <= 0:
-            return self.cfg.kl_weight
-        warmup = jax.lax.clamp(
-            0.0,
-            (step - self.cfg.kl_anneal_start) / float(self.cfg.kl_anneal_steps),
-            1.0
+            return 1.
+        warmup_steps = 10000.0
+        weight = jax.lax.clamp(
+            0.,
+            (step - self.cfg.disc_start) / warmup_steps,
+            1.
         )
-        return self.cfg.kl_weight * warmup
+        return weight
 
     def _pixel_loss(self, x, y):
         # L1 + (optional) perceptual
-        if self.cfg.recon_loss == "l2":
-            rec = jnp.mean(jnp.square(x - y), axis=(1, 2, 3))
-        elif self.cfg.recon_loss == "bce_logits":
-            rec = jnp.mean(
-                nn.sigmoid_cross_entropy_with_logits(logits=y, labels=x),
-                axis=(1, 2, 3),
-            )
-        elif self.cfg.recon_loss == "logit_l1":
-            eps = 1.0e-4
-            x_clamped = jnp.clip(x, eps, 1.0 - eps)
-            x_logit = jnp.log(x_clamped) - jnp.log1p(-x_clamped)
-            rec = jnp.mean(jnp.abs(x_logit - y), axis=(1, 2, 3))
-        else:
-            rec = jnp.mean(jnp.abs(x - y), axis=(1, 2, 3))
+        rec_l1 = jnp.mean(jnp.abs(x - y), axis=(1,2,3))
         p = self.perc(x, y)
-        return self.cfg.pixel_weight * rec + p
+        return self.cfg.pixel_weight * rec_l1 + p
 
     def __call__(self, *, x_in, x_rec, posterior, step, last_layer=None, train=True):
         """
@@ -153,14 +127,12 @@ class LPIPSWithDiscriminatorJAX(nn.Module):
         d_weight = self.cfg.disc_weight  # adaptive weight can be added if you want grad-based matching
 
         disc_factor = self._adopt_weight(step)
-        kl_weight = self._kl_weight(step)
-        gen_loss = nll + kl_weight * kl + d_weight * disc_factor * g_loss
+        gen_loss = nll + self.cfg.kl_weight * kl + d_weight * disc_factor * g_loss
 
         logs_g = {
             "train/total": gen_loss,
             "train/nll": nll,
             "train/kl": kl,
-            "train/kl_weight": kl_weight,
             "train/g_loss": g_loss,
             "train/logvar": self.logvar,
             "train/disc_factor": disc_factor,
