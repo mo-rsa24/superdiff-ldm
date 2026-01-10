@@ -20,21 +20,26 @@ from models.ae_kl import AutoencoderKL
 from losses.lpips_gan import LPIPSWithDiscriminatorJAX, LPIPSGANConfig, PerceptualHook
 
 import os
+
 os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
 
 import tensorflow as tf
+
 tf.config.set_visible_devices([], "GPU")
 # --- Optional W&B ---
 try:
     import wandb
+
     _WANDB = True
 except Exception:
     wandb = None
     _WANDB = False
 
+
 def ensure_dir(p):
     os.makedirs(p, exist_ok=True)
     return p
+
 
 def make_grid_torch(imgs_tensor, nrow=None):
     from torchvision.utils import make_grid
@@ -53,21 +58,23 @@ def int_or_none(value):
     except ValueError:
         raise argparse.ArgumentTypeError(f"'{value}' is not a valid integer or 'None'")
 
+
 def parse_args():
     p = argparse.ArgumentParser("JAX AutoencoderKL (CXR) trainer")
 
     # Data
     p.add_argument("--data_root", default="../datasets/cleaned")
-    p.add_argument("--task", choices=["TB","PNEUMONIA", "All_CXR"], default="TB")
-    p.add_argument("--split", choices=["train","val","test"], default="train")
+    p.add_argument("--task", choices=["TB", "PNEUMONIA", "All_CXR"], default="TB")
+    p.add_argument("--split", choices=["train", "val", "test"], default="train")
     p.add_argument("--img_size", type=int, default=256)
-    p.add_argument("--class_filter", type=int_or_none, default=None, help="Train only on one class (e.g., 0 or 1), or 'None' for no filter")
+    p.add_argument("--class_filter", type=int_or_none, default=None,
+                   help="Train only on one class (e.g., 0 or 1), or 'None' for no filter")
     p.add_argument("--overfit_one", action="store_true",
-                                       help = "Repeat a single sample to overfit the AE.")
+                   help="Repeat a single sample to overfit the AE.")
     p.add_argument("--overfit_k", type=int, default=0,
-                                       help = "If >0, train on a fixed tiny subset of size K.")
+                   help="If >0, train on a fixed tiny subset of size K.")
     p.add_argument("--repeat_len", type=int, default=500,
-                                       help = "Virtual length for the repeated one-sample dataset.")
+                   help="Virtual length for the repeated one-sample dataset.")
 
     # Model arch (no YAML)
     # p.add_argument("--ch_mults", type=str, default="128,256,512")
@@ -102,7 +109,7 @@ def parse_args():
     p.add_argument("--disc_factor", type=float, default=1.0)
     p.add_argument("--disc_weight", type=float, default=0.1)
     p.add_argument("--disc_layers", type=int, default=2)
-    p.add_argument("--disc_loss", choices=["hinge","vanilla"], default="hinge")
+    p.add_argument("--disc_loss", choices=["hinge", "vanilla"], default="hinge")
     p.add_argument("--perceptual_weight", type=float, default=0.05)
     p.add_argument(
         "--decoder_output",
@@ -155,11 +162,28 @@ def parse_args():
     p.add_argument("--ch_mults", type=str, default="1,2,4", help="Channel multipliers, e.g., '1,2,4'")
     return p.parse_args()
 
+
 def n_local_devices():
     return jax.local_device_count()
 
+
 def main():
     args = parse_args()
+
+    # [FIX] Safety Validations to prevent mathematical errors in configuration
+    if args.input_range == "neg_one_one" and args.recon_loss in ["bce_logits", "logit_l1"]:
+        raise ValueError(
+            f"❌ Configuration Error: 'input_range=neg_one_one' ([-1,1]) is incompatible with 'recon_loss={args.recon_loss}'.\n"
+            f"   BCE/Logit losses expect targets in [0,1] (probabilities).\n"
+            f"   Fix: Set --input_range=zero_one OR use --recon_loss=l1/l2."
+        )
+
+    if args.decoder_output != "identity" and args.recon_loss in ["bce_logits", "logit_l1"]:
+        raise ValueError(
+            f"❌ Configuration Error: 'recon_loss={args.recon_loss}' expects raw logits, but 'decoder_output={args.decoder_output}' applies an activation.\n"
+            f"   Fix: Set --decoder_output=identity."
+        )
+
     rng = jax.random.PRNGKey(args.seed)
 
     # ----- run dirs -----
@@ -177,13 +201,13 @@ def main():
     elif args.overfit_k > 0:
         mode = f"tiny{args.overfit_k}"
     exp_slug = (
-       f"{args.exp_name}"
-       f"-{args.task.lower()}-{args.split}"
-       f"-cxr{H}-{mode}"
-       f"-ch{'x'.join(map(str, ch_mults))}"
-       f"-z{args.z_channels}"
-       f"-e{embed_dim}"
-       f"-lr{args.lr:g}-b{per_dev}")
+        f"{args.exp_name}"
+        f"-{args.task.lower()}-{args.split}"
+        f"-cxr{H}-{mode}"
+        f"-ch{'x'.join(map(str, ch_mults))}"
+        f"-z{args.z_channels}"
+        f"-e{embed_dim}"
+        f"-lr{args.lr:g}-b{per_dev}")
     run_dir = args.resume_dir if args.resume_dir else os.path.join(args.output_root, args.run_name or exp_slug, ts)
     ckpt_dir = ensure_dir(os.path.join(run_dir, "ckpts"))
     samples_dir = ensure_dir(os.path.join(run_dir, "samples"))
@@ -199,11 +223,14 @@ def main():
         img_size=args.img_size, class_filter=args.class_filter
     )
     label_counts = Counter(base_ds.labels)
+
     class RepeatOne(Dataset):
         def __init__(self, item, length: int):
             self.x, self.y = item
             self.length = int(length)
+
         def __len__(self): return self.length
+
         def __getitem__(self, idx): return self.x, self.y
 
     # (in autoencoder.py, around line 136)
@@ -272,13 +299,14 @@ def main():
 
     # loss_vars = loss_mod.init({'params': rng}, x_in=fake, x_rec=fake, posterior=None, step=jnp.array(0), train=True)
     fake_loss = jnp.ones((1, 32, 32, 1), dtype=jnp.float32)  # tiny tensor for safe init
-    loss_vars = loss_mod.init({'params': rng}, x_in = fake_loss, x_rec = fake_loss, posterior = None, step = jnp.array(0), train = True)
+    loss_vars = loss_mod.init({'params': rng}, x_in=fake_loss, x_rec=fake_loss, posterior=None, step=jnp.array(0),
+                              train=True)
     loss_params = loss_vars['params']
 
     # two optimizers (generator vs discriminator) like LDM
     def tx(lr):
         base_tx = optax.chain(
-            optax.clip_by_global_norm(args.grad_clip) if args.grad_clip>0 else optax.identity(),
+            optax.clip_by_global_norm(args.grad_clip) if args.grad_clip > 0 else optax.identity(),
             optax.adamw(
                 lr,
                 weight_decay=args.weight_decay,
@@ -288,6 +316,7 @@ def main():
             ),
         )
         return optax.apply_if_finite(base_tx, max_consecutive_errors=args.max_consecutive_nan_updates)
+
     # group params
     def split_gen_disc(ae_params, loss_params):
         # everything in AE is "gen"; discriminator is in loss_params
@@ -301,11 +330,18 @@ def main():
     gen_state = TrainState.create(apply_fn=None, params=gen_params, tx=tx(gen_lr))
     disc_state = TrainState.create(apply_fn=None, params=disc_params, tx=tx(disc_lr))
 
+    # ----- Global Step Tracking -----
+    global_step = 0
+
     # ----- resume -----
     if args.resume_dir and tf.io.gfile.exists(ckpt_latest):
         print(f"[info] resume from {ckpt_latest}")
         with tf.io.gfile.GFile(ckpt_latest, "rb") as f: blob = f.read()
         gen_state, disc_state = from_bytes((gen_state, disc_state), blob)
+        # [FIX] Restore global_step from the Optimizer state to ensure continuity
+        # Flax TrainState maintains 'step' as an integer
+        global_step = int(gen_state.step)
+        print(f"[info] Resumed training state from step {global_step}")
 
     # ----- wandb -----
     use_wandb = bool(args.wandb and _WANDB)
@@ -333,6 +369,7 @@ def main():
             )
             # Only return generator portion (nll+kl+g); discriminator updated separately
             return g_loss, (logs_g, xrec, posterior)
+
         (g_loss, (logs_g, xrec, posterior)), grads = jax.value_and_grad(loss_fn, has_aux=True)(gen_state.params)
         gen_state = gen_state.apply_gradients(grads=grads)
         return gen_state, logs_g, xrec, posterior
@@ -340,28 +377,35 @@ def main():
     @jax.jit
     def disc_step(gen_params, disc_state, x, step, rng_key):
         xrec, posterior = model_apply(gen_params['ae'], x, rng=rng_key, train=True)
+
         def loss_fn(dparams):
             g_loss, logs_g, d_loss, logs_d = loss_mod.apply(
                 {'params': dparams['loss']},
                 x_in=x, x_rec=xrec, posterior=posterior, step=jnp.array(step), train=True, mutable=False
             )
             return d_loss, logs_d
+
         (d_loss, logs_d), grads = jax.value_and_grad(loss_fn, has_aux=True)(disc_state.params)
         disc_state = disc_state.apply_gradients(grads=grads)
         return disc_state, logs_d
 
     # ----- training loop -----
-    global_step = 0
-    for ep in tqdm.trange(args.epochs, desc="epochs"):
-        inner = tqdm.tqdm(loader, desc=f"epoch {ep+1}/{args.epochs}", leave=False)
+    # Start loop from the resumed step
+    start_epoch = global_step // len(loader)
+
+    for ep in tqdm.trange(start_epoch, args.epochs, desc="epochs"):
+        inner = tqdm.tqdm(loader, desc=f"epoch {ep + 1}/{args.epochs}", leave=False)
         for step_i, (batch, _) in enumerate(inner):
             # Convert to JAX/NumPy array first
             x = jnp.asarray(batch.numpy())
             # Permute and normalize in JAX
             x = jnp.transpose(x, (0, 2, 3, 1))  # N, C, H, W -> N, H, W, C
+
+            # [NOTE] Dataset outputs [-1, 1]. Only shift if user requested [0, 1].
             if args.input_range == "zero_one":
                 x = (x + 1.0) * 0.5  # [-1, 1] -> [0, 1]
             elif args.input_range != "neg_one_one":
+                # Should have been caught by argparse, but safe to check
                 raise ValueError(f"Unknown input_range: {args.input_range}")
 
             x_np = np.asarray(x)
@@ -381,43 +425,63 @@ def main():
             global_step += 1
             if use_wandb and (global_step % max(1, args.log_every) == 0):
                 payload = {"train/step": global_step}
-                payload.update({k: float(v) for k,v in logs_g.items()})
-                payload.update({k: float(v) for k,v in logs_d.items()})
+                payload.update({k: float(v) for k, v in logs_g.items()})
+                payload.update({k: float(v) for k, v in logs_d.items()})
                 wandb.log(payload)
 
         # save ckpt each epoch
         payload = to_bytes((gen_state, disc_state))
-        ep_path = os.path.join(ckpt_dir, f"ep{ep+1:04d}.flax")
-        with tf.io.gfile.GFile(ep_path, "wb") as f: f.write(payload)
-        with tf.io.gfile.GFile(ckpt_latest, "wb") as f: f.write(payload)
+        ep_path = os.path.join(ckpt_dir, f"ep{ep + 1:04d}.flax")
+        with tf.io.gfile.GFile(ep_path, "wb") as f:
+            f.write(payload)
+        with tf.io.gfile.GFile(ckpt_latest, "wb") as f:
+            f.write(payload)
 
         if use_wandb:
-            wandb.log({"epoch/idx": ep+1, "ckpt/last_path": ckpt_latest})
+            wandb.log({"epoch/idx": ep + 1, "ckpt/last_path": ckpt_latest})
 
         # sampling grid
-        if ((ep+1) % max(1, args.sample_every)) == 0:
+        if ((ep + 1) % max(1, args.sample_every)) == 0:
             with torch.no_grad():
                 xnp = np.asarray(xrec)
+
+                # [FIX] Safer visualization logic
                 if args.decoder_output == "identity":
-                    if args.input_range == "zero_one":
+                    # Heuristic: If we are using BCE, 'identity' implies logits -> need sigmoid.
+                    # If we are using L1/L2, 'identity' usually implies raw values -> clamp.
+                    if args.recon_loss in ["bce_logits", "logit_l1"]:
                         xnp = 1.0 / (1.0 + np.exp(-xnp))
-                    else:
-                        xnp = np.tanh(xnp)
+                    # else: leave as raw linear output (will be shifted below if needed)
+
+                elif args.decoder_output == "tanh":
+                    # already in [-1, 1], nothing to do
+                    pass
+                elif args.decoder_output == "sigmoid":
+                    # already in [0, 1], nothing to do
+                    pass
+
+                # Final Shift to [0,1] for display based on EXPECTED input range
                 if args.input_range == "neg_one_one":
+                    # If model outputs [-1, 1] (via tanh or raw L1), shift to [0, 1]
                     xnp = (xnp + 1.0) * 0.5
-                xnp = np.transpose(xnp, (0,3,1,2))  # N,1,H,W
-                imgs = torch.tensor(xnp).clamp(0,1)
+
+                # Ensure valid range for PNG
+                xnp = np.clip(xnp, 0.0, 1.0)
+
+                xnp = np.transpose(xnp, (0, 3, 1, 2))  # N,1,H,W
+                imgs = torch.tensor(xnp)
                 grid = make_grid_torch(imgs, nrow=8)
-                grid_np = grid.permute(1,2,0).numpy()
-                out_path = os.path.join(samples_dir, f"recon_ep{ep+1:03d}.png")
+                grid_np = grid.permute(1, 2, 0).numpy()
+                out_path = os.path.join(samples_dir, f"recon_ep{ep + 1:03d}.png")
                 from PIL import Image
-                Image.fromarray((grid_np*255).astype(np.uint8)).save(out_path)
+                Image.fromarray((grid_np * 255).astype(np.uint8)).save(out_path)
                 if use_wandb:
                     wandb.log({"samples/recon_grid": wandb.Image(out_path)})
 
     print(f"[done] run dir: {run_dir}")
     if use_wandb:
         wandb.finish()
+
 
 if __name__ == "__main__":
     main()
