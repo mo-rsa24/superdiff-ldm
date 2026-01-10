@@ -166,6 +166,46 @@ def parse_args():
 def n_local_devices():
     return jax.local_device_count()
 
+def validate_ranges(args):
+    if args.decoder_output == "tanh" and args.input_range == "zero_one":
+        raise ValueError(
+            "decoder_output=tanh produces [-1,1] outputs, but input_range=zero_one expects [0,1]. "
+            "Use --decoder_output=sigmoid or --input_range=neg_one_one."
+        )
+    if args.decoder_output == "sigmoid" and args.input_range == "neg_one_one":
+        raise ValueError(
+            "decoder_output=sigmoid produces [0,1] outputs, but input_range=neg_one_one expects [-1,1]. "
+            "Use --decoder_output=tanh or --input_range=zero_one."
+        )
+
+
+def normalize_inputs(x, input_range):
+    if input_range == "zero_one":
+        return (x + 1.0) * 0.5
+    if input_range == "neg_one_one":
+        return x
+    raise ValueError(f"Unknown input_range: {input_range}")
+
+
+def normalize_outputs_for_display(xrec, *, decoder_output, input_range, recon_loss):
+    xnp = np.asarray(xrec)
+
+    if decoder_output == "identity":
+        if recon_loss in ["bce_logits", "logit_l1"]:
+            xnp = 1.0 / (1.0 + np.exp(-xnp))
+        elif input_range == "neg_one_one":
+            xnp = (xnp + 1.0) * 0.5
+    elif decoder_output == "tanh":
+        xnp = (xnp + 1.0) * 0.5
+    elif decoder_output == "sigmoid":
+        pass
+    else:
+        raise ValueError(f"Unknown decoder_output: {decoder_output}")
+
+    if decoder_output != "sigmoid" and input_range == "zero_one" and recon_loss in ["bce_logits", "logit_l1"]:
+        xnp = np.clip(xnp, 0.0, 1.0)
+
+    return np.clip(xnp, 0.0, 1.0)
 
 def main():
     args = parse_args()
@@ -183,6 +223,8 @@ def main():
             f"❌ Configuration Error: 'recon_loss={args.recon_loss}' expects raw logits, but 'decoder_output={args.decoder_output}' applies an activation.\n"
             f"   Fix: Set --decoder_output=identity."
         )
+
+    validate_ranges(args)
 
     rng = jax.random.PRNGKey(args.seed)
 
@@ -400,13 +442,7 @@ def main():
             x = jnp.asarray(batch.numpy())
             # Permute and normalize in JAX
             x = jnp.transpose(x, (0, 2, 3, 1))  # N, C, H, W -> N, H, W, C
-
-            # [NOTE] Dataset outputs [-1, 1]. Only shift if user requested [0, 1].
-            if args.input_range == "zero_one":
-                x = (x + 1.0) * 0.5  # [-1, 1] -> [0, 1]
-            elif args.input_range != "neg_one_one":
-                # Should have been caught by argparse, but safe to check
-                raise ValueError(f"Unknown input_range: {args.input_range}")
+            x = normalize_inputs(x, args.input_range)
 
             x_np = np.asarray(x)
             if not np.isfinite(x_np).all():
@@ -443,30 +479,12 @@ def main():
         # sampling grid
         if ((ep + 1) % max(1, args.sample_every)) == 0:
             with torch.no_grad():
-                xnp = np.asarray(xrec)
-
-                # [FIX] Safer visualization logic
-                if args.decoder_output == "identity":
-                    # Heuristic: If we are using BCE, 'identity' implies logits -> need sigmoid.
-                    # If we are using L1/L2, 'identity' usually implies raw values -> clamp.
-                    if args.recon_loss in ["bce_logits", "logit_l1"]:
-                        xnp = 1.0 / (1.0 + np.exp(-xnp))
-                    # else: leave as raw linear output (will be shifted below if needed)
-
-                elif args.decoder_output == "tanh":
-                    # already in [-1, 1], nothing to do
-                    pass
-                elif args.decoder_output == "sigmoid":
-                    # already in [0, 1], nothing to do
-                    pass
-
-                # Final Shift to [0,1] for display based on EXPECTED input range
-                if args.input_range == "neg_one_one":
-                    # If model outputs [-1, 1] (via tanh or raw L1), shift to [0, 1]
-                    xnp = (xnp + 1.0) * 0.5
-
-                # Ensure valid range for PNG
-                xnp = np.clip(xnp, 0.0, 1.0)
+                xnp = normalize_outputs_for_display(
+                    xrec,
+                    decoder_output=args.decoder_output,
+                    input_range=args.input_range,
+                    recon_loss=args.recon_loss,
+                )
 
                 xnp = np.transpose(xnp, (0, 3, 1, 2))  # N,1,H,W
                 imgs = torch.tensor(xnp)
