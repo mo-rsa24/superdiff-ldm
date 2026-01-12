@@ -3,41 +3,45 @@ set -euo pipefail
 
 # --- Defaults (can be overridden by command-line arguments) ---
 export TASK="TB"
-export ENV_NAME="jax115"
-export IMG_SIZE="128"
+export ENV_NAME="jaxstack"
+export IMG_SIZE="256"
 export TRAINING_MODE="${1:-full_train}" # Reads mode (e.g., full_train) from the first argument
 export DISEASE="1" # 1 for TB, 0 for Normal
 
 # --- Hyperparameter Defaults ---
 export LR="1e-4"
-export WEIGHT_DECAY="0.05"
-export LDM_BASE_CH="64"
+export WEIGHT_DECAY="1e-4"
+export LDM_BASE_CH="192"
 export GRAD_CLIP="1.0"
 export BATCH_PER_DEVICE="16"
-export EPOCHS="300"
+export EPOCHS="1500"
 export LOG_EVERY="100"
-export SAMPLE_EVERY="10"
+export SAMPLE_EVERY="250"
 export SAMPLE_BATCH_SIZE="16"
-export LDM_CH_MULTS="1,2,4"
-export LDM_NUM_RES_BLOCKS="2"
-export LDM_ATTN_RES="16"
+export LDM_CH_MULTS="1,2,4,4"
+export LDM_NUM_RES_BLOCKS="3"
+export LDM_ATTN_RES="32,16,8"
 export WANDB="1"
+export WANDB_PROJECT="cxr-ldm-composition"
+export WANDB_TAGS="ldm,normal,256"
 
 # --- Shared VAE and Scale Factor (❗ IMPORTANT: Update these values) ---
-export AE_CKPT_PATH="runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/ckpts/last.flax"
-export AE_CONFIG_PATH="runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/run_meta.json"
+export AE_RUN_DIR="${AE_RUN_DIR:-}"
+export AE_CKPT_PATH="${AE_CKPT_PATH:-}"
+export AE_CONFIG_PATH="${AE_CONFIG_PATH:-}"
 export LATENT_SCALE_FACTOR="0.994534"
 
 # --- SLURM Defaults ---
 export SLURM_PARTITION="bigbatch"
-export SLURM_JOB_NAME="ldm-${TASK,,}-proto"
+export SLURM_JOB_NAME="ldm-${TASK,,}-normal"
+export TIME_LIMIT="${TIME_LIMIT:-72:00:00}"
 
 # --- EMA Configuration ---
 export USE_EMA="1" # Use "1" for true, "0" for false
 export EMA_DECAY="0.999"
 # --- Robust Argument Parsing Loop ---
 OTHER_ARGS=()
-shift # Shift away the first argument (training_mode)
+shift || true # Shift away the first argument (training_mode) if present
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -55,14 +59,28 @@ while [[ $# -gt 0 ]]; do
     --log_every)          export LOG_EVERY="$2"; shift 2 ;;
     --sample_every)       export SAMPLE_EVERY="$2"; shift 2 ;;
     --sample_batch_size)  export SAMPLE_BATCH_SIZE="$2"; shift 2 ;;
+    --ae_ckpt_path)       export AE_CKPT_PATH="$2"; shift 2 ;;
+    --ae_config_path)     export AE_CONFIG_PATH="$2"; shift 2 ;;
+    --ae_run_dir)         export AE_RUN_DIR="$2"; shift 2 ;;
     --latent_scale_factor) export LATENT_SCALE_FACTOR="$2"; shift 2 ;;
+    --wandb_project)      export WANDB_PROJECT="$2"; shift 2 ;;
+    --wandb_tags)         export WANDB_TAGS="$2"; shift 2 ;;
+    --time)               export TIME_LIMIT="$2"; shift 2 ;;
     *)                    OTHER_ARGS+=("$1"); shift ;; # Save unrecognized arg
   esac
 done
+
+if [[ -n "$AE_RUN_DIR" ]]; then
+  export AE_CKPT_PATH="${AE_CKPT_PATH:-$AE_RUN_DIR/ckpts/last.flax}"
+  export AE_CONFIG_PATH="${AE_CONFIG_PATH:-$AE_RUN_DIR/run_meta.json}"
+fi
+
+if [[ -z "$AE_CKPT_PATH" || -z "$AE_CONFIG_PATH" ]]; then
+  echo "ERROR: AE_CKPT_PATH and AE_CONFIG_PATH must be set (or pass --ae_run_dir)."
+  exit 1
+fi
 # --- Run Naming (uses the final, potentially overridden values) ---
 export RUN_NAME="${SLURM_JOB_NAME}_lr${LR}_wd${WEIGHT_DECAY}_ch${LDM_BASE_CH}_$(date +%Y%m%d-%H%M%S)"
-export WANDB_PROJECT="cxr-ldm-composition"
-export WANDB_TAGS="ldm,${TASK,,},proto"
 
 # --- Prettier Submit Message ---
 CYN=$(printf '\033[36m'); BLU=$(printf '\033[34m'); BLD=$(printf '\033[1m'); RST=$(printf '\033[0m')
@@ -93,6 +111,13 @@ kv "Latent Scale Factor" "${LATENT_SCALE_FACTOR}"
 rule
 
 sbatch --partition="$SLURM_PARTITION" --job-name="$SLURM_JOB_NAME" \
+  --time="$TIME_LIMIT" \
+  --export=ALL,ENV_NAME="$ENV_NAME",TASK="$TASK",IMG_SIZE="$IMG_SIZE",DISEASE="$DISEASE",AE_CKPT_PATH="$AE_CKPT_PATH",AE_CONFIG_PATH="$AE_CONFIG_PATH",LATENT_SCALE_FACTOR="$LATENT_SCALE_FACTOR",LR="$LR",WEIGHT_DECAY="$WEIGHT_DECAY",LDM_BASE_CH="$LDM_BASE_CH",GRAD_CLIP="$GRAD_CLIP",BATCH_PER_DEVICE="$BATCH_PER_DEVICE",EPOCHS="$EPOCHS",LOG_EVERY="$LOG_EVERY",SAMPLE_EVERY="$SAMPLE_EVERY",SAMPLE_BATCH_SIZE="$SAMPLE_BATCH_SIZE",LDM_CH_MULTS="$LDM_CH_MULTS",LDM_NUM_RES_BLOCKS="$LDM_NUM_RES_BLOCKS",LDM_ATTN_RES="$LDM_ATTN_RES",WANDB="$WANDB",WANDB_PROJECT="$WANDB_PROJECT",WANDB_TAGS="$WANDB_TAGS",USE_EMA="$USE_EMA",EMA_DECAY="$EMA_DECAY",RUN_NAME="$RUN_NAME",TRAINING_MODE="$TRAINING_MODE" \
   slurm_scripts/cxr_ldm.slurm \
   --latent_scale_factor "$LATENT_SCALE_FACTOR" \
 echo "✅ Job successfully submitted!"
+
+# Run script
+#./launchers/single_runs/ldm/train_ldm_normal.sh full_train \
+#  --ae_run_dir /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/run/runs/cxr_ae/<RUN_NAME>/<TIMESTAMP> \
+#  --latent_scale_factor 0.994534
