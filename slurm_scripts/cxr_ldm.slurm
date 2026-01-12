@@ -80,6 +80,12 @@ mamba activate "${ENV_NAME:?Must set ENV_NAME}"
 LDM_CH_MULTS="${LDM_CH_MULTS//:/,}"
 LDM_ATTN_RES="${LDM_ATTN_RES//:/,}"
 WANDB_TAGS="${WANDB_TAGS//:/,}"
+WANDB_ENTITY="${WANDB_ENTITY:-}"
+WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-}"
+WANDB_NAME="${WANDB_NAME:-}"
+GIT_HASH="${GIT_HASH:-}"
+GIT_BRANCH="${GIT_BRANCH:-}"
+GIT_PARENT="${GIT_PARENT:-}"
 
 # ----------------------------
 # Build args array safely
@@ -120,6 +126,12 @@ if [[ "$WANDB" == "1" ]];
 then
   ARGS+=( --wandb --wandb_project "$WANDB_PROJECT" )
   [[ -n "$WANDB_TAGS" ]] && ARGS+=( --wandb_tags "$WANDB_TAGS" )
+  [[ -n "$WANDB_ENTITY" ]] && ARGS+=( --wandb_entity "$WANDB_ENTITY" )
+  [[ -n "$WANDB_RUN_GROUP" ]] && ARGS+=( --wandb_group "$WANDB_RUN_GROUP" )
+  [[ -n "$WANDB_NAME" ]] && ARGS+=( --wandb_name "$WANDB_NAME" )
+  [[ -n "$GIT_HASH" ]] && ARGS+=( --git_hash "$GIT_HASH" )
+  [[ -n "$GIT_BRANCH" ]] && ARGS+=( --git_branch "$GIT_BRANCH" )
+  [[ -n "$GIT_PARENT" ]] && ARGS+=( --git_parent "$GIT_PARENT" )
 fi
 
 # ----------------------------
