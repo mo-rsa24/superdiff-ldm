@@ -181,7 +181,13 @@ def parse_args():
     p.add_argument("--ema_decay", type=float, default=0.999, help="Decay rate for EMA.")
     p.add_argument("--wandb", action="store_true", help="Enable logging to Weights & Biases")
     p.add_argument("--wandb_project", default="cxr-ldm")
+    p.add_argument("--wandb_entity", default=None)
     p.add_argument("--wandb_tags", default="")
+    p.add_argument("--wandb_group", default=None)
+    p.add_argument("--wandb_name", default=None)
+    p.add_argument("--git_hash", default=None)
+    p.add_argument("--git_branch", default=None)
+    p.add_argument("--git_parent", default=None)
     return p.parse_args()
 
 
@@ -240,6 +246,70 @@ def load_autoencoder(config_path, ckpt_path):
     print("Autoencoder loaded successfully.")
     return ae_model, restored_gen_state.params['ae']
 
+def load_autoencoder_(config_path, ckpt_path):
+    print(f"Loading AE from config: {config_path}")
+    with open(config_path, 'r') as f:
+        ae_args = json.load(f)
+
+    # Parse ch_mults relative to base_ch if needed
+    if isinstance(ae_args['ch_mults'], str):
+        ch_mult_factors = tuple(int(c.strip()) for c in ae_args['ch_mults'].split(',') if c.strip())
+        base_ch = ae_args.get('base_ch', 64)
+        ae_ch_mults = tuple(base_ch * m for m in ch_mult_factors)
+    else:
+        ae_ch_mults = tuple(ae_args['ch_mults'])
+
+    attn_res = tuple(int(r) for r in ae_args.get('attn_res', '16').split(',') if r)
+
+    enc_cfg = dict(ch_mults=ae_ch_mults, num_res_blocks=ae_args['num_res_blocks'], z_ch=ae_args['z_channels'],
+                   double_z=True, attn_resolutions=attn_res, in_ch=1)
+    dec_cfg = dict(ch_mults=ae_ch_mults, num_res_blocks=ae_args['num_res_blocks'], out_ch=1,
+                   attn_resolutions=attn_res)
+
+    ae_model = AutoencoderKL(enc_cfg=enc_cfg, dec_cfg=dec_cfg, embed_dim=ae_args['embed_dim'])
+
+    # Init variables
+    rng = jax.random.PRNGKey(0)
+    fake_img = jnp.ones((1, ae_args['img_size'], ae_args['img_size'], 1))
+    ae_variables = ae_model.init({'params': rng, 'dropout': rng}, fake_img, rng=rng)
+
+    # Optimizer scaffold to load checkpoint
+    def get_ae_tx(ae_args, lr):
+        base_tx = optax.chain(
+            optax.clip_by_global_norm(ae_args.get("grad_clip", 1.0)) if ae_args.get("grad_clip", 1.0) > 0 else optax.identity(),
+            optax.adamw(
+                lr,
+                weight_decay=ae_args.get("weight_decay", 1e-4),
+                b1=ae_args.get("adam_beta1", 0.9),
+                b2=ae_args.get("adam_beta2", 0.999),
+                eps=ae_args.get("adam_eps", 1e-8),
+            ),
+        )
+        m = ae_args.get("max_consecutive_nan_updates", 0)
+        if m and m > 0:
+            return optax.apply_if_finite(base_tx, max_consecutive_errors=m)
+        return base_tx
+
+
+    tx = get_ae_tx(ae_args, lr=ae_args.get("lr", 1e-4))
+    gen_params = {'ae': ae_variables['params']}
+    from losses.lpips_gan import LPIPSWithDiscriminatorJAX, LPIPSGANConfig
+    loss_cfg = LPIPSGANConfig(disc_num_layers=ae_args.get('disc_layers', 3))
+    loss_mod = LPIPSWithDiscriminatorJAX(loss_cfg)
+    loss_params_dummy = loss_mod.init({'params': rng}, x_in=fake_img, x_rec=fake_img, posterior=None, step=jnp.array(0))['params']
+    disc_params_dummy = {'loss': loss_params_dummy}
+
+    dummy_gen_state = TrainState.create(apply_fn=None, params=gen_params, tx=tx)
+    dummy_disc_state = TrainState.create(apply_fn=None, params=disc_params_dummy, tx=tx)
+
+    print(f"Loading AE checkpoint from: {ckpt_path}")
+    with tf.io.gfile.GFile(ckpt_path, "rb") as f:
+        blob = f.read()
+
+    restored_gen_state, _ = from_bytes((dummy_gen_state, dummy_disc_state), blob)
+    print("Autoencoder loaded successfully.")
+    return ae_model, restored_gen_state.params['ae']
+
 
 def main():
     args = parse_args()
@@ -279,7 +349,7 @@ def main():
     loader = DataLoader(ds, **loader_kwargs)
 
     # --- Load Pretrained Autoencoder ---
-    ae_model, ae_params = load_autoencoder(args.ae_config_path, args.ae_ckpt_path)
+    ae_model, ae_params = load_autoencoder_(args.ae_config_path, args.ae_ckpt_path)
     ae_params = jax.device_put_replicated(ae_params, jax.local_devices())
 
     # --- Setup LDM UNet ---
@@ -334,8 +404,25 @@ def main():
             tags = [tag.strip() for tag in args.wandb_tags.split(',') if tag.strip()]
         if not tags:
             tags = None
-        wandb.init(project=args.wandb_project, name=args.run_name or f"{args.exp_name}-{ts}",
-                   config=args, tags=tags)
+        run_name = args.wandb_name or args.run_name or f"{args.exp_name}-{ts}"
+        wandb_config = {**vars(args)}
+        wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            group=args.wandb_group,
+            name=run_name,
+            config=wandb_config,
+            tags=tags,
+        )
+        git_meta = {
+            "git_hash": args.git_hash,
+            "git_branch": args.git_branch,
+            "git_parent": args.git_parent,
+        }
+        git_meta = {k: v for k, v in git_meta.items() if v}
+        if git_meta and wandb.run is not None:
+            wandb.config.update(git_meta, allow_val_change=True)
+            wandb.run.summary.update(git_meta)
 
     # ---------------------------------------------------------
     # Precompute a fixed latent z0 for overfit-one (deterministic)
