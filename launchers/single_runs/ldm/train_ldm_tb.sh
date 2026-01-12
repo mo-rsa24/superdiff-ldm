@@ -27,7 +27,7 @@ export BATCH_PER_DEVICE="16"
 export EPOCHS="1500"
 export LOG_EVERY="100"
 export SAMPLE_EVERY="250"
-export SAMPLE_BATCH_SIZE="16"
+export SAMPLE_BATCH_SIZE="2"
 export LDM_CH_MULTS="1,2,4,4"
 export LDM_NUM_RES_BLOCKS="3"
 export LDM_ATTN_RES="32,16,8"
@@ -188,4 +188,3 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/run_meta.json \
 #  --latent_scale_factor 0.99999905 \
 #  --wandb_project cxr-ldm-composition \
-#  --workdir "${HOME}/cluster_staging/ldm-increase-capacity-tb"
