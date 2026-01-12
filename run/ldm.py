@@ -15,7 +15,7 @@ from torchvision.utils import save_image
 import torch
 from typing import Any
 from datasets.ChestXRay import ChestXrayDataset
-from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn
+from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn, snr_fn
 from models.ae_kl import AutoencoderKL
 from models.cxr_unet import ScoreNet
 from diffusion.sampling import Euler_Maruyama_sampler  # make sure this has the corrected drift
@@ -155,11 +155,14 @@ def parse_args():
     p.add_argument("--latent_scale_factor", type=float, default=1.0, help="From stable-diffusion v1.")
 
     # --- LDM UNet Architecture ---
-    p.add_argument("--ldm_ch_mults", type=str, default="1,2,4", help="Channel multipliers for UNet, relative to base_ch.")
+    p.add_argument("--ldm_ch_mults", type=str, default="1,2,4,4", help="Channel multipliers for UNet, relative to base_ch.")
     p.add_argument("--ldm_base_ch", type=int, default=128)
     p.add_argument("--ldm_num_res_blocks", type=int, default=2)
-    p.add_argument("--ldm_attn_res", type=str, default="16", help="Resolutions for attention blocks, e.g., '16,8'")
-
+    p.add_argument("--ldm_attn_res", type=str, default="32,16", help="Resolutions for attention blocks, e.g., '16,8'")
+    p.add_argument("--snr_weight_gamma", type=float, default=5.0,
+                   help="SNR cap used in SNR-weighted objective (higher favors low-noise steps).")
+    p.add_argument("--hf_weight_power", type=float, default=0.5,
+                   help="Extra SNR power to emphasize high-frequency detail at low noise.")
     # --- Optimizer ---
     p.add_argument("--lr", type=float, default=1e-5)
     p.add_argument("--weight_decay", type=float, default=1e-4)
@@ -381,8 +384,13 @@ def main():
             x_t = alpha_b * z + sigma_b * noise  # x_t = α z + σ ε
 
             # Predict ε and compute simple ε-MSE
-            eps_hat = ldm_model.apply({'params': ldm_params}, x_t, t)  # [B,H,W,C]
-            loss = jnp.mean((eps_hat - noise) ** 2)
+            v_target = alpha_b * noise - sigma_b * z
+            v_hat = ldm_model.apply({'params': ldm_params}, x_t, t)  # [B,H,W,C]
+            snr = snr_fn(t)  # [B]
+            snr_weight = jnp.minimum(snr, args.snr_weight_gamma) / (snr + 1.0)
+            hf_weight = snr ** args.hf_weight_power
+            weight = (snr_weight * hf_weight)[:, None, None, None]
+            loss = jnp.mean(weight * (v_hat - v_target) ** 2)
             def _cos(a, b, eps=1e-8):
                 num = jnp.sum(a * b, axis=tuple(range(1, a.ndim)))
                 den = jnp.linalg.norm(a.reshape(a.shape[0], -1), axis=-1) * \
@@ -393,10 +401,11 @@ def main():
                 t_mean=jnp.mean(t),
                 sigma_mean=jnp.mean(sigma),
                 alpha_mean=jnp.mean(alpha),
-                cos_eps=jnp.mean(_cos(eps_hat, noise)),
+                cos_v=jnp.mean(_cos(v_hat, v_target)),
                 z_mean=jnp.mean(z), z_std=jnp.std(z),
                 xt_mean=jnp.mean(x_t), xt_std=jnp.std(x_t),
-                eps_hat_mean=jnp.mean(eps_hat), eps_hat_std=jnp.std(eps_hat),
+                v_hat_mean=jnp.mean(v_hat), v_hat_std=jnp.std(v_hat),
+                snr_mean=jnp.mean(snr),
             )
             return loss, aux
         (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(ldm_state.params)
@@ -440,10 +449,11 @@ def main():
                     "t.mean": aux_host["t_mean"],
                     "sigma.mean": aux_host["sigma_mean"],
                     "alpha.mean": aux_host["alpha_mean"],
-                    "cos_eps.mean": aux_host["cos_eps"],
+                    "cos_v.mean": aux_host["cos_v"],
                     "z.mean": aux_host["z_mean"], "z.std": aux_host["z_std"],
                     "x_t.mean": aux_host["xt_mean"], "x_t.std": aux_host["xt_std"],
-                    "eps_hat.mean": aux_host["eps_hat_mean"], "eps_hat.std": aux_host["eps_hat_std"],
+                    "v_hat.mean": aux_host["v_hat_mean"], "v_hat.std": aux_host["v_hat_std"],
+                    "snr.mean": aux_host["snr_mean"],
                 }
                 open_block("train", step=global_step, epoch=ep + 1, note="per-device means (pmean)")
                 pretty_table("train/metrics", metrics)
