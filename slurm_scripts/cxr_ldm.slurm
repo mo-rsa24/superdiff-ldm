@@ -71,9 +71,10 @@ export PYTHONPATH="$WORKDIR${PYTHONPATH:+:$PYTHONPATH}"
 export JAX_PLATFORMS=cuda
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export TF_CPP_MIN_LOG_LEVEL=3
+set +u
 source ~/.bashrc
 mamba activate "${ENV_NAME:?Must set ENV_NAME}"
-
+set -u
 # ----------------------------
 # Normalize list-like vars
 # ----------------------------

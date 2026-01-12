@@ -188,4 +188,3 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #  --ae_config_path runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/run_meta.json \
 #  --latent_scale_factor 0.99999905 \
 #  --wandb_project cxr-ldm-composition \
-#  --workdir "${HOME}/cluster_staging/ldm-increase-capacity-tb"
