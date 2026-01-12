@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
+# v-parameterization
 if [[ -t 1 ]]; then
   BOLD=$(tput bold); CYAN=$(tput setaf 6); BLUE=$(tput setaf 4); RED=$(tput setaf 1); RESET=$(tput sgr0)
 else
