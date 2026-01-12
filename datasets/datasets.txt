@@ -1,0 +1,8 @@
+- https://www.kaggle.com/datasets/raddar/tuberculosis-chest-xrays-shenzhen
+- https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia
+- https://www.kaggle.com/datasets/nih-chest-xrays/data
+- https://www.kaggle.com/datasets/tolgadincer/labeled-chest-xray-images
+- https://www.kaggle.com/datasets/tawsifurrahman/tuberculosis-tb-chest-xray-dataset
+- https://www.kaggle.com/datasets/tawsifurrahman/tuberculosis-tb-chest-xray-dataset/data
+- https://www.kaggle.com/datasets/jtiptj/chest-xray-pneumoniacovid19tuberculosis
+- https://www.kaggle.com/datasets/yasserhessein/tuberculosis-chest-x-rays-images
