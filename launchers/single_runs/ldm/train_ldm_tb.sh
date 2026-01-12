@@ -34,8 +34,8 @@ export LDM_ATTN_RES="32,16,8"
 export WANDB="1"
 export WANDB_PROJECT="cxr-ldm-composition"
 export WANDB_ENTITY=""
-export WANDB_RUN_GROUP="ldm-normal"
-export WANDB_TAGS="ldm,normal,256"
+export WANDB_RUN_GROUP="ldm-tb"
+export WANDB_TAGS="ldm,tb,256"
 
 # --- Shared VAE and Scale Factor (❗ IMPORTANT: Update these values) ---
 export AE_RUN_DIR="${AE_RUN_DIR:-}"
@@ -45,7 +45,7 @@ export LATENT_SCALE_FACTOR="0.99999905"
 
 # --- SLURM Defaults ---
 export SLURM_PARTITION="bigbatch"
-export SLURM_JOB_NAME="ldm-${TASK,,}-normal"
+export SLURM_JOB_NAME="ldm-tb"
 export TIME_LIMIT="${TIME_LIMIT:-72:00:00}"
 export STAGING_ROOT="${STAGING_ROOT:-${HOME}/cluster_staging}"
 # --- EMA Configuration ---
@@ -104,7 +104,7 @@ GIT_PARENT=$(git rev-parse --short HEAD^ 2>/dev/null || echo "none")
 
 export WANDB_NAME="${WANDB_NAME:-${SLURM_JOB_NAME}-${GIT_BRANCH}-${GIT_HASH}-${TIMESTAMP}}"
 export RUN_NAME="${RUN_NAME:-$WANDB_NAME}"
-export WANDB_TAGS="${WANDB_TAGS:-ldm,normal,${IMG_SIZE},${GIT_BRANCH},${GIT_HASH},parent-${GIT_PARENT}}"
+export WANDB_TAGS="${WANDB_TAGS:-ldm,tb,${IMG_SIZE},${GIT_BRANCH},${GIT_HASH},parent-${GIT_PARENT}}"
 
 JOB_NAME="${SLURM_JOB_NAME}-${GIT_HASH}"
 STAGING_DIR="${STAGING_ROOT}/${JOB_NAME}_${TIMESTAMP}"

@@ -45,7 +45,7 @@ export LATENT_SCALE_FACTOR="0.99999905"
 
 # --- SLURM Defaults ---
 export SLURM_PARTITION="bigbatch"
-export SLURM_JOB_NAME="ldm-${TASK,,}-normal"
+export SLURM_JOB_NAME="ldm-normal"
 export TIME_LIMIT="${TIME_LIMIT:-72:00:00}"
 export STAGING_ROOT="${STAGING_ROOT:-${HOME}/cluster_staging}"
 # --- EMA Configuration ---
