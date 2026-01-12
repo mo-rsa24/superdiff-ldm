@@ -176,6 +176,8 @@ def parse_args():
     p.add_argument("--log_every", type=int, default=100)
     p.add_argument("--sample_every", type=int, default=5)
     p.add_argument("--sample_batch_size", type=int, default=16)
+    p.add_argument("--use_bfloat16", action="store_true", help="Enable bfloat16 compute to reduce activation memory.")
+    p.add_argument("--use_remat", action="store_true", help="Enable rematerialization for memory savings.")
     # 2. Add EMA command-line arguments
     p.add_argument("--use_ema", action="store_true", help="Enable EMA for model parameters.")
     p.add_argument("--ema_decay", type=float, default=0.999, help="Decay rate for EMA.")
@@ -318,6 +320,10 @@ def main():
         print(f"✅ EMA is enabled with a decay rate of {args.ema_decay}")
     else:
         print("❌ EMA is disabled for this run.")
+    if args.use_bfloat16:
+        print("✅ bfloat16 compute enabled for LDM activations.")
+    if args.use_remat:
+        print("✅ Rematerialization enabled for LDM blocks.")
     rng = jax.random.PRNGKey(args.seed)
 
     # --- Setup Directories ---
