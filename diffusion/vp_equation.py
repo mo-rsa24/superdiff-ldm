@@ -26,7 +26,7 @@ def log_alpha_bar(t: jnp.ndarray) -> jnp.ndarray:
     """log ᾱ(t) for VP-SDE."""
     return jnp.log(alpha_bar_fn(t))
 
-def alpha_fn(t: jnp.ndarray) -> jnp.ndarray:
+def _alpha_fn(t: jnp.ndarray) -> jnp.ndarray:
     """α(t) = sqrt(ᾱ(t)) used in forward perturbation x_t = α(t) x_0 + σ(t) ε."""
     return jnp.sqrt(alpha_bar_fn(t))
 
@@ -58,7 +58,7 @@ def diffusion_coeff(t: jnp.ndarray) -> jnp.ndarray:
 
 def snr(t: jnp.ndarray) -> jnp.ndarray:
     """Signal-to-noise ratio α(t)^2 / σ(t)^2 for VP-SDE."""
-    return (alpha_fn(t) ** 2) / (marginal_prob_std(t) ** 2 + _EPS)
+    return (_alpha_fn(t) ** 2) / (marginal_prob_std(t) ** 2 + _EPS)
 
 @functools.partial(jax.jit, static_argnums=(2,))
 def score_function_hutchinson_estimator(x, t, score_fn, params, key):
@@ -109,7 +109,7 @@ def get_kappa(t, divlogs, scores):
 # Vectorized (batch) versions used everywhere
 marginal_prob_std_fn = vmap(marginal_prob_std)
 diffusion_coeff_fn   = vmap(diffusion_coeff)
-alpha_fn             = vmap(alpha_fn)
+alpha_fn             = vmap(_alpha_fn)
 snr_fn               = vmap(snr)
 
 def sum_except_batch(x):
