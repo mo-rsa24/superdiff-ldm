@@ -34,8 +34,8 @@ export LDM_ATTN_RES="32,16,8"
 export WANDB="1"
 export WANDB_PROJECT="cxr-ldm-composition"
 export WANDB_ENTITY=""
-export WANDB_RUN_GROUP="ldm-normal"
-export WANDB_TAGS="ldm,normal,256"
+export WANDB_RUN_GROUP="ldm-tb"
+export WANDB_TAGS="ldm,tb,256"
 
 # --- Shared VAE and Scale Factor (❗ IMPORTANT: Update these values) ---
 export AE_RUN_DIR="${AE_RUN_DIR:-}"
@@ -45,7 +45,7 @@ export LATENT_SCALE_FACTOR="0.99999905"
 
 # --- SLURM Defaults ---
 export SLURM_PARTITION="bigbatch"
-export SLURM_JOB_NAME="ldm-${TASK,,}-normal"
+export SLURM_JOB_NAME="ldm-tb"
 export TIME_LIMIT="${TIME_LIMIT:-72:00:00}"
 export STAGING_ROOT="${STAGING_ROOT:-${HOME}/cluster_staging}"
 # --- EMA Configuration ---
@@ -104,7 +104,7 @@ GIT_PARENT=$(git rev-parse --short HEAD^ 2>/dev/null || echo "none")
 
 export WANDB_NAME="${WANDB_NAME:-${SLURM_JOB_NAME}-${GIT_BRANCH}-${GIT_HASH}-${TIMESTAMP}}"
 export RUN_NAME="${RUN_NAME:-$WANDB_NAME}"
-export WANDB_TAGS="${WANDB_TAGS:-ldm,normal,${IMG_SIZE},${GIT_BRANCH},${GIT_HASH},parent-${GIT_PARENT}}"
+export WANDB_TAGS="${WANDB_TAGS:-ldm,tb,${IMG_SIZE},${GIT_BRANCH},${GIT_HASH},parent-${GIT_PARENT}}"
 
 JOB_NAME="${SLURM_JOB_NAME}-${GIT_HASH}"
 STAGING_DIR="${STAGING_ROOT}/${JOB_NAME}_${TIMESTAMP}"
@@ -181,7 +181,11 @@ JOB_ID=$(sbatch --partition="$SLURM_PARTITION" \
 status_line "🎉 Submitted" "Job ID: $JOB_ID"
 status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 
-# Run script
-#./launchers/single_runs/ldm/train_ldm_normal.sh full_train \
-#  --ae_run_dir /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/run/runs/cxr_ae/<RUN_NAME>/<TIMESTAMP> \
-#  --latent_scale_factor 0.994534
+# TB LDM (increased capacity experiment)
+#./launchers/single_runs/ldm/train_ldm_tb.sh full_train \
+#  --batch_per_device 2 \
+#  --ae_ckpt_path runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/ckpts/last.flax \
+#  --ae_config_path runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/run_meta.json \
+#  --latent_scale_factor 0.99999905 \
+#  --wandb_project cxr-ldm-composition \
+#  --workdir "${HOME}/cluster_staging/ldm-increase-capacity-tb"
