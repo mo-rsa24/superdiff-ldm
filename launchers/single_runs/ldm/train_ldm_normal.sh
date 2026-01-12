@@ -184,8 +184,8 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 # Run script
 #./launchers/single_runs/ldm/train_ldm_normal.sh full_train \
 #  --batch_per_device 2 \
-#  --ae_ckpt_path runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/ckpts/last.flax \
-#  --ae_config_path runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/run_meta.json \
+#  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/ckpts/last.flax \
+#  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/run_meta.json \
 #  --latent_scale_factor 0.99999905 \
 #  --wandb_project cxr-ldm-composition \
 #  --workdir "${HOME}/cluster_staging/ldm-increase-capacity-normal"
