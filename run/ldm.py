@@ -373,8 +373,16 @@ def main():
 
     ldm_chans = tuple(args.ldm_base_ch * int(m) for m in args.ldm_ch_mults.split(','))
     attn_res = tuple(int(r) for r in args.ldm_attn_res.split(','))
-    ldm_model = ScoreNet(z_channels=z_channels, channels=ldm_chans,
-                         num_res_blocks=args.ldm_num_res_blocks, attn_resolutions=attn_res)
+    compute_dtype = jnp.bfloat16 if args.use_bfloat16 else jnp.float32
+    ldm_model = ScoreNet(
+        z_channels=z_channels,
+        channels=ldm_chans,
+        num_res_blocks=args.ldm_num_res_blocks,
+        attn_resolutions=attn_res,
+        use_remat=args.use_remat,
+        dtype=compute_dtype,
+        param_dtype=jnp.float32,
+    )
     rng, init_rng = jax.random.split(rng)
     fake_latent = jnp.ones((1, latent_size, latent_size, z_channels))
     fake_time = jnp.ones((1,))
@@ -454,22 +462,22 @@ def main():
             else:
                 posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
                 z = posterior.sample(rng) * args.latent_scale_factor
-
+            z = z.astype(compute_dtype)
             # Sample t ~ U(1e-5, 1) and ε ~ N(0, I)
             rng_t, rng_noise = jax.random.split(rng_diff, 2)
             t = jax.random.uniform(rng_t, (z.shape[0],), minval=1e-5, maxval=1.0)
-            noise = jax.random.normal(rng_noise, z.shape)
+            noise = jax.random.normal(rng_noise, z.shape).astype(compute_dtype)
 
             # VP forward perturbation
-            sigma = marginal_prob_std_fn(t)  # σ(t)  [B]
-            alpha = alpha_fn(t)  # α(t)  [B]
+            sigma = marginal_prob_std_fn(t).astype(compute_dtype)  # σ(t)  [B]
+            alpha = alpha_fn(t).astype(compute_dtype)  # α(t)  [B]
             sigma_b = sigma[:, None, None, None]
             alpha_b = alpha[:, None, None, None]
             x_t = alpha_b * z + sigma_b * noise  # x_t = α z + σ ε
 
             # Predict ε and compute simple ε-MSE
             eps_hat = ldm_model.apply({'params': ldm_params}, x_t, t)  # [B,H,W,C]
-            loss = jnp.mean((eps_hat - noise) ** 2)
+            loss = jnp.mean((eps_hat.astype(jnp.float32) - noise.astype(jnp.float32)) ** 2)
             def _cos(a, b, eps=1e-8):
                 num = jnp.sum(a * b, axis=tuple(range(1, a.ndim)))
                 den = jnp.linalg.norm(a.reshape(a.shape[0], -1), axis=-1) * \

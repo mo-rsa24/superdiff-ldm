@@ -21,16 +21,16 @@ export DISEASE="0" # 1 for TB, 0 for Normal
 # --- Hyperparameter Defaults ---
 export LR="1e-4"
 export WEIGHT_DECAY="1e-4"
-export LDM_BASE_CH="192"
+export LDM_BASE_CH="128"
 export GRAD_CLIP="1.0"
-export BATCH_PER_DEVICE="16"
+export BATCH_PER_DEVICE="4"
 export EPOCHS="1500"
 export LOG_EVERY="100"
 export SAMPLE_EVERY="250"
 export SAMPLE_BATCH_SIZE="2"
 export LDM_CH_MULTS="1,2,4,4"
 export LDM_NUM_RES_BLOCKS="3"
-export LDM_ATTN_RES="32,16,8"
+export LDM_ATTN_RES="16,8"
 export WANDB="1"
 export WANDB_PROJECT="cxr-ldm-composition"
 export WANDB_ENTITY=""
@@ -49,8 +49,10 @@ export SLURM_JOB_NAME="ldm-normal"
 export TIME_LIMIT="${TIME_LIMIT:-72:00:00}"
 export STAGING_ROOT="${STAGING_ROOT:-${HOME}/cluster_staging}"
 # --- EMA Configuration ---
-export USE_EMA="1" # Use "1" for true, "0" for false
+export USE_EMA="0" # Use "1" for true, "0" for false
 export EMA_DECAY="0.999"
+export USE_BFLOAT16="1" # Use "1" for true, "0" for false
+export USE_REMAT="1" # Use "1" for true, "0" for false
 # --- Robust Argument Parsing Loop ---
 OTHER_ARGS=()
 shift || true # Shift away the first argument (training_mode) if present
@@ -82,6 +84,8 @@ while [[ $# -gt 0 ]]; do
     --wandb_entity)       export WANDB_ENTITY="$2"; shift 2 ;;
     --time)               export TIME_LIMIT="$2"; shift 2 ;;
     --workdir)            export WORKDIR="$2"; shift 2 ;;
+    --use_bfloat16)       export USE_BFLOAT16="$2"; shift 2 ;;
+    --use_remat)          export USE_REMAT="$2"; shift 2 ;;
     *)                    OTHER_ARGS+=("$1"); shift ;; # Save unrecognized arg
   esac
 done
@@ -176,7 +180,7 @@ JOB_ID=$(sbatch --partition="$SLURM_PARTITION" \
   --time="$TIME_LIMIT" \
   --output="${REPO_ROOT}/logs/%x-%j.out" \
   --error="${REPO_ROOT}/logs/%x-%j.err" \
-  --export=ALL,ENV_NAME="$ENV_NAME",WORKDIR="$WORKDIR",TASK="$TASK",IMG_SIZE="$IMG_SIZE",DISEASE="$DISEASE",AE_CKPT_PATH="$AE_CKPT_PATH",AE_CONFIG_PATH="$AE_CONFIG_PATH",LATENT_SCALE_FACTOR="$LATENT_SCALE_FACTOR",LR="$LR",WEIGHT_DECAY="$WEIGHT_DECAY",LDM_BASE_CH="$LDM_BASE_CH",GRAD_CLIP="$GRAD_CLIP",BATCH_PER_DEVICE="$BATCH_PER_DEVICE",EPOCHS="$EPOCHS",LOG_EVERY="$LOG_EVERY",SAMPLE_EVERY="$SAMPLE_EVERY",SAMPLE_BATCH_SIZE="$SAMPLE_BATCH_SIZE",LDM_CH_MULTS="$LDM_CH_MULTS",LDM_NUM_RES_BLOCKS="$LDM_NUM_RES_BLOCKS",LDM_ATTN_RES="$LDM_ATTN_RES",WANDB="$WANDB",WANDB_PROJECT="$WANDB_PROJECT",WANDB_ENTITY="$WANDB_ENTITY",WANDB_TAGS="$WANDB_TAGS",WANDB_RUN_GROUP="$WANDB_RUN_GROUP",WANDB_NAME="$WANDB_NAME",RUN_NAME="$RUN_NAME",TRAINING_MODE="$TRAINING_MODE",GIT_HASH="$GIT_HASH",GIT_BRANCH="$GIT_BRANCH",GIT_PARENT="$GIT_PARENT",USE_EMA="$USE_EMA",EMA_DECAY="$EMA_DECAY" \
+  --export=ALL,ENV_NAME="$ENV_NAME",WORKDIR="$WORKDIR",TASK="$TASK",IMG_SIZE="$IMG_SIZE",DISEASE="$DISEASE",AE_CKPT_PATH="$AE_CKPT_PATH",AE_CONFIG_PATH="$AE_CONFIG_PATH",LATENT_SCALE_FACTOR="$LATENT_SCALE_FACTOR",LR="$LR",WEIGHT_DECAY="$WEIGHT_DECAY",LDM_BASE_CH="$LDM_BASE_CH",GRAD_CLIP="$GRAD_CLIP",BATCH_PER_DEVICE="$BATCH_PER_DEVICE",EPOCHS="$EPOCHS",LOG_EVERY="$LOG_EVERY",SAMPLE_EVERY="$SAMPLE_EVERY",SAMPLE_BATCH_SIZE="$SAMPLE_BATCH_SIZE",LDM_CH_MULTS="$LDM_CH_MULTS",LDM_NUM_RES_BLOCKS="$LDM_NUM_RES_BLOCKS",LDM_ATTN_RES="$LDM_ATTN_RES",WANDB="$WANDB",WANDB_PROJECT="$WANDB_PROJECT",WANDB_ENTITY="$WANDB_ENTITY",WANDB_TAGS="$WANDB_TAGS",WANDB_RUN_GROUP="$WANDB_RUN_GROUP",WANDB_NAME="$WANDB_NAME",RUN_NAME="$RUN_NAME",TRAINING_MODE="$TRAINING_MODE",GIT_HASH="$GIT_HASH",GIT_BRANCH="$GIT_BRANCH",GIT_PARENT="$GIT_PARENT",USE_EMA="$USE_EMA",EMA_DECAY="$EMA_DECAY",USE_BFLOAT16="$USE_BFLOAT16",USE_REMAT="$USE_REMAT" \
   slurm_scripts/cxr_ldm.slurm "${OTHER_ARGS[@]}" | awk '{print $4}')
 status_line "🎉 Submitted" "Job ID: $JOB_ID"
 status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"

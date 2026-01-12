@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --exclude=mscluster65,mscluster76,mscluster59,mscluster48
+#SBATCH --exclude=mscluster65,mscluster76,mscluster59,mscluster48,mscluster82
 #SBATCH --time=72:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
@@ -50,6 +50,8 @@ BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-4}"
 SAMPLE_EVERY="${SAMPLE_EVERY:-5}"
 LOG_EVERY="${LOG_EVERY:-100}"
 SEED="${SEED:-42}"
+USE_BFLOAT16="${USE_BFLOAT16:-0}"
+USE_REMAT="${USE_REMAT:-0}"
 
 # Experiment naming / output
 OUTPUT_ROOT="${OUTPUT_ROOT:-runs_ldm}"
@@ -70,6 +72,7 @@ cd "$WORKDIR"
 export PYTHONPATH="$WORKDIR${PYTHONPATH:+:$PYTHONPATH}"
 export JAX_PLATFORMS=cuda
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 export TF_CPP_MIN_LOG_LEVEL=3
 set +u
 source ~/.bashrc
@@ -116,6 +119,12 @@ fi
 if [[ "$USE_EMA" == "1" ]]; then
   ARGS+=(--use_ema --ema_decay "$EMA_DECAY")
 fi
+if [[ "$USE_BFLOAT16" == "1" ]]; then
+  ARGS+=(--use_bfloat16)
+fi
+if [[ "$USE_REMAT" == "1" ]]; then
+  ARGS+=(--use_remat)
+fi
 
 
 # Optional run name / resume
@@ -155,5 +164,7 @@ kv "EMA Enabled" "${USE_EMA}"
 if [[ "$USE_EMA" == "1" ]]; then
   kv "EMA Decay" "${EMA_DECAY}"
 fi
+kv "bfloat16 Enabled" "${USE_BFLOAT16}"
+kv "Remat Enabled" "${USE_REMAT}"
 banner "Run"
 srun python -u "$PYFILE" "${ARGS[@]}"
