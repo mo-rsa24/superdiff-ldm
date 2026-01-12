@@ -334,10 +334,11 @@ def main():
     ckpt_latest = os.path.join(ckpt_dir, "last.flax")
     with open(os.path.join(run_dir, "ldm_meta.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
-
+    print(f"[{datetime.now()}] 🔍 Starting Dataset Initialization...", flush=True)  # ADD THIS
     # --- Setup Dataset ---
     base_ds = ChestXrayDataset(root_dir=args.data_root, task=args.task, split=args.split, img_size=args.img_size,
                                class_filter=args.class_filter)
+    print(f"[{datetime.now()}] ✅ Dataset Initialized. Size: {len(base_ds)}", flush=True)  # ADD THIS
     batch_size = args.batch_per_device * jax.local_device_count()
     if args.overfit_one:
         ds = Subset(base_ds, [0])
