@@ -191,8 +191,25 @@ def parse_args():
     return p.parse_args()
 
 
+def _patch_jax_local_devices_for_cpu():
+    try:
+        jax.local_devices(backend="cpu")
+    except RuntimeError as exc:
+        if "Unknown backend cpu" not in str(exc):
+            raise
+        original_local_devices = jax.local_devices
+
+        def local_devices(backend=None):
+            if backend == "cpu":
+                backend = None
+            return original_local_devices(backend)
+
+        jax.local_devices = local_devices
+        print("CPU backend unavailable; default backend will be used for SD VAE load.")
+
 def load_sd_vae(model_id, revision=None, subfolder=None, cache_dir=None):
     print(f"Loading Stable Diffusion VAE from: {model_id}")
+    _patch_jax_local_devices_for_cpu()
     ae_model, ae_params = FlaxAutoencoderKL.from_pretrained(
         model_id,
         revision=revision,
