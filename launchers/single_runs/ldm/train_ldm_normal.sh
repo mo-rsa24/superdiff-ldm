@@ -233,7 +233,7 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/run_meta.json \
 #  --latent_scale_factor 0.99999905 \
 #  --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/tb_train" \
-#  --preencoded_manifest "manifest.jsonl"
+#  --preencoded_manifest "manifest.jsonl" \
 #  --sample_every 100 \
 #  --repeat_len 16 \
 #  --wandb_project cxr-ldm-composition \
