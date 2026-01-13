@@ -1,4 +1,5 @@
 # run/ldm.py
+import time
 import argparse
 import os
 import json
@@ -530,7 +531,10 @@ def main():
             rng, step_rng = jax.random.split(rng)
             rng_sharded = jax.random.split(step_rng, jax.local_device_count())
             # ldm_state, loss = pmapped_train_step(rng_sharded, ldm_state, ae_params, x_sharded, precomputed_z0)
+            start = time.time()
             ldm_state, loss,aux = pmapped_train_step(rng_sharded, ldm_state, ae_params, x_sharded, precomputed_z0)
+            jax.block_until_ready(loss)
+            print("step time", time.time() - start)
 
             if global_step % args.log_every == 0:
                 loss_val = float(np.asarray(loss[0]))
