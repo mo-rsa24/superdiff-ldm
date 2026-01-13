@@ -238,7 +238,7 @@ def decode_latents(ae_model, ae_params, z):
 
 
 def to_rgb(x):
-    x = ensure_nhwc(x)
+    x = ensure_nchw(x)
     if x.shape[-1] == 1:
         return jnp.repeat(x, 3, axis=-1)
     return x
