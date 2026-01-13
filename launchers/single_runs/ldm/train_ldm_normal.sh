@@ -23,11 +23,11 @@ export LR="1e-4"
 export WEIGHT_DECAY="1e-4"
 export LDM_BASE_CH="128"
 export GRAD_CLIP="1.0"
-export BATCH_PER_DEVICE="4"
+export BATCH_PER_DEVICE="16"
 export EPOCHS="1500"
 export LOG_EVERY="100"
-export SAMPLE_EVERY="250"
-export SAMPLE_BATCH_SIZE="2"
+export SAMPLE_EVERY="1"
+export SAMPLE_BATCH_SIZE="16"
 export LDM_CH_MULTS="1,2,4,4"
 export LDM_NUM_RES_BLOCKS="3"
 export LDM_ATTN_RES="16,8"
@@ -49,10 +49,10 @@ export SLURM_JOB_NAME="ldm-normal"
 export TIME_LIMIT="${TIME_LIMIT:-72:00:00}"
 export STAGING_ROOT="${STAGING_ROOT:-${HOME}/cluster_staging}"
 # --- EMA Configuration ---
-export USE_EMA="0" # Use "1" for true, "0" for false
+export USE_EMA="1" # Use "1" for true, "0" for false
 export EMA_DECAY="0.999"
-export USE_BFLOAT16="1" # Use "1" for true, "0" for false
-export USE_REMAT="1" # Use "1" for true, "0" for false
+export USE_BFLOAT16="0" # Use "1" for true, "0" for false
+export USE_REMAT="0" # Use "1" for true, "0" for false
 # --- Robust Argument Parsing Loop ---
 OTHER_ARGS=()
 shift || true # Shift away the first argument (training_mode) if present
