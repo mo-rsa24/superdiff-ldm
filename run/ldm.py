@@ -132,8 +132,7 @@ class TrainStateWithEMA(TrainState):
 def parse_args():
     p = argparse.ArgumentParser("JAX Latent Diffusion Model (CXR) Trainer")
     # --- Data & Debugging ---
-    # p.add_argument("--data_root", default="../datasets/cleaned")
-    p.add_argument("--data_root", default="/datasets/mmolefe/cleaned")
+    p.add_argument("--data_root", default="../datasets/cleaned")
     p.add_argument("--task", choices=["TB", "PNEUMONIA"], default="TB")
     p.add_argument("--split", choices=["train", "val", "test"], default="train")
     p.add_argument("--img_size", type=int, default=256)
