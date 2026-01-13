@@ -199,10 +199,11 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 
 # Run script
 #./launchers/single_runs/ldm/train_ldm_normal.sh full_train \
-#  --batch_per_device 2 \
-#  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/ckpts/last.flax \
-#  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/run_meta.json \
-#  --latent_scale_factor 0.99999905 \
-#  --preencoded_latents_dir "preencoded_latents/tb_train" \
-#  --preencoded_manifest "manifest.jsonl"
+#  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
+#  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
+#  --latent_scale_factor 0.999373 \
+#  --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/normal" \
+#  --preencoded_manifest "manifest.jsonl" \
+#  --sample_every 5 \
 #  --wandb_project cxr-ldm-composition \
+#  --overfit_one
