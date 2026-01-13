@@ -415,7 +415,9 @@ def main():
         x0 = jnp.asarray(x0.numpy()).transpose(0, 2, 3, 1)  # NCHW -> NHWC
         x0 = to_rgb(x0)
         unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
-        posterior0 = ae_model.apply({'params': unrep_ae_params}, x0, method=ae_model.encode, train=False)
+        posterior0 = ae_model.apply(
+            {'params': unrep_ae_params}, x0, method=ae_model.encode, deterministic=True
+        )
         z0 = posterior0.mode() * args.latent_scale_factor  # fixed latent, no encode noise
         global_bs = args.batch_per_device * jax.local_device_count()
         z0_tiled = jnp.tile(z0, (global_bs, 1, 1, 1))
@@ -431,7 +433,9 @@ def main():
             if precomputed_z0 is not None:
                 z = precomputed_z0
             else:
-                posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
+                posterior = ae_model.apply(
+                    {'params': ae_params}, x_batch, method=ae_model.encode, deterministic=True
+                )
                 z = posterior.sample(rng) * args.latent_scale_factor
             z = z.astype(compute_dtype)
             # Sample t ~ U(1e-5, 1) and ε ~ N(0, I)
