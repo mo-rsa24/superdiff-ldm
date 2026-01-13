@@ -443,8 +443,16 @@ def main():
             if precomputed_z0 is not None:
                 z = precomputed_z0
             else:
+                x_in = ensure_nhwc(x_batch)          # converts NCHW -> NHWC if needed
+                if x_in.shape[-1] == 1:
+                    x_in = jnp.repeat(x_in, 3, axis=-1)
+
+                # SD VAE expects inputs in [-1, 1] (common for diffusers VAEs)
+                x_in = x_in * 2.0 - 1.0
+                print("x_in shape:", x_in.shape, "min/max:", x_in.min(), x_in.max())
+
                 posterior = ae_model.apply(
-                    {'params': ae_params}, x_batch, method=ae_model.encode, deterministic=True
+                    {'params': ae_params}, x_in, method=ae_model.encode, deterministic=True
                 )
                 z = posterior.sample(rng) * args.latent_scale_factor
             z = z.astype(compute_dtype)
