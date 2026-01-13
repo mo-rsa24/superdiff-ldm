@@ -18,7 +18,7 @@ kv(){ printf "  ${CYN}%-22s${RST} %s\n" "$1" "$2";
 # ----------------------------
 WORKDIR="${WORKDIR:-$PWD}"
 PYFILE="${PYFILE:-run/ldm.py}"
-DATA_ROOT="/datasets/mmolefe/cleaned"
+DATA_ROOT="/home-mscluster/mmolefe/Playground/PhD/datasets/cleaned"
 LATENT_SCALE_FACTOR="${LATENT_SCALE_FACTOR:-1.0}"
 # Data & Debug
 TASK="${TASK:-TB}"
