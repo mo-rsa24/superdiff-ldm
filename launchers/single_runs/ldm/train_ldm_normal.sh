@@ -23,11 +23,11 @@ export LR="1e-4"
 export WEIGHT_DECAY="1e-4"
 export LDM_BASE_CH="128"
 export GRAD_CLIP="1.0"
-export BATCH_PER_DEVICE="4"
+export BATCH_PER_DEVICE="16"
 export EPOCHS="1500"
 export LOG_EVERY="100"
-export SAMPLE_EVERY="250"
-export SAMPLE_BATCH_SIZE="2"
+export SAMPLE_EVERY="50"
+export SAMPLE_BATCH_SIZE="16"
 export LDM_CH_MULTS="1,2,4,4"
 export LDM_NUM_RES_BLOCKS="3"
 export LDM_ATTN_RES="16,8"
@@ -42,6 +42,8 @@ export AE_RUN_DIR="${AE_RUN_DIR:-}"
 export AE_CKPT_PATH="${AE_CKPT_PATH:-}"
 export AE_CONFIG_PATH="${AE_CONFIG_PATH:-}"
 export LATENT_SCALE_FACTOR="0.99999905"
+export PREENCODED_LATENTS_DIR="${PREENCODED_LATENTS_DIR:-}"
+export PREENCODED_MANIFEST="${PREENCODED_MANIFEST:-}"
 
 # --- SLURM Defaults ---
 export SLURM_PARTITION="bigbatch"
@@ -49,10 +51,10 @@ export SLURM_JOB_NAME="ldm-normal"
 export TIME_LIMIT="${TIME_LIMIT:-72:00:00}"
 export STAGING_ROOT="${STAGING_ROOT:-${HOME}/cluster_staging}"
 # --- EMA Configuration ---
-export USE_EMA="0" # Use "1" for true, "0" for false
+export USE_EMA="1" # Use "1" for true, "0" for false
 export EMA_DECAY="0.999"
-export USE_BFLOAT16="1" # Use "1" for true, "0" for false
-export USE_REMAT="1" # Use "1" for true, "0" for false
+export USE_BFLOAT16="0" # Use "1" for true, "0" for false
+export USE_REMAT="0" # Use "1" for true, "0" for false
 # --- Robust Argument Parsing Loop ---
 OTHER_ARGS=()
 shift || true # Shift away the first argument (training_mode) if present
@@ -77,6 +79,8 @@ while [[ $# -gt 0 ]]; do
     --ae_config_path)     export AE_CONFIG_PATH="$2"; shift 2 ;;
     --ae_run_dir)         export AE_RUN_DIR="$2"; shift 2 ;;
     --latent_scale_factor) export LATENT_SCALE_FACTOR="$2"; shift 2 ;;
+    --preencoded_latents_dir) export PREENCODED_LATENTS_DIR="$2"; shift 2 ;;
+    --preencoded_manifest) export PREENCODED_MANIFEST="$2"; shift 2 ;;
     --wandb_project)      export WANDB_PROJECT="$2"; shift 2 ;;
     --wandb_name)         export WANDB_NAME="$2"; shift 2 ;;
     --wandb_tags)         export WANDB_TAGS="$2"; shift 2 ;;
@@ -180,7 +184,7 @@ JOB_ID=$(sbatch --partition="$SLURM_PARTITION" \
   --time="$TIME_LIMIT" \
   --output="${REPO_ROOT}/logs/%x-%j.out" \
   --error="${REPO_ROOT}/logs/%x-%j.err" \
-  --export=ALL,ENV_NAME="$ENV_NAME",WORKDIR="$WORKDIR",TASK="$TASK",IMG_SIZE="$IMG_SIZE",DISEASE="$DISEASE",AE_CKPT_PATH="$AE_CKPT_PATH",AE_CONFIG_PATH="$AE_CONFIG_PATH",LATENT_SCALE_FACTOR="$LATENT_SCALE_FACTOR",LR="$LR",WEIGHT_DECAY="$WEIGHT_DECAY",LDM_BASE_CH="$LDM_BASE_CH",GRAD_CLIP="$GRAD_CLIP",BATCH_PER_DEVICE="$BATCH_PER_DEVICE",EPOCHS="$EPOCHS",LOG_EVERY="$LOG_EVERY",SAMPLE_EVERY="$SAMPLE_EVERY",SAMPLE_BATCH_SIZE="$SAMPLE_BATCH_SIZE",LDM_CH_MULTS="$LDM_CH_MULTS",LDM_NUM_RES_BLOCKS="$LDM_NUM_RES_BLOCKS",LDM_ATTN_RES="$LDM_ATTN_RES",WANDB="$WANDB",WANDB_PROJECT="$WANDB_PROJECT",WANDB_ENTITY="$WANDB_ENTITY",WANDB_TAGS="$WANDB_TAGS",WANDB_RUN_GROUP="$WANDB_RUN_GROUP",WANDB_NAME="$WANDB_NAME",RUN_NAME="$RUN_NAME",TRAINING_MODE="$TRAINING_MODE",GIT_HASH="$GIT_HASH",GIT_BRANCH="$GIT_BRANCH",GIT_PARENT="$GIT_PARENT",USE_EMA="$USE_EMA",EMA_DECAY="$EMA_DECAY",USE_BFLOAT16="$USE_BFLOAT16",USE_REMAT="$USE_REMAT" \
+  --export=ALL \
   slurm_scripts/cxr_ldm.slurm "${OTHER_ARGS[@]}" | awk '{print $4}')
 status_line "🎉 Submitted" "Job ID: $JOB_ID"
 status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
@@ -191,4 +195,6 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/ckpts/last.flax \
 #  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/run_meta.json \
 #  --latent_scale_factor 0.99999905 \
+#  --preencoded_latents_dir "preencoded_latents/tb_train" \
+#  --preencoded_manifest "manifest.jsonl"
 #  --wandb_project cxr-ldm-composition \

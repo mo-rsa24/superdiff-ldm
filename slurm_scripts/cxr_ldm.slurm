@@ -3,6 +3,8 @@
 #SBATCH --time=72:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
+#SBATCH --ntasks=1 # Total number of tasks
+#SBATCH --cpus-per-task=1  # CPU cores per task
 
 set -euo pipefail
 
@@ -18,8 +20,10 @@ kv(){ printf "  ${CYN}%-22s${RST} %s\n" "$1" "$2";
 # ----------------------------
 WORKDIR="${WORKDIR:-$PWD}"
 PYFILE="${PYFILE:-run/ldm.py}"
-DATA_ROOT="/datasets/mmolefe/cleaned"
+DATA_ROOT="/home-mscluster/mmolefe/Playground/PhD/datasets/cleaned"
 LATENT_SCALE_FACTOR="${LATENT_SCALE_FACTOR:-1.0}"
+PREENCODED_LATENTS_DIR="${PREENCODED_LATENTS_DIR:-}"
+PREENCODED_MANIFEST="${PREENCODED_MANIFEST:-}"
 # Data & Debug
 TASK="${TASK:-TB}"
 SPLIT="${SPLIT:-train}"
@@ -110,6 +114,14 @@ ARGS=(
   --ldm_attn_res "$LDM_ATTN_RES"
 )
 
+if [[ -n "$PREENCODED_LATENTS_DIR" ]]; then
+  ARGS+=( --preencoded_latents_dir "$PREENCODED_LATENTS_DIR" )
+fi
+if [[ -n "$PREENCODED_MANIFEST" ]]; then
+  ARGS+=( --preencoded_manifest "$PREENCODED_MANIFEST" )
+fi
+
+
 # Debugging
 if [[ "$OVERFIT_ONE" == "1" || "$OVERFIT_ONE" == "true" ]]; then ARGS+=( --overfit_one --repeat_len "$REPEAT_LEN" );
 elif (( OVERFIT_K > 0 )); then ARGS+=( --overfit_k "$OVERFIT_K" );
@@ -167,4 +179,6 @@ fi
 kv "bfloat16 Enabled" "${USE_BFLOAT16}"
 kv "Remat Enabled" "${USE_REMAT}"
 banner "Run"
+kv "Preencoded Dir" "${PREENCODED_LATENTS_DIR:-<none>}"
+kv "Preencoded Manifest" "${PREENCODED_MANIFEST:-<none>}"
 srun python -u "$PYFILE" "${ARGS[@]}"
