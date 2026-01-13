@@ -121,6 +121,7 @@ if [[ "$USE_SD_VAE" != "1" ]]; then
       exit 1
     fi
   else
+    echo "Training on the Stable Diffusion VAE"
     export LATENT_SCALE_FACTOR="${LATENT_SCALE_FACTOR:-0.18215}"
 fi
 
