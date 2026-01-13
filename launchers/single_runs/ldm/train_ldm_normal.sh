@@ -36,6 +36,9 @@ export WANDB_PROJECT="cxr-ldm-composition"
 export WANDB_ENTITY=""
 export WANDB_RUN_GROUP="ldm-normal"
 export WANDB_TAGS="ldm,normal,256"
+export OVERFIT_ONE="0"
+export OVERFIT_K="0"
+export REPEAT_LEN="500"
 
 # --- Shared VAE and Scale Factor (❗ IMPORTANT: Update these values) ---
 export AE_RUN_DIR="${AE_RUN_DIR:-}"
@@ -86,6 +89,9 @@ while [[ $# -gt 0 ]]; do
     --workdir)            export WORKDIR="$2"; shift 2 ;;
     --use_bfloat16)       export USE_BFLOAT16="$2"; shift 2 ;;
     --use_remat)          export USE_REMAT="$2"; shift 2 ;;
+    --overfit_one)        export OVERFIT_ONE="1"; shift ;;
+    --overfit_k)          export OVERFIT_K="$2"; shift 2 ;;
+    --repeat_len)         export REPEAT_LEN="$2"; shift 2 ;;
     *)                    OTHER_ARGS+=("$1"); shift ;; # Save unrecognized arg
   esac
 done
