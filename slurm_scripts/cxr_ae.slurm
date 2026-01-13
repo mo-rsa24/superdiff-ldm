@@ -5,6 +5,7 @@
 #SBATCH --time=72:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
+#SBATCH --ntasks=1 # Total number of tasks
 
 set -euo pipefail
 
