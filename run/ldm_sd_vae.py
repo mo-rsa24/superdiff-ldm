@@ -236,13 +236,12 @@ def decode_latents(ae_model, ae_params, z):
     decoded = (decoded + 1.0) / 2.0
     return decoded
 
-
-def to_rgb(x):
-    x = ensure_nchw(x)
-    if x.shape[-1] == 1:
-        return jnp.repeat(x, 3, axis=-1)
-    return x
-
+def preprocess_for_sd_vae(x):
+    x = ensure_nchw(jnp.asarray(x))
+    if x.shape[1] == 1:
+        x = jnp.repeat(x, 3, axis=1)
+    x = x * 2.0 - 1.0
+    return ensure_nchw(x)
 
 def sd_euler_maruyama_sampler(
     rng, ldm_model, ldm_params, ae_model, ae_params,
@@ -436,12 +435,10 @@ def main():
     if args.overfit_one:
         one_loader = DataLoader(Subset(base_ds, [0]), batch_size=1, shuffle=False, num_workers=0, drop_last=False)
         (x0, _), = list(one_loader)
-        x0 = to_rgb(jnp.asarray(x0.numpy()))
-        x0 = x0 * 2.0 - 1.0
-        x0 = ensure_nchw(x0)
+        x0 = preprocess_for_sd_vae(jnp.asarray(x0.numpy()))
         unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
         posterior0 = ae_model.apply({'params': unrep_ae_params}, x0, method=ae_model.encode, deterministic=True)
-        z0 = posterior0.mode() * args.latent_scale_factor  # fixed latent, no encode noise
+        z0 = sample_vae_latents(posterior0, rng, deterministic=True) * args.latent_scale_factor
         global_bs = args.batch_per_device * jax.local_device_count()
         z0_tiled = jnp.tile(z0, (global_bs, 1, 1, 1))
         precomputed_z0 = z0_tiled.reshape((jax.local_device_count(), -1) + z0.shape[1:])
@@ -456,11 +453,7 @@ def main():
             if precomputed_z0 is not None:
                 z = precomputed_z0
             else:
-                x_in = ensure_nchw(x_batch)          # converts NHWC -> NCHW if needed
-                if x_in.shape[1] == 1:
-                    x_in = jnp.repeat(x_in, 3, axis=1)
-                x_in = x_in * 2.0 - 1.0          # [-1, 1]
-                x_in = ensure_nchw(x_in)         # <-- IMPORTANT: SD VAE expects NCHW
+                x_in = preprocess_for_sd_vae(x_batch)
                 print("x_in shape:", x_in.shape, "min/max:", x_in.min(), x_in.max())
                 posterior = ae_model.apply(
                     {'params': ae_params}, x_in, method=ae_model.encode, deterministic=True
