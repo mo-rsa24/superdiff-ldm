@@ -284,15 +284,28 @@ def sd_euler_maruyama_sampler(
     grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
     return grid, x
 
-def ensure_nhwc(x):
-    if x.ndim == 4:
-        if x.shape[-1] in (1, 3):
-            return x
-        if x.shape[1] in (1, 3):
-            return jnp.transpose(x, (0, 2, 3, 1))
-    if x.ndim == 3:
-        return x[..., None]
-    raise ValueError(f"Expected image batch in NCHW or NHWC format, got shape {x.shape}")
+def ensure_nchw(x):
+    # Accept NHWC or NCHW; return NCHW
+    if x.ndim != 4:
+        raise ValueError(f"Expected 4D tensor, got {x.shape}")
+    # If already NCHW (channels in axis=1)
+    if x.shape[1] in (1, 3, 4):
+        return x
+    # If NHWC (channels in axis=-1)
+    if x.shape[-1] in (1, 3, 4):
+        return jnp.transpose(x, (0, 3, 1, 2))
+    raise ValueError(f"Can't infer layout from shape {x.shape}")
+
+def sample_vae_latents(posterior, rng, deterministic: bool):
+    # Diffusers Flax VAE returns FlaxAutoencoderKLOutput with .latent_dist
+    if hasattr(posterior, "latent_dist"):
+        return posterior.latent_dist.mode() if deterministic else posterior.latent_dist.sample(rng)
+
+    # Fallback for other implementations you might swap in later
+    if hasattr(posterior, "sample"):
+        return posterior.sample(rng)
+
+    raise AttributeError(f"Don't know how to sample latents from: {type(posterior)}")
 
 
 def main():
@@ -424,10 +437,10 @@ def main():
         one_loader = DataLoader(Subset(base_ds, [0]), batch_size=1, shuffle=False, num_workers=0, drop_last=False)
         (x0, _), = list(one_loader)
         x0 = to_rgb(jnp.asarray(x0.numpy()))
+        x0 = x0 * 2.0 - 1.0
+        x0 = ensure_nchw(x0)
         unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
-        posterior0 = ae_model.apply(
-            {'params': unrep_ae_params}, x0, method=ae_model.encode, deterministic=True
-        )
+        posterior0 = ae_model.apply({'params': unrep_ae_params}, x0, method=ae_model.encode, deterministic=True)
         z0 = posterior0.mode() * args.latent_scale_factor  # fixed latent, no encode noise
         global_bs = args.batch_per_device * jax.local_device_count()
         z0_tiled = jnp.tile(z0, (global_bs, 1, 1, 1))
@@ -443,18 +456,17 @@ def main():
             if precomputed_z0 is not None:
                 z = precomputed_z0
             else:
-                x_in = ensure_nhwc(x_batch)          # converts NCHW -> NHWC if needed
-                if x_in.shape[-1] == 1:
-                    x_in = jnp.repeat(x_in, 3, axis=-1)
-
-                # SD VAE expects inputs in [-1, 1] (common for diffusers VAEs)
-                x_in = x_in * 2.0 - 1.0
+                x_in = ensure_nchw(x_batch)          # converts NHWC -> NCHW if needed
+                if x_in.shape[1] == 1:
+                    x_in = jnp.repeat(x_in, 3, axis=1)
+                x_in = x_in * 2.0 - 1.0          # [-1, 1]
+                x_in = ensure_nchw(x_in)         # <-- IMPORTANT: SD VAE expects NCHW
                 print("x_in shape:", x_in.shape, "min/max:", x_in.min(), x_in.max())
-
                 posterior = ae_model.apply(
                     {'params': ae_params}, x_in, method=ae_model.encode, deterministic=True
                 )
-                z = posterior.sample(rng) * args.latent_scale_factor
+                z = sample_vae_latents(posterior, rng, deterministic=True) * args.latent_scale_factor
+
             z = z.astype(compute_dtype)
             # Sample t ~ U(1e-5, 1) and ε ~ N(0, I)
             rng_t, rng_noise = jax.random.split(rng_diff, 2)
