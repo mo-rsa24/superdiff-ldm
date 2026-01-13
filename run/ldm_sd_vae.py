@@ -238,6 +238,7 @@ def decode_latents(ae_model, ae_params, z):
 
 
 def to_rgb(x):
+    x = ensure_nhwc(x)
     if x.shape[-1] == 1:
         return jnp.repeat(x, 3, axis=-1)
     return x
@@ -282,6 +283,16 @@ def sd_euler_maruyama_sampler(
     x_hat_t = torch.from_numpy(np.asarray(x_hat))
     grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
     return grid, x
+
+def ensure_nhwc(x):
+    if x.ndim == 4:
+        if x.shape[-1] in (1, 3):
+            return x
+        if x.shape[1] in (1, 3):
+            return jnp.transpose(x, (0, 2, 3, 1))
+    if x.ndim == 3:
+        return x[..., None]
+    raise ValueError(f"Expected image batch in NCHW or NHWC format, got shape {x.shape}")
 
 
 def main():
@@ -412,8 +423,7 @@ def main():
     if args.overfit_one:
         one_loader = DataLoader(Subset(base_ds, [0]), batch_size=1, shuffle=False, num_workers=0, drop_last=False)
         (x0, _), = list(one_loader)
-        x0 = jnp.asarray(x0.numpy()).transpose(0, 2, 3, 1)  # NCHW -> NHWC
-        x0 = to_rgb(x0)
+        x0 = to_rgb(jnp.asarray(x0.numpy()))
         unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
         posterior0 = ae_model.apply(
             {'params': unrep_ae_params}, x0, method=ae_model.encode, deterministic=True
@@ -491,8 +501,7 @@ def main():
         progress_bar = tqdm(loader, desc=f"Epoch {ep + 1}/{args.epochs}", leave=False)
         for batch in progress_bar:
             x, _ = batch
-            x = jnp.asarray(x.numpy()).transpose(0, 2, 3, 1)
-            x = to_rgb(x)
+            x = to_rgb(jnp.asarray(x.numpy()))
             x_sharded = x.reshape((jax.local_device_count(), -1) + x.shape[1:])
 
             rng, step_rng = jax.random.split(rng)
