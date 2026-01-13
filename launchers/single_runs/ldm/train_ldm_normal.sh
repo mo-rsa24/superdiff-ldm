@@ -137,6 +137,7 @@ rsync -a \
   --exclude 'composed_output_single' \
   --exclude 'composed_output' \
   --exclude 'runs_ldm' \
+  --exclude 'preencoded_latents' \
   --exclude 'runs' \
   --exclude 'and_out' \
   --exclude 'superdiff_and_output' \
