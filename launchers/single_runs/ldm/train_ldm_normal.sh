@@ -79,6 +79,8 @@ while [[ $# -gt 0 ]]; do
     --ae_config_path)     export AE_CONFIG_PATH="$2"; shift 2 ;;
     --ae_run_dir)         export AE_RUN_DIR="$2"; shift 2 ;;
     --latent_scale_factor) export LATENT_SCALE_FACTOR="$2"; shift 2 ;;
+    --preencoded_latents_dir) export PREENCODED_LATENTS_DIR="$2"; shift 2 ;;
+    --preencoded_manifest) export PREENCODED_MANIFEST="$2"; shift 2 ;;
     --wandb_project)      export WANDB_PROJECT="$2"; shift 2 ;;
     --wandb_name)         export WANDB_NAME="$2"; shift 2 ;;
     --wandb_tags)         export WANDB_TAGS="$2"; shift 2 ;;
@@ -193,4 +195,6 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/ckpts/last.flax \
 #  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/run_meta.json \
 #  --latent_scale_factor 0.99999905 \
+#  --preencoded_latents_dir "preencoded_latents/tb_train" \
+#  --preencoded_manifest "manifest.jsonl"
 #  --wandb_project cxr-ldm-composition \
