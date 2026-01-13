@@ -222,7 +222,7 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #  --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/normal" \
 #  --preencoded_manifest "manifest.jsonl" \
 #  --sample_every 100 \
-#  --repeat_len 16
+#  --repeat_len 16 \
 #  --wandb_project cxr-ldm-composition \
 #  --overfit_one
 
@@ -235,6 +235,6 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #  --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/tb_train" \
 #  --preencoded_manifest "manifest.jsonl"
 #  --sample_every 100 \
-#  --repeat_len 16
+#  --repeat_len 16 \
 #  --wandb_project cxr-ldm-composition \
 #  --overfit_one
