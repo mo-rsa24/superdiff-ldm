@@ -36,6 +36,9 @@ export WANDB_PROJECT="cxr-ldm-composition"
 export WANDB_ENTITY=""
 export WANDB_RUN_GROUP="ldm-normal"
 export WANDB_TAGS="ldm,normal,256"
+export OVERFIT_ONE="0"
+export OVERFIT_K="0"
+export REPEAT_LEN="500"
 
 # --- Shared VAE and Scale Factor (❗ IMPORTANT: Update these values) ---
 export AE_RUN_DIR="${AE_RUN_DIR:-}"
@@ -100,6 +103,9 @@ while [[ $# -gt 0 ]]; do
     --workdir)            export WORKDIR="$2"; shift 2 ;;
     --use_bfloat16)       export USE_BFLOAT16="$2"; shift 2 ;;
     --use_remat)          export USE_REMAT="$2"; shift 2 ;;
+    --overfit_one)        export OVERFIT_ONE="1"; shift ;;
+    --overfit_k)          export OVERFIT_K="$2"; shift 2 ;;
+    --repeat_len)         export REPEAT_LEN="$2"; shift 2 ;;
     *)                    OTHER_ARGS+=("$1"); shift ;; # Save unrecognized arg
   esac
 done
@@ -145,6 +151,7 @@ rsync -a \
   --exclude 'composed_output_single' \
   --exclude 'composed_output' \
   --exclude 'runs_ldm' \
+  --exclude 'preencoded_latents' \
   --exclude 'runs' \
   --exclude 'and_out' \
   --exclude 'superdiff_and_output' \
@@ -207,11 +214,27 @@ status_line "🎉 Submitted" "Job ID: $JOB_ID"
 status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 
 # Run script
+# z_channels = 4
 #./launchers/single_runs/ldm/train_ldm_normal.sh full_train \
-#  --batch_per_device 2 \
+#  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
+#  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
+#  --latent_scale_factor 0.999373 \
+#  --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/normal" \
+#  --preencoded_manifest "manifest.jsonl" \
+#  --sample_every 100 \
+#  --repeat_len 16
+#  --wandb_project cxr-ldm-composition \
+#  --overfit_one
+
+
+# z_channels = 128
+#./launchers/single_runs/ldm/train_ldm_normal.sh full_train \
 #  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/ckpts/last.flax \
 #  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/run_meta.json \
 #  --latent_scale_factor 0.99999905 \
-#  --preencoded_latents_dir "preencoded_latents/tb_train" \
+#  --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/tb_train" \
 #  --preencoded_manifest "manifest.jsonl"
+#  --sample_every 100 \
+#  --repeat_len 16
 #  --wandb_project cxr-ldm-composition \
+#  --overfit_one
