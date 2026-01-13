@@ -501,7 +501,12 @@ def main():
         progress_bar = tqdm(loader, desc=f"Epoch {ep + 1}/{args.epochs}", leave=False)
         for batch in progress_bar:
             x, _ = batch
-            x = to_rgb(jnp.asarray(x.numpy()))
+            x = jnp.asarray(x.numpy())
+            if x.ndim == 4 and x.shape[1] in (1, 3):
+                x = jnp.transpose(x, (0, 2, 3, 1))
+            if x.shape[-1] == 1:
+                x = jnp.repeat(x, 3, axis=-1)
+
             x_sharded = x.reshape((jax.local_device_count(), -1) + x.shape[1:])
 
             rng, step_rng = jax.random.split(rng)
