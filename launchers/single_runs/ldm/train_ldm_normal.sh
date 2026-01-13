@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
     --ldm_base_ch)        export LDM_BASE_CH="$2"; shift 2 ;;
     --grad_clip)          export GRAD_CLIP="$2"; shift 2 ;;
     --epochs)             export EPOCHS="$2"; shift 2 ;;
-    --batch_per_device)   export BATCH_PER_DEVICE="$2"; shift 2 ;;
+    --batch_per_device)   export BATCH_PER_DEVICE="$2"; shift 2 ;; #
     --ldm_ch_mults)       export LDM_CH_MULTS="$2"; shift 2 ;;
     --ldm_num_res_blocks) export LDM_NUM_RES_BLOCKS="$2"; shift 2 ;;
     --ldm_attn_res)       export LDM_ATTN_RES="$2"; shift 2 ;;
