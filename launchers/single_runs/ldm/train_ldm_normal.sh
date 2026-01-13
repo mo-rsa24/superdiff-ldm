@@ -45,6 +45,7 @@ export AE_RUN_DIR="${AE_RUN_DIR:-}"
 export AE_CKPT_PATH="${AE_CKPT_PATH:-}"
 export AE_CONFIG_PATH="${AE_CONFIG_PATH:-}"
 export LATENT_SCALE_FACTOR="0.99999905"
+#export PREENCODED_LATENTS_DIR="/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/tb_train"
 export PREENCODED_LATENTS_DIR="${PREENCODED_LATENTS_DIR:-}"
 export PREENCODED_MANIFEST="${PREENCODED_MANIFEST:-}"
 
