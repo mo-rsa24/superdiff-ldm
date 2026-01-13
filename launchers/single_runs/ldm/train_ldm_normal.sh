@@ -41,7 +41,12 @@ export WANDB_TAGS="ldm,normal,256"
 export AE_RUN_DIR="${AE_RUN_DIR:-}"
 export AE_CKPT_PATH="${AE_CKPT_PATH:-}"
 export AE_CONFIG_PATH="${AE_CONFIG_PATH:-}"
-export LATENT_SCALE_FACTOR="0.99999905"
+export USE_SD_VAE="${USE_SD_VAE:-1}"
+export SD_VAE_ID="${SD_VAE_ID:-stabilityai/sd-vae-ft-mse}"
+export SD_VAE_REVISION="${SD_VAE_REVISION:-}"
+export SD_VAE_SUBFOLDER="${SD_VAE_SUBFOLDER:-}"
+export SD_VAE_CACHE_DIR="${SD_VAE_CACHE_DIR:-}"
+export LATENT_SCALE_FACTOR="${LATENT_SCALE_FACTOR:-0.99999905}"
 export PREENCODED_LATENTS_DIR="${PREENCODED_LATENTS_DIR:-}"
 export PREENCODED_MANIFEST="${PREENCODED_MANIFEST:-}"
 
@@ -78,6 +83,11 @@ while [[ $# -gt 0 ]]; do
     --ae_ckpt_path)       export AE_CKPT_PATH="$2"; shift 2 ;;
     --ae_config_path)     export AE_CONFIG_PATH="$2"; shift 2 ;;
     --ae_run_dir)         export AE_RUN_DIR="$2"; shift 2 ;;
+    --use_sd_vae)         export USE_SD_VAE="1"; shift ;;
+    --sd_vae_id)          export SD_VAE_ID="$2"; shift 2 ;;
+    --sd_vae_revision)    export SD_VAE_REVISION="$2"; shift 2 ;;
+    --sd_vae_subfolder)   export SD_VAE_SUBFOLDER="$2"; shift 2 ;;
+    --sd_vae_cache_dir)   export SD_VAE_CACHE_DIR="$2"; shift 2 ;;
     --latent_scale_factor) export LATENT_SCALE_FACTOR="$2"; shift 2 ;;
     --preencoded_latents_dir) export PREENCODED_LATENTS_DIR="$2"; shift 2 ;;
     --preencoded_manifest) export PREENCODED_MANIFEST="$2"; shift 2 ;;
@@ -94,14 +104,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -n "$AE_RUN_DIR" ]]; then
-  export AE_CKPT_PATH="${AE_CKPT_PATH:-$AE_RUN_DIR/ckpts/last.flax}"
-  export AE_CONFIG_PATH="${AE_CONFIG_PATH:-$AE_RUN_DIR/run_meta.json}"
-fi
+if [[ "$USE_SD_VAE" != "1" ]]; then
+  if [[ -n "$AE_RUN_DIR" ]]; then
+    export AE_CKPT_PATH="${AE_CKPT_PATH:-$AE_RUN_DIR/ckpts/last.flax}"
+    export AE_CONFIG_PATH="${AE_CONFIG_PATH:-$AE_RUN_DIR/run_meta.json}"
+  fi
 
-if [[ -z "$AE_CKPT_PATH" || -z "$AE_CONFIG_PATH" ]]; then
-  echo "ERROR: AE_CKPT_PATH and AE_CONFIG_PATH must be set (or pass --ae_run_dir)."
-  exit 1
+  if [[ -z "$AE_CKPT_PATH" || -z "$AE_CONFIG_PATH" ]]; then
+      echo "ERROR: AE_CKPT_PATH and AE_CONFIG_PATH must be set (or pass --ae_run_dir)."
+      exit 1
+    fi
+  else
+    export LATENT_SCALE_FACTOR="${LATENT_SCALE_FACTOR:-0.18215}"
 fi
 
 REPO_ROOT=$(pwd)
@@ -177,6 +191,9 @@ kv "Log Every (Steps)" "${LOG_EVERY}"
 kv "Sample Every (Epochs)" "${SAMPLE_EVERY}"
 kv "Sample Batch Size" "${SAMPLE_BATCH_SIZE}"
 kv "Latent Scale Factor" "${LATENT_SCALE_FACTOR}"
+if [[ "$USE_SD_VAE" == "1" ]]; then
+  kv "SD VAE" "${SD_VAE_ID}"
+fi
 rule
 
 JOB_ID=$(sbatch --partition="$SLURM_PARTITION" \

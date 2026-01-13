@@ -19,9 +19,10 @@ kv(){ printf "  ${CYN}%-22s${RST} %s\n" "$1" "$2";
 # Defaults (override via env)
 # ----------------------------
 WORKDIR="${WORKDIR:-$PWD}"
-PYFILE="${PYFILE:-run/ldm.py}"
+USE_SD_VAE="${USE_SD_VAE:-0}"
+PYFILE="${PYFILE:-}"
 DATA_ROOT="/home-mscluster/mmolefe/Playground/PhD/datasets/cleaned"
-LATENT_SCALE_FACTOR="${LATENT_SCALE_FACTOR:-1.0}"
+LATENT_SCALE_FACTOR="${LATENT_SCALE_FACTOR:-}"
 PREENCODED_LATENTS_DIR="${PREENCODED_LATENTS_DIR:-}"
 PREENCODED_MANIFEST="${PREENCODED_MANIFEST:-}"
 # Data & Debug
@@ -33,9 +34,15 @@ OVERFIT_ONE="${OVERFIT_ONE:-0}"
 OVERFIT_K="${OVERFIT_K:-0}"
 REPEAT_LEN="${REPEAT_LEN:-500}"
 LOG_EVERY="${LOG_EVERY:-100}"
-# Autoencoder paths (REQUIRED to be set by launcher script)
-AE_CKPT_PATH="${AE_CKPT_PATH:?Must set AE_CKPT_PATH}"
-AE_CONFIG_PATH="${AE_CONFIG_PATH:?Must set AE_CONFIG_PATH}"
+# Autoencoder paths (REQUIRED to be set by launcher script for custom AE)
+AE_CKPT_PATH="${AE_CKPT_PATH:-}"
+AE_CONFIG_PATH="${AE_CONFIG_PATH:-}"
+
+# Stable Diffusion VAE
+SD_VAE_ID="${SD_VAE_ID:-stabilityai/sd-vae-ft-mse}"
+SD_VAE_REVISION="${SD_VAE_REVISION:-}"
+SD_VAE_SUBFOLDER="${SD_VAE_SUBFOLDER:-}"
+SD_VAE_CACHE_DIR="${SD_VAE_CACHE_DIR:-}"
 
 # LDM Arch
 LDM_BASE_CH="${LDM_BASE_CH:-128}"
@@ -57,6 +64,15 @@ SEED="${SEED:-42}"
 USE_BFLOAT16="${USE_BFLOAT16:-0}"
 USE_REMAT="${USE_REMAT:-0}"
 
+if [[ "$USE_SD_VAE" == "1" ]]; then
+  PYFILE="${PYFILE:-run/ldm_sd_vae.py}"
+  LATENT_SCALE_FACTOR="${LATENT_SCALE_FACTOR:-0.18215}"
+else
+  PYFILE="${PYFILE:-run/ldm.py}"
+  LATENT_SCALE_FACTOR="${LATENT_SCALE_FACTOR:-1.0}"
+  AE_CKPT_PATH="${AE_CKPT_PATH:?Must set AE_CKPT_PATH}"
+  AE_CONFIG_PATH="${AE_CONFIG_PATH:?Must set AE_CONFIG_PATH}"
+fi
 # Experiment naming / output
 OUTPUT_ROOT="${OUTPUT_ROOT:-runs_ldm}"
 EXP_NAME="${EXP_NAME:-cxr_ldm}"
@@ -101,7 +117,6 @@ GIT_PARENT="${GIT_PARENT:-}"
 ARGS=(
   --data_root "$DATA_ROOT" --task "$TASK" --split "$SPLIT" --img_size "$IMG_SIZE"
   --class_filter "$DISEASE"
-  --ae_ckpt_path "$AE_CKPT_PATH" --ae_config_path "$AE_CONFIG_PATH"
   --latent_scale_factor "$LATENT_SCALE_FACTOR"
   --ldm_base_ch "$LDM_BASE_CH" --ldm_ch_mults "$LDM_CH_MULTS" --ldm_num_res_blocks "$LDM_NUM_RES_BLOCKS" --ldm_attn_res "$LDM_ATTN_RES"
   --lr "$LR" --weight_decay "$WEIGHT_DECAY" --grad_clip "$GRAD_CLIP"
@@ -113,6 +128,15 @@ ARGS=(
   --ldm_ch_mults "$LDM_CH_MULTS" \
   --ldm_attn_res "$LDM_ATTN_RES"
 )
+
+  if [[ "$USE_SD_VAE" == "1" ]]; then
+  ARGS+=( --sd_vae_id "$SD_VAE_ID" )
+  [[ -n "$SD_VAE_REVISION" ]] && ARGS+=( --sd_vae_revision "$SD_VAE_REVISION" )
+  [[ -n "$SD_VAE_SUBFOLDER" ]] && ARGS+=( --sd_vae_subfolder "$SD_VAE_SUBFOLDER" )
+  [[ -n "$SD_VAE_CACHE_DIR" ]] && ARGS+=( --sd_vae_cache_dir "$SD_VAE_CACHE_DIR" )
+else
+  ARGS+=( --ae_ckpt_path "$AE_CKPT_PATH" --ae_config_path "$AE_CONFIG_PATH" )
+fi
 
 if [[ -n "$PREENCODED_LATENTS_DIR" ]]; then
   ARGS+=( --preencoded_latents_dir "$PREENCODED_LATENTS_DIR" )
@@ -170,6 +194,9 @@ kv "DATASET"        "$([[ "$DISEASE" == 1 ]] && echo "Diseased" || echo "Normal"
 kv "EPOCHS"         "$EPOCHS"
 kv "BATCHxDEVS"     "$BATCH_PER_DEVICE x $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo 1)"
 kv "AE_CHECKPOINT"  "$AE_CKPT_PATH"
+if [[ "$USE_SD_VAE" == "1" ]]; then
+  kv "SD_VAE_ID"     "$SD_VAE_ID"
+fi
 kv "OVERFIT"        "(of1=$OVERFIT_ONE, tinyK=$OVERFIT_K)"
 kv "W&B"            "$WANDB (${WANDB_PROJECT}) tags=[$WANDB_TAGS]"
 kv "EMA Enabled" "${USE_EMA}"
