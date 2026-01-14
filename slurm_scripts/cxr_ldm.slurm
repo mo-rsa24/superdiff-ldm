@@ -4,7 +4,7 @@
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --ntasks=1             # Run a single main process (your python script)
-#SBATCH --cpus-per-task=16      # Give that process 4 CPU cores
+#SBATCH --cpus-per-task=8      # Give that process 4 CPU cores
 
 set -euo pipefail
 
