@@ -3,8 +3,8 @@
 #SBATCH --time=72:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --ntasks=1 # Total number of tasks
-#SBATCH --cpus-per-task=1  # CPU cores per task
+#SBATCH --ntasks=1             # Run a single main process (your python script)
+#SBATCH --cpus-per-task=4      # Give that process 4 CPU cores
 
 set -euo pipefail
 
@@ -181,4 +181,5 @@ kv "Remat Enabled" "${USE_REMAT}"
 banner "Run"
 kv "Preencoded Dir" "${PREENCODED_LATENTS_DIR:-<none>}"
 kv "Preencoded Manifest" "${PREENCODED_MANIFEST:-<none>}"
+kv "CPUs Allocated:" "${SLURM_CPUS_PER_TASK}"
 srun python -u "$PYFILE" "${ARGS[@]}"
