@@ -1,4 +1,5 @@
 # run/ldm.py
+import time
 import argparse
 import os
 import json
@@ -15,7 +16,8 @@ from torchvision.utils import save_image
 import torch
 from typing import Any
 from datasets.ChestXRay import ChestXrayDataset
-from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn, snr_fn
+from datasets.Latents import PreencodedLatentDataset
+from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn
 from models.ae_kl import AutoencoderKL
 from models.cxr_unet import ScoreNet
 from diffusion.sampling import Euler_Maruyama_sampler  # make sure this has the corrected drift
@@ -153,6 +155,18 @@ def parse_args():
     p.add_argument("--ae_ckpt_path", required=True, help="Path to the last.flax of the pretrained autoencoder.")
     p.add_argument("--ae_config_path", required=True, help="Path to the run_meta.json of the AE run.")
     p.add_argument("--latent_scale_factor", type=float, default=1.0, help="From stable-diffusion v1.")
+    p.add_argument(
+        "--preencoded_latents_dir",
+        type=str,
+        default=None,
+        help="Path to directory containing pre-encoded latent .npy files and manifest.jsonl.",
+    )
+    p.add_argument(
+        "--preencoded_manifest",
+        type=str,
+        default="manifest.jsonl",
+        help="Manifest filename inside preencoded_latents_dir (jsonl).",
+    )
 
     # --- LDM UNet Architecture ---
     p.add_argument("--ldm_ch_mults", type=str, default="1,2,4,4", help="Channel multipliers for UNet, relative to base_ch.")
@@ -179,6 +193,8 @@ def parse_args():
     p.add_argument("--log_every", type=int, default=100)
     p.add_argument("--sample_every", type=int, default=5)
     p.add_argument("--sample_batch_size", type=int, default=16)
+    p.add_argument("--use_bfloat16", action="store_true", help="Enable bfloat16 compute to reduce activation memory.")
+    p.add_argument("--use_remat", action="store_true", help="Enable rematerialization for memory savings.")
     # 2. Add EMA command-line arguments
     p.add_argument("--use_ema", action="store_true", help="Enable EMA for model parameters.")
     p.add_argument("--ema_decay", type=float, default=0.999, help="Decay rate for EMA.")
@@ -321,6 +337,10 @@ def main():
         print(f"✅ EMA is enabled with a decay rate of {args.ema_decay}")
     else:
         print("❌ EMA is disabled for this run.")
+    if args.use_bfloat16:
+        print("✅ bfloat16 compute enabled for LDM activations.")
+    if args.use_remat:
+        print("✅ Rematerialization enabled for LDM blocks.")
     rng = jax.random.PRNGKey(args.seed)
 
     # --- Setup Directories ---
@@ -331,10 +351,24 @@ def main():
     ckpt_latest = os.path.join(ckpt_dir, "last.flax")
     with open(os.path.join(run_dir, "ldm_meta.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
-
+    print(f"[{datetime.now()}] 🔍 Starting Dataset Initialization...", flush=True)  # ADD THIS
     # --- Setup Dataset ---
     base_ds = ChestXrayDataset(root_dir=args.data_root, task=args.task, split=args.split, img_size=args.img_size,
                                class_filter=args.class_filter)
+    if args.preencoded_latents_dir:
+        base_ds = PreencodedLatentDataset(
+            args.preencoded_latents_dir,
+            manifest_name=args.preencoded_manifest,
+        )
+    else:
+        base_ds = ChestXrayDataset(
+            root_dir=args.data_root,
+            task=args.task,
+            split=args.split,
+            img_size=args.img_size,
+            class_filter=args.class_filter,
+        )
+    print(f"[{datetime.now()}] ✅ Dataset Initialized. Size: {len(base_ds)}", flush=True)  # ADD THIS
     batch_size = args.batch_per_device * jax.local_device_count()
     if args.overfit_one:
         ds = Subset(base_ds, [0])
@@ -376,8 +410,16 @@ def main():
 
     ldm_chans = tuple(args.ldm_base_ch * int(m) for m in args.ldm_ch_mults.split(','))
     attn_res = tuple(int(r) for r in args.ldm_attn_res.split(','))
-    ldm_model = ScoreNet(z_channels=z_channels, channels=ldm_chans,
-                         num_res_blocks=args.ldm_num_res_blocks, attn_resolutions=attn_res)
+    compute_dtype = jnp.bfloat16 if args.use_bfloat16 else jnp.float32
+    ldm_model = ScoreNet(
+        z_channels=z_channels,
+        channels=ldm_chans,
+        num_res_blocks=args.ldm_num_res_blocks,
+        attn_resolutions=attn_res,
+        use_remat=args.use_remat,
+        dtype=compute_dtype,
+        param_dtype=jnp.float32,
+    )
     rng, init_rng = jax.random.split(rng)
     fake_latent = jnp.ones((1, latent_size, latent_size, z_channels))
     fake_time = jnp.ones((1,))
@@ -432,40 +474,45 @@ def main():
     # ---------------------------------------------------------
     precomputed_z0 = None
     if args.overfit_one:
-        one_loader = DataLoader(Subset(base_ds, [0]), batch_size=1, shuffle=False, num_workers=0, drop_last=False)
-        (x0, _), = list(one_loader)
-        x0 = jnp.asarray(x0.numpy()).transpose(0, 2, 3, 1)  # NCHW -> NHWC
-        # Your dataset is in [-1,1]; AE trained on [0,1] → keep this scaling
-        x0 = (x0 + 1.0) / 2.0
-        unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
-        posterior0 = ae_model.apply({'params': unrep_ae_params}, x0, method=ae_model.encode, train=False)
-        z0 = posterior0.mode() * args.latent_scale_factor  # fixed latent, no encode noise
+        if args.preencoded_latents_dir:
+            z0 = jnp.asarray(base_ds[0][0].numpy())[None, ...]
+        else:
+            one_loader = DataLoader(Subset(base_ds, [0]), batch_size=1, shuffle=False, num_workers=0, drop_last=False)
+            (x0, _), = list(one_loader)
+            x0 = jnp.asarray(x0.numpy()).transpose(0, 2, 3, 1)  # NCHW -> NHWC
+            # Your dataset is in [-1,1]; AE trained on [0,1] → keep this scaling
+            x0 = (x0 + 1.0) / 2.0
+            unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
+            posterior0 = ae_model.apply({'params': unrep_ae_params}, x0, method=ae_model.encode, train=False)
+            z0 = posterior0.mode() * args.latent_scale_factor  # fixed latent, no encode noise
         global_bs = args.batch_per_device * jax.local_device_count()
         z0_tiled = jnp.tile(z0, (global_bs, 1, 1, 1))
         precomputed_z0 = z0_tiled.reshape((jax.local_device_count(), -1) + z0.shape[1:])
         print("Precomputed z0 for overfit-one:", precomputed_z0.shape)
 
     # --- Define Training Step ---
-    def train_step(rng, ldm_state, ae_params, x_batch, precomputed_z0):
+    def train_step(rng, ldm_state, ae_params, z_batch, precomputed_z0):
         """One pmap-ed training step."""
-        # x_batch: images in [0,1]; you already encode -> z elsewhere if needed.
+        # z_batch: precomputed latents or latents encoded from images.
         rng, rng_diff = jax.random.split(rng, 2)
 
         def loss_fn(ldm_params):
             if precomputed_z0 is not None:
                 z = precomputed_z0
+            elif args.preencoded_latents_dir:
+                z = z_batch
             else:
-                posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
+                posterior = ae_model.apply({'params': ae_params}, z_batch, method=ae_model.encode, train=False)
                 z = posterior.sample(rng) * args.latent_scale_factor
-
+            z = z.astype(compute_dtype)
             # Sample t ~ U(1e-5, 1) and ε ~ N(0, I)
             rng_t, rng_noise = jax.random.split(rng_diff, 2)
             t = jax.random.uniform(rng_t, (z.shape[0],), minval=1e-5, maxval=1.0)
-            noise = jax.random.normal(rng_noise, z.shape)
+            noise = jax.random.normal(rng_noise, z.shape).astype(compute_dtype)
 
             # VP forward perturbation
-            sigma = marginal_prob_std_fn(t)  # σ(t)  [B]
-            alpha = alpha_fn(t)  # α(t)  [B]
+            sigma = marginal_prob_std_fn(t).astype(compute_dtype)  # σ(t)  [B]
+            alpha = alpha_fn(t).astype(compute_dtype)  # α(t)  [B]
             sigma_b = sigma[:, None, None, None]
             alpha_b = alpha[:, None, None, None]
             x_t = alpha_b * z + sigma_b * noise  # x_t = α z + σ ε
@@ -516,15 +563,16 @@ def main():
         progress_bar = tqdm(loader, desc=f"Epoch {ep + 1}/{args.epochs}", leave=False)
         for batch in progress_bar:
             x, _ = batch
-            x = jnp.asarray(x.numpy()).transpose(0, 2, 3, 1)
-            # Your dataset tensor is in [-1,1]; AE expects [0,1]
-            x = (x + 1.0) / 2.0
-            x_sharded = x.reshape((jax.local_device_count(), -1) + x.shape[1:])
-
+            if args.preencoded_latents_dir:
+                z = jnp.asarray(x.numpy())
+            else:
+                z = jnp.asarray(x.numpy()).transpose(0, 2, 3, 1)
+                # Your dataset tensor is in [-1,1]; AE expects [0,1]
+                z = (z + 1.0) / 2.0
+            z_sharded = z.reshape((jax.local_device_count(), -1) + z.shape[1:])
             rng, step_rng = jax.random.split(rng)
             rng_sharded = jax.random.split(step_rng, jax.local_device_count())
-            # ldm_state, loss = pmapped_train_step(rng_sharded, ldm_state, ae_params, x_sharded, precomputed_z0)
-            ldm_state, loss, aux = pmapped_train_step(rng_sharded, ldm_state, ae_params, x_sharded, precomputed_z0)
+            ldm_state, loss, aux = pmapped_train_step(rng_sharded, ldm_state, ae_params, z_sharded, precomputed_z0)
 
             if global_step % args.log_every == 0:
                 loss_val = float(np.asarray(loss[0]))
@@ -618,7 +666,7 @@ def main():
                 latent_size=latent_size,
                 batch_size=args.sample_batch_size,
                 z_channels=z_channels,
-                z_std=args.latent_scale_factor
+                z_std=1.0 / args.latent_scale_factor
             )
             final_latent_np = np.asarray(final_latent)
             log_sample_diversity(final_latent_np, step=global_step, epoch=ep + 1)

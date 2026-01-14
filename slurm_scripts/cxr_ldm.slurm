@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-#SBATCH --exclude=mscluster65,mscluster76,mscluster59,mscluster48
+#SBATCH --exclude=mscluster65,mscluster76,mscluster59,mscluster48,mscluster82
 #SBATCH --time=72:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
+#SBATCH --ntasks=1 # Total number of tasks
+#SBATCH --cpus-per-task=1  # CPU cores per task
 
 set -euo pipefail
 
@@ -18,8 +20,10 @@ kv(){ printf "  ${CYN}%-22s${RST} %s\n" "$1" "$2";
 # ----------------------------
 WORKDIR="${WORKDIR:-$PWD}"
 PYFILE="${PYFILE:-run/ldm.py}"
-DATA_ROOT="/datasets/mmolefe/cleaned"
+DATA_ROOT="/home-mscluster/mmolefe/Playground/PhD/datasets/cleaned"
 LATENT_SCALE_FACTOR="${LATENT_SCALE_FACTOR:-1.0}"
+PREENCODED_LATENTS_DIR="${PREENCODED_LATENTS_DIR:-}"
+PREENCODED_MANIFEST="${PREENCODED_MANIFEST:-}"
 # Data & Debug
 TASK="${TASK:-TB}"
 SPLIT="${SPLIT:-train}"
@@ -50,6 +54,8 @@ BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-4}"
 SAMPLE_EVERY="${SAMPLE_EVERY:-5}"
 LOG_EVERY="${LOG_EVERY:-100}"
 SEED="${SEED:-42}"
+USE_BFLOAT16="${USE_BFLOAT16:-0}"
+USE_REMAT="${USE_REMAT:-0}"
 
 # Experiment naming / output
 OUTPUT_ROOT="${OUTPUT_ROOT:-runs_ldm}"
@@ -70,6 +76,7 @@ cd "$WORKDIR"
 export PYTHONPATH="$WORKDIR${PYTHONPATH:+:$PYTHONPATH}"
 export JAX_PLATFORMS=cuda
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 export TF_CPP_MIN_LOG_LEVEL=3
 set +u
 source ~/.bashrc
@@ -107,6 +114,14 @@ ARGS=(
   --ldm_attn_res "$LDM_ATTN_RES"
 )
 
+if [[ -n "$PREENCODED_LATENTS_DIR" ]]; then
+  ARGS+=( --preencoded_latents_dir "$PREENCODED_LATENTS_DIR" )
+fi
+if [[ -n "$PREENCODED_MANIFEST" ]]; then
+  ARGS+=( --preencoded_manifest "$PREENCODED_MANIFEST" )
+fi
+
+
 # Debugging
 if [[ "$OVERFIT_ONE" == "1" || "$OVERFIT_ONE" == "true" ]]; then ARGS+=( --overfit_one --repeat_len "$REPEAT_LEN" );
 elif (( OVERFIT_K > 0 )); then ARGS+=( --overfit_k "$OVERFIT_K" );
@@ -115,6 +130,12 @@ fi
 # --- Add EMA arguments if enabled ---
 if [[ "$USE_EMA" == "1" ]]; then
   ARGS+=(--use_ema --ema_decay "$EMA_DECAY")
+fi
+if [[ "$USE_BFLOAT16" == "1" ]]; then
+  ARGS+=(--use_bfloat16)
+fi
+if [[ "$USE_REMAT" == "1" ]]; then
+  ARGS+=(--use_remat)
 fi
 
 
@@ -155,5 +176,9 @@ kv "EMA Enabled" "${USE_EMA}"
 if [[ "$USE_EMA" == "1" ]]; then
   kv "EMA Decay" "${EMA_DECAY}"
 fi
+kv "bfloat16 Enabled" "${USE_BFLOAT16}"
+kv "Remat Enabled" "${USE_REMAT}"
 banner "Run"
+kv "Preencoded Dir" "${PREENCODED_LATENTS_DIR:-<none>}"
+kv "Preencoded Manifest" "${PREENCODED_MANIFEST:-<none>}"
 srun python -u "$PYFILE" "${ARGS[@]}"

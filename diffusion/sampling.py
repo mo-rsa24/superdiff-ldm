@@ -36,7 +36,7 @@ def Euler_Maruyama_sampler(
     init_x = jax.vmap(lambda key: jax.random.normal(key, single_sample_shape))(rngs)
     init_x = init_x * marginal_prob_std_fn(jnp.ones(batch_size))[:, None, None, None]
 
-    time_steps = jnp.linspace(1., eps, n_steps)
+    time_steps = jnp.linspace(0.999, eps, n_steps)
     step_size = time_steps[0] - time_steps[1]
     x = init_x
 
@@ -62,6 +62,8 @@ def Euler_Maruyama_sampler(
     final_z_for_decode = x # The sampler already produces a latent at the correct scale
     z_for_decode = final_z_for_decode * z_std
     x_hat = ae_model.apply({'params': ae_params}, z_for_decode, method=ae_model.decode, train=False)
+    print(f"DEBUG: x_hat min={x_hat.min()}, max={x_hat.max()}, mean={x_hat.mean()}")
+    print(f"If max is < 0, your AE expects/outputs a different range than you are visualizing.")
     x_hat = jnp.clip(x_hat, 0., 1.)
     x_hat = jnp.transpose(x_hat, (0, 3, 1, 2)) # NHWC -> NCHW
     x_hat_t = torch.from_numpy(np.asarray(x_hat))
