@@ -379,7 +379,7 @@ def main():
         print("INFO: Overfitting on one sample. Disabling data loader workers and shuffle.")
         loader_kwargs = dict(batch_size=batch_size, shuffle=False, num_workers=0, drop_last=True, pin_memory=True)
     else:
-        loader_kwargs = dict(batch_size=batch_size, shuffle=True, num_workers=4, drop_last=True, pin_memory=True)
+        loader_kwargs = dict(batch_size=batch_size, shuffle=True, num_workers=28, drop_last=True, pin_memory=True)
     loader = DataLoader(ds, **loader_kwargs)
 
     # --- Load Pretrained Autoencoder ---
