@@ -228,7 +228,7 @@ def infer_downsample_factor(vae_config):
 
 
 def decode_latents(ae_model, ae_params, z):
-    decoded = ae_model.apply({'params': ae_params}, z, method=ae_model.decode, train=False)
+    decoded = ae_model.apply({'params': ae_params}, z, method=ae_model.decode, deterministic=True)
     if hasattr(decoded, "sample"):
         decoded = decoded.sample
     elif isinstance(decoded, dict) and "sample" in decoded:
