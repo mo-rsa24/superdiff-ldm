@@ -278,7 +278,7 @@ def sd_euler_maruyama_sampler(
     z_for_decode = final_z_for_decode * z_std
     x_hat = decode_latents(ae_model, ae_params, z_for_decode)
     x_hat = jnp.clip(x_hat, 0., 1.)
-    x_hat = jnp.transpose(x_hat, (0, 3, 1, 2))  # NHWC -> NCHW
+    x_hat = ensure_nchw(x_hat)
     x_hat_t = torch.from_numpy(np.asarray(x_hat))
     grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
     return grid, x
@@ -573,7 +573,7 @@ def main():
                 z0_for_decode = z0_host / args.latent_scale_factor
                 x0_hat = decode_latents(ae_model, unrep_ae_params, z0_for_decode)
                 x0_hat = jnp.clip(x0_hat, 0., 1.)
-                x0_hat = jnp.transpose(x0_hat, (0, 3, 1, 2))  # NHWC -> NCHW
+                x0_hat = ensure_nchw(x0_hat)
                 x0_hat_t = torch.from_numpy(np.asarray(x0_hat))
                 save_image(x0_hat_t, os.path.join(samples_dir, f"sanityA_recon_z0_ep{ep + 1:04d}.png"))
 
@@ -586,7 +586,7 @@ def main():
                 noisy_for_decode = noisy / args.latent_scale_factor
                 x_mid = decode_latents(ae_model, unrep_ae_params, noisy_for_decode)
                 x_mid = jnp.clip(x_mid, 0., 1.)
-                x_mid = jnp.transpose(x_mid, (0, 3, 1, 2))
+                x_mid = ensure_nchw(x_mid)
                 x_mid_t = torch.from_numpy(np.asarray(x_mid))
                 save_image(x_mid_t, os.path.join(samples_dir, f"sanityB_decode_noisy_latent_ep{ep + 1:04d}.png"))
             if args.use_ema:
