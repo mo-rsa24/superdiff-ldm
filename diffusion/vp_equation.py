@@ -39,10 +39,8 @@ dlog_alphadt: Callable[[jnp.ndarray], jnp.ndarray] = jax.grad(lambda tt: jnp.sum
 _dlogab_dt:    Callable[[jnp.ndarray], jnp.ndarray] = jax.grad(lambda tt: jnp.sum(log_alpha_bar(tt)))
 
 def beta(t: jnp.ndarray) -> jnp.ndarray:
-    """
-    β(t) = - d/dt log ᾱ(t)  (VP-SDE definition)
-    """
-    return jnp.clip(-_dlogab_dt(t), _EPS, 1e12)
+    # 20.0 is a typical max beta for VP-SDEs to maintain stability
+    return jnp.clip(-_dlogab_dt(t), _EPS, 20.0)
 
 def marginal_prob_std(t: jnp.ndarray) -> jnp.ndarray:
     """
