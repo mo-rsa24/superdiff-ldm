@@ -21,6 +21,74 @@ def _broadcast_time(t_scalar, x):
     return jnp.ones((N,) + extra_ones, dtype=x.dtype) * t_scalar
 
 
+import numpy as np
+import jax
+import jax.numpy as jnp
+from tqdm import tqdm
+import torch
+from torchvision.utils import make_grid
+from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, _EPS
+
+
+def DDIM_sampler(
+        rng, ldm_model, ldm_params, ae_model, ae_params,
+        marginal_prob_std_fn, diffusion_coeff_fn,
+        latent_size, batch_size, z_channels, z_std=1.0,
+        n_steps=50, eps=1e-3
+):
+    """
+    DDIM Sampler (Deterministic ODE).
+    Higher quality with fewer steps (n_steps=50 is usually sufficient).
+    """
+    print(f"Running DDIM sampler with {n_steps} steps...")
+
+    # 1. Initialize latent from Gaussian noise
+    rngs = jax.random.split(rng, batch_size)
+    single_sample_shape = (latent_size, latent_size, z_channels)
+    x = jax.vmap(lambda key: jax.random.normal(key, single_sample_shape))(rngs)
+
+    # 2. Define Timestep Schedule (1.0 -> eps)
+    # We need t and t_next for the DDIM update rule
+    time_steps = jnp.linspace(1.0, eps, n_steps + 1)
+
+    for i in tqdm(range(n_steps), desc="DDIM Sampling"):
+        t = time_steps[i]
+        t_next = time_steps[i + 1]
+
+        vec_t = jnp.ones(batch_size) * t
+        vec_t_next = jnp.ones(batch_size) * t_next
+
+        # Current schedule parameters
+        alpha_t = alpha_fn(vec_t)[:, None, None, None]
+        sigma_t = marginal_prob_std_fn(vec_t)[:, None, None, None]
+
+        # Next schedule parameters
+        alpha_next = alpha_fn(vec_t_next)[:, None, None, None]
+        sigma_next = marginal_prob_std_fn(vec_t_next)[:, None, None, None]
+
+        # 3. Predict Noise (epsilon)
+        epsilon_theta = ldm_model.apply({'params': ldm_params}, x, vec_t)
+
+        # 4. Estimate "Predicted x_0" (Equation 12 in DDIM paper)
+        # x_0 = (x_t - sigma_t * epsilon) / alpha_t
+        pred_x0 = (x - sigma_t * epsilon_theta) / jnp.clip(alpha_t, a_min=_EPS)
+
+        # 5. Compute x_{t_next} (Deterministic update, eta=0)
+        # x_{t-1} = alpha_{t-1} * pred_x0 + sigma_{t-1} * epsilon_theta
+        x = alpha_next * pred_x0 + sigma_next * epsilon_theta
+
+    # 6. Decode and Post-process
+    # Use your existing scaling and decoding logic
+    z_for_decode = x * z_std
+    x_hat = ae_model.apply({'params': ae_params}, z_for_decode, method=ae_model.decode, train=False)
+
+    x_hat = jnp.clip(x_hat, 0., 1.)
+    x_hat = jnp.transpose(x_hat, (0, 3, 1, 2))  # NHWC -> NCHW
+    x_hat_t = torch.from_numpy(np.asarray(x_hat))
+
+    grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
+    return grid, x
+
 def Euler_Maruyama_sampler(
     rng, ldm_model, ldm_params, ae_model, ae_params,
     marginal_prob_std_fn, diffusion_coeff_fn,

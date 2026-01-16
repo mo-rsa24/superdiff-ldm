@@ -20,7 +20,7 @@ from datasets.Latents import PreencodedLatentDataset
 from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn
 from models.ae_kl import AutoencoderKL
 from models.cxr_unet import ScoreNet
-from diffusion.sampling import Euler_Maruyama_sampler  # make sure this has the corrected drift
+from diffusion.sampling import Euler_Maruyama_sampler, DDIM_sampler  # make sure this has the corrected drift
 
 # W&B is optional
 try:
@@ -644,19 +644,24 @@ def main():
             open_block("sample", step=global_step, epoch=ep + 1, note="Euler-Maruyama SDE Sampler")
             sample_rng = jax.random.fold_in(rng, ep + 1)
             sample_rng = jax.random.fold_in(sample_rng, global_step)
-            samples_grid, final_latent = Euler_Maruyama_sampler(
+            samples_grid, final_latent = DDIM_sampler(
                 rng=sample_rng,
-                ldm_model=ldm_model,
-                ldm_params=sampling_params,
-                ae_model=ae_model,
-                ae_params=unrep_ae_params,
-                marginal_prob_std_fn=marginal_prob_std_fn,
-                diffusion_coeff_fn=diffusion_coeff_fn,
-                latent_size=latent_size,
+                ldm_model=ldm_model,  # Defined earlier in main()
+                ldm_params=sampling_params,  # Unreplicated params
+                ae_model=ae_model,  # Pretrained AE
+                ae_params=unrep_ae_params,  # Unreplicated AE params
+                marginal_prob_std_fn=marginal_prob_std_fn,  # From vp_equation.py
+                diffusion_coeff_fn=diffusion_coeff_fn,  # From vp_equation.py
+                latent_size=latent_size,  # Calculated spatial size
                 batch_size=args.sample_batch_size,
-                z_channels=z_channels,
-                z_std=1.0 / args.latent_scale_factor
+                z_channels=z_channels,  # AE latent channels
+                z_std=1.0 / args.latent_scale_factor,  # Consistent scaling
+                n_steps=50,  # Fewer steps for DDIM efficiency
+                eps=1e-3  # Numerical stability
             )
+
+            # 4. Save and Log results
+            out_path = os.path.join(samples_dir, f"ddim_sample_ep{ep + 1:04d}.png")
             final_latent_np = np.asarray(final_latent)
             log_sample_diversity(final_latent_np, step=global_step, epoch=ep + 1)
             stats = {
