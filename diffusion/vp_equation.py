@@ -40,7 +40,7 @@ _dlogab_dt:    Callable[[jnp.ndarray], jnp.ndarray] = jax.grad(lambda tt: jnp.su
 
 def beta(t: jnp.ndarray) -> jnp.ndarray:
     # 20.0 is a typical max beta for VP-SDEs to maintain stability
-    return jnp.clip(-_dlogab_dt(t), _EPS, 20.0)
+    return jnp.clip(-_dlogab_dt(t), _EPS, 5000.0)
 
 def marginal_prob_std(t: jnp.ndarray) -> jnp.ndarray:
     """
