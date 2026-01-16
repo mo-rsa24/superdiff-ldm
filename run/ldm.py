@@ -636,7 +636,6 @@ def main():
                 cosine_sim = jnp.dot(flat_params, flat_ema_params) / (
                             jnp.linalg.norm(flat_params) * jnp.linalg.norm(flat_ema_params))
                 print(f"[info] Cosine similarity between base and EMA weights: {cosine_sim:.6f}")
-                pretty_table("ema", metrics)
                 close_block("ema", step=global_step)
 
                 if use_wandb:

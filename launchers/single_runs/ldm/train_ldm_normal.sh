@@ -202,12 +202,12 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #./launchers/single_runs/ldm/train_ldm_normal.sh full_train \
 #  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
 #  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
-#  --latent_scale_factor 0.999373 \
-#  --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/normal" \
-#  --preencoded_manifest "manifest.jsonl" \
-#  --sample_every 100 \
-#  --repeat_len 16
-#  --wandb_project cxr-ldm-composition \
+#  --latent_scale_factor 0.99937266 \
+#  --sample_every 10 \
+#  --epochs 100 \
+#  --repeat_len 16 \
+#  --wandb_project cxr-ldm-composition-test \
+#  --ldm_base_ch 64 --ldm_ch_mults 1,2,4 --ldm_num_res_blocks 2 --ldm_attn_res 16 \
 #  --overfit_one
 
 
