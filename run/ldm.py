@@ -554,6 +554,12 @@ def main():
         progress_bar = tqdm(loader, desc=f"Epoch {ep + 1}/{args.epochs}", leave=False)
         for batch in progress_bar:
             x, _ = batch
+            x_np = x.numpy()
+            if global_step % 100 == 0:  # Only print occasionally
+                print(f"\n[DEBUG] DataLoader Batch Stats:")
+                print(f"  - Shape: {x_np.shape}")
+                print(f"  - Range: [{x_np.min():.4f}, {x_np.max():.4f}]")
+                print(f"  - Mean: {x_np.mean():.4f} | Std: {x_np.std():.4f}")
             if args.preencoded_latents_dir:
                 z = jnp.asarray(x.numpy())
             else:

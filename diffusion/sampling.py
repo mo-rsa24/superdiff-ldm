@@ -58,6 +58,9 @@ def Euler_Maruyama_sampler(
         x = x_mean + diffusion * jnp.sqrt(step_size)
     final_z_for_decode = x # The sampler already produces a latent at the correct scale
     z_for_decode = final_z_for_decode * z_std
+    print(f"\n[DEBUG] Sampler Latent Stats:")
+    print(f"  - Raw Diffusion Output (x): mean={x.mean():.4f}, std={x.std():.4f}, min={x.min():.4f}, max={x.max():.4f}")
+    print(f"  - Scaled for Decoder (z*scale): mean={z_for_decode.mean():.4f}, std={z_for_decode.std():.4f}")
     x_hat = ae_model.apply({'params': ae_params}, z_for_decode, method=ae_model.decode, train=False)
     print(f"DEBUG: x_hat min={x_hat.min()}, max={x_hat.max()}, mean={x_hat.mean()}")
     print(f"If max is < 0, your AE expects/outputs a different range than you are visualizing.")
