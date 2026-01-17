@@ -22,7 +22,7 @@ def DDPM_ancestral_sampler(
         rng, ldm_model, ldm_params, ae_model, ae_params,
         marginal_prob_std_fn, diffusion_coeff_fn,
         latent_size, batch_size, z_channels, z_std=1.0,
-        n_steps=1000, eps=1e-5
+        n_steps=500, eps=1e-5
 ):
     """
     Ancestral Sampling (DDPM) for VP-SDE.
@@ -71,7 +71,7 @@ def DDPM_ancestral_sampler(
         noise = jax.random.normal(jax.random.fold_in(rng, i), x.shape)
 
         x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_theta) + (sigma * noise)
-        if i % 20 == 0 or i == n_steps - 1:
+        if i % 250 == 0 or i == n_steps - 1:
             print(f"\n[Step {i}/{n_steps}] t_now={t_now:.4f} -> t_next={t_next:.4f}")
             
             # 1. Check Coefficients
