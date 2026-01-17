@@ -36,7 +36,7 @@ def Euler_Maruyama_sampler(
     init_x = jax.vmap(lambda key: jax.random.normal(key, single_sample_shape))(rngs)
     init_x = init_x * marginal_prob_std_fn(jnp.ones(batch_size))[:, None, None, None]
 
-    time_steps = jnp.linspace(0.99, eps, n_steps)
+    time_steps = jnp.linspace(1, eps, n_steps)
     step_size = time_steps[0] - time_steps[1]
     x = init_x
 
