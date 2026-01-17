@@ -1,87 +1,94 @@
-import numpy as np
+from typing import Callable
 import jax
 import jax.numpy as jnp
-from tqdm import tqdm
-import torch
-from torchvision.utils import make_grid
-from diffusion.vp_equation import beta
+from jax import vmap
+import functools
 
+# ---------------------------
+# Linear VP schedule (Song et al., ICLR 2021)
+# Standard choice for SDE-based sampling.
+# ---------------------------
+_BETA_MIN = 0.1
+_BETA_MAX = 20.0
+_EPS = 1e-5  # slightly larger epsilon for stability
+
+def beta(t: jnp.ndarray) -> jnp.ndarray:
+    """
+    Linear beta schedule: β(t) = β_min + t(β_max - β_min)
+    Unlike cosine, this does not diverge at t=1.
+    """
+    return _BETA_MIN + t * (_BETA_MAX - _BETA_MIN)
+
+def alpha_bar_fn(t: jnp.ndarray) -> jnp.ndarray:
+    """
+    log ᾱ(t) = - ∫ β(s) ds from 0 to t
+    Integral of linear function (a + bt) is at + 0.5bt^2.
+    """
+    b_diff = _BETA_MAX - _BETA_MIN
+    # - (0.1t + 0.5 * 19.9 * t^2)
+    log_alpha = -(_BETA_MIN * t + 0.5 * b_diff * (t ** 2))
+    return jnp.exp(log_alpha)
+
+def log_alpha_bar(t: jnp.ndarray) -> jnp.ndarray:
+    """log ᾱ(t)"""
+    b_diff = _BETA_MAX - _BETA_MIN
+    return -(_BETA_MIN * t + 0.5 * b_diff * (t ** 2))
+
+def alpha_fn(t: jnp.ndarray) -> jnp.ndarray:
+    """α(t) = sqrt(ᾱ(t))"""
+    return jnp.sqrt(alpha_bar_fn(t))
+
+def marginal_prob_std(t: jnp.ndarray) -> jnp.ndarray:
+    """
+    σ(t) = sqrt(1 - ᾱ(t))
+    """
+    return jnp.sqrt(jnp.clip(1.0 - alpha_bar_fn(t), _EPS, 1.0))
+
+def diffusion_coeff(t: jnp.ndarray) -> jnp.ndarray:
+    """
+    g(t) = sqrt(β(t)) for VP-SDE.
+    """
+    return jnp.sqrt(beta(t))
+
+# ---------------------------
+# Utilities and Estimators
+# ---------------------------
 
 def _sum_except_batch(x):
+    """Sum over all non-batch axes, keep batch axis."""
     axes = tuple(range(1, x.ndim))
     return jnp.sum(x, axis=axes, keepdims=True)
 
+@functools.partial(jax.jit, static_argnums=(2,))
+def score_function_hutchinson_estimator(x, t, score_fn, params, key):
+    v = jax.random.normal(key, x.shape)
+    def epsilon_fn(y):
+        return score_fn({'params': params}, y, t)
+    _, jvp_val = jax.jvp(epsilon_fn, (x,), (v,))
+    sigma_t = marginal_prob_std_fn(t)[:, None, None, None]
+    divergence = -jnp.sum(v * jvp_val, axis=(1, 2, 3)) / sigma_t.squeeze()
+    return divergence, divergence
 
-def _broadcast_time(t_scalar, x):
-    """Make t broadcast like x: (N,1[,1,1...])"""
-    N = x.shape[0]
-    extra_ones = (1,) * (x.ndim - 1)
-    return jnp.ones((N,) + extra_ones, dtype=x.dtype) * t_scalar
-
-
-def DDPM_ancestral_sampler(
-        rng, ldm_model, ldm_params, ae_model, ae_params,
-        marginal_prob_std_fn, diffusion_coeff_fn,
-        latent_size, batch_size, z_channels, z_std=1.0,
-        n_steps=1000, eps=1e-5
-):
+@jax.jit
+def get_kappa(t, divlogs, scores):
     """
-    Ancestral Sampling (DDPM) for VP-SDE.
-    This is numerically more stable than Euler-Maruyama near t=0.
-
-    Uses the discretization:
-    x_{t-1} = sqrt(alpha_bar_{t-1}) * pred_x0 + dir_xt * eps_theta + sigma * noise
+    Calculates the optimal mixing coefficient kappa for Superdiffusion.
     """
-    print(f"Running Ancestral (DDPM) Sampler with {n_steps} steps...")
-    rngs = jax.random.split(rng, batch_size)
-    single_sample_shape = (latent_size, latent_size, z_channels)
+    div1, div2 = divlogs
+    s1, s2 = scores
+    div1 = div1[:, None, None, None]
+    div2 = div2[:, None, None, None]
+    g_t_squared = diffusion_coeff_fn(t)[:, None, None, None]**2
+    numerator = g_t_squared * (div1 - div2) + _sum_except_batch(s1 * (s1 - s2))
+    denominator = _sum_except_batch((s1 - s2)**2) + 1e-12
+    kappa = numerator / denominator
+    return kappa
 
-    # Start from pure noise at t=1.0
-    # For VP-SDE, marginal_std(1.0) is effectively 1.0, but we use the fn for correctness.
-    init_x = jax.vmap(lambda key: jax.random.normal(key, single_sample_shape))(rngs)
-    init_x = init_x * marginal_prob_std_fn(jnp.array([1.0]))[0]
+# Vectorized (batch) versions used everywhere
+marginal_prob_std_fn = vmap(marginal_prob_std)
+diffusion_coeff_fn   = vmap(diffusion_coeff)
+alpha_fn             = vmap(alpha_fn)
 
-    # Time steps from 1.0 down to eps
-    timesteps = jnp.linspace(1.0, eps, n_steps + 1)
-    x = init_x
-
-    for i in tqdm(range(n_steps), desc="DDPM Sampling"):
-        t_now = timesteps[i]
-        t_next = timesteps[i + 1]  # t_next < t_now
-
-        # Broadcast time to batch
-        vec_t = jnp.ones(batch_size) * t_now
-        vec_t_next = jnp.ones(batch_size) * t_next
-
-        # 1. Predict Noise
-        eps_theta = ldm_model.apply({'params': ldm_params}, x, vec_t)
-
-        # 2. Derive alpha_bar from marginal_prob_std (std = sqrt(1 - alpha_bar))
-        # This avoids needing to pass alpha_bar_fn explicitly
-        std_now = marginal_prob_std_fn(vec_t)[:, None, None, None]
-        std_next = marginal_prob_std_fn(vec_t_next)[:, None, None, None]
-
-        alpha_bar_now = jnp.clip(1.0 - std_now ** 2, 0.0, 1.0)
-        alpha_bar_next = jnp.clip(1.0 - std_next ** 2, 0.0, 1.0)
-        sqrt_alpha_bar_now = jnp.sqrt(alpha_bar_now + 1e-8)
-        pred_x0 = (x - std_now * eps_theta) / sqrt_alpha_bar_now
-        ratio = alpha_bar_now / (alpha_bar_next + 1e-8)
-        sigma_sq = (1.0 - alpha_bar_next) / (1.0 - alpha_bar_now + 1e-8) * (1.0 - ratio)
-        sigma = jnp.sqrt(jnp.clip(sigma_sq, 0.0, None))
-        dir_xt_coeff = jnp.sqrt(jnp.clip(1.0 - alpha_bar_next - sigma_sq, 0.0, None))
-        noise = jax.random.normal(jax.random.fold_in(rng, i), x.shape)
-
-        x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_theta) + (sigma * noise)
-
-    # Decode
-    z_for_decode = x * z_std
-    x_hat = ae_model.apply({'params': ae_params}, z_for_decode, method=ae_model.decode, train=False)
-
-    print(f"Sample Stats: min={x_hat.min():.4f}, max={x_hat.max():.4f}, mean={x_hat.mean():.4f}")
-
-    x_hat = jnp.clip(x_hat, 0., 1.)
-    x_hat = jnp.transpose(x_hat, (0, 3, 1, 2))  # NHWC -> NCHW
-    x_hat_t = torch.from_numpy(np.asarray(x_hat))
-
-    grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
-    return grid, x
+def sum_except_batch(x):
+    axes = tuple(range(1, x.ndim))
+    return jnp.sum(x, axis=axes, keepdims=True)
