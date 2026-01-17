@@ -19,7 +19,7 @@ def beta(t: jnp.ndarray) -> jnp.ndarray:
     """
     return _BETA_MIN + t * (_BETA_MAX - _BETA_MIN)
 
-def alpha_bar_fn(t: jnp.ndarray) -> jnp.ndarray:
+def _alpha_bar_fn(t: jnp.ndarray) -> jnp.ndarray:
     """
     log ᾱ(t) = - ∫ β(s) ds from 0 to t
     Integral of linear function (a + bt) is at + 0.5bt^2.
@@ -34,15 +34,15 @@ def log_alpha_bar(t: jnp.ndarray) -> jnp.ndarray:
     b_diff = _BETA_MAX - _BETA_MIN
     return -(_BETA_MIN * t + 0.5 * b_diff * (t ** 2))
 
-def alpha_fn(t: jnp.ndarray) -> jnp.ndarray:
+def _alpha_fn(t: jnp.ndarray) -> jnp.ndarray:
     """α(t) = sqrt(ᾱ(t))"""
-    return jnp.sqrt(alpha_bar_fn(t))
+    return jnp.sqrt(_alpha_bar_fn(t))
 
 def marginal_prob_std(t: jnp.ndarray) -> jnp.ndarray:
     """
     σ(t) = sqrt(1 - ᾱ(t))
     """
-    return jnp.sqrt(jnp.clip(1.0 - alpha_bar_fn(t), _EPS, 1.0))
+    return jnp.sqrt(jnp.clip(1.0 - _alpha_bar_fn(t), _EPS, 1.0))
 
 def diffusion_coeff(t: jnp.ndarray) -> jnp.ndarray:
     """
@@ -87,8 +87,8 @@ def get_kappa(t, divlogs, scores):
 # Vectorized (batch) versions used everywhere
 marginal_prob_std_fn = vmap(marginal_prob_std)
 diffusion_coeff_fn   = vmap(diffusion_coeff)
-alpha_fn             = vmap(alpha_fn)
-alpha_bar_fn         = vmap(alpha_bar_fn)
+alpha_fn             = vmap(_alpha_fn)
+alpha_bar_fn         = vmap(_alpha_bar_fn)
 
 def sum_except_batch(x):
     axes = tuple(range(1, x.ndim))
