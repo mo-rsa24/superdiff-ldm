@@ -203,11 +203,12 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
 #  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
 #  --latent_scale_factor 0.99937266 \
-#  --sample_every 10 \
+#  --sample_every 10 --log_every 10 \
 #  --epochs 100 \
-#  --repeat_len 16 \
+#  --repeat_len 100 \
 #  --wandb_project cxr-ldm-composition-test \
-#  --ldm_base_ch 64 --ldm_ch_mults 1,2,4 --ldm_num_res_blocks 2 --ldm_attn_res 16 \
+#  --ldm_base_ch 64 --ldm_ch_mults 1,2 --ldm_num_res_blocks 1 --ldm_attn_res 8 \
+#  --lr 1e-4 --batch_per_device 4 --wandb \
 #  --overfit_one
 
 

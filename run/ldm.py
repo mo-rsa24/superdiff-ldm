@@ -481,7 +481,8 @@ def main():
             x0 = (x0 + 1.0) / 2.0
             unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
             posterior0 = ae_model.apply({'params': unrep_ae_params}, x0, method=ae_model.encode, train=False)
-            z0 = posterior0.mode() * args.latent_scale_factor  # fixed latent, no encode noise
+            rng_z0 = jax.random.PRNGKey(42)
+            z0 = posterior0.sample(rng_z0)
         global_bs = args.batch_per_device * jax.local_device_count()
         z0_tiled = jnp.tile(z0, (global_bs, 1, 1, 1))
         precomputed_z0 = z0_tiled.reshape((jax.local_device_count(), -1) + z0.shape[1:])
@@ -502,9 +503,6 @@ def main():
                 posterior = ae_model.apply({'params': ae_params}, z_batch, method=ae_model.encode, train=False)
                 z = posterior.sample(rng) * args.latent_scale_factor
             z = z.astype(compute_dtype)
-            # After z is computed
-            jax.debug.print("TRAIN_Z: mean={m}, std={s}, max={mx}", 
-               m=jnp.mean(z), s=jnp.std(z), mx=jnp.max(jnp.abs(z)))
             # Sample t ~ U(1e-5, 1) and ε ~ N(0, I)
             rng_t, rng_noise = jax.random.split(rng_diff, 2)
             t = jax.random.uniform(rng_t, (z.shape[0],), minval=1e-5, maxval=1.0)
