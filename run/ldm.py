@@ -18,7 +18,7 @@ from typing import Any
 from datasets.ChestXRay import ChestXrayDataset
 from datasets.Latents import PreencodedLatentDataset
 from diffusion.sampling import DDPM_ancestral_sampler
-from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn
+from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn, alpha_bar_fn
 from models.ae_kl import AutoencoderKL
 from models.cxr_unet import ScoreNet
 
@@ -660,6 +660,7 @@ def main():
                 ae_params=unrep_ae_params,
                 marginal_prob_std_fn=marginal_prob_std_fn,
                 diffusion_coeff_fn=diffusion_coeff_fn,
+                alpha_bar_fn=alpha_bar_fn,
                 latent_size=latent_size,
                 batch_size=args.sample_batch_size,
                 z_channels=z_channels,

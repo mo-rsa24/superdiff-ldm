@@ -88,6 +88,7 @@ def get_kappa(t, divlogs, scores):
 marginal_prob_std_fn = vmap(marginal_prob_std)
 diffusion_coeff_fn   = vmap(diffusion_coeff)
 alpha_fn             = vmap(alpha_fn)
+alpha_bar_fn         = vmap(alpha_bar_fn)
 
 def sum_except_batch(x):
     axes = tuple(range(1, x.ndim))
