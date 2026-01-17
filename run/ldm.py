@@ -17,10 +17,10 @@ import torch
 from typing import Any
 from datasets.ChestXRay import ChestXrayDataset
 from datasets.Latents import PreencodedLatentDataset
-from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn, DDPM_ancestral_sampler
+from diffusion.sampling import DDPM_ancestral_sampler
+from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn
 from models.ae_kl import AutoencoderKL
 from models.cxr_unet import ScoreNet
-from diffusion.sampling import Euler_Maruyama_sampler  # make sure this has the corrected drift
 
 # W&B is optional
 try:
