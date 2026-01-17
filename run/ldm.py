@@ -17,7 +17,7 @@ import torch
 from typing import Any
 from datasets.ChestXRay import ChestXrayDataset
 from datasets.Latents import PreencodedLatentDataset
-from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn
+from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn, DDPM_ancestral_sampler
 from models.ae_kl import AutoencoderKL
 from models.cxr_unet import ScoreNet
 from diffusion.sampling import Euler_Maruyama_sampler  # make sure this has the corrected drift
@@ -650,7 +650,7 @@ def main():
             open_block("sample", step=global_step, epoch=ep + 1, note="Euler-Maruyama SDE Sampler")
             sample_rng = jax.random.fold_in(rng, ep + 1)
             sample_rng = jax.random.fold_in(sample_rng, global_step)
-            samples_grid, final_latent = Euler_Maruyama_sampler(
+            samples_grid, final_latent = DDPM_ancestral_sampler(
                 rng=sample_rng,
                 ldm_model=ldm_model,
                 ldm_params=sampling_params,
