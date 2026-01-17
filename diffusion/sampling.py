@@ -71,6 +71,32 @@ def DDPM_ancestral_sampler(
         noise = jax.random.normal(jax.random.fold_in(rng, i), x.shape)
 
         x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_theta) + (sigma * noise)
+        if i % 20 == 0 or i == n_steps - 1:
+            print(f"\n[Step {i}/{n_steps}] t_now={t_now:.4f} -> t_next={t_next:.4f}")
+            
+            # 1. Check Coefficients
+            print(f"  alpha_bar_now: {alpha_bar_now[0,0,0,0]:.6f}")
+            print(f"  std_now:       {std_now[0,0,0,0]:.6f}")
+            print(f"  coeff_prev:    {jnp.sqrt(alpha_bar_next)[0,0,0,0]:.6f}")
+            print(f"  coeff_dir:     {dir_xt_coeff[0,0,0,0]:.6f}")
+            print(f"  sigma:         {sigma[0,0,0,0]:.6f}")
+
+            # 2. Check Magnitudes (Mean/Max/NaNs)
+            x_norm = jnp.linalg.norm(x[0].ravel())
+            eps_norm = jnp.linalg.norm(eps_theta[0].ravel())
+            pred_x0_val = pred_x0[0].ravel()
+            
+            print(f"  |eps_theta|:   {eps_norm:.4f} (Mean: {eps_theta.mean():.4f})")
+            print(f"  |x_prev|:      {x_norm:.4f} (Min: {x.min():.2f}, Max: {x.max():.2f})")
+            print(f"  x0_pred stats: Min={pred_x0_val.min():.2f}, Max={pred_x0_val.max():.2f}")
+
+            # 3. Check for explosion
+            if jnp.isnan(x).any():
+                print("!!! NaN DETECTED IN LATENTS !!!")
+                break
+            if x_norm > 1e5:
+                print("!!! EXPLOSION DETECTED !!!")
+                break
 
     # Decode
     z_for_decode = x * z_std

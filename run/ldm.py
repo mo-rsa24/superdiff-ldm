@@ -502,6 +502,9 @@ def main():
                 posterior = ae_model.apply({'params': ae_params}, z_batch, method=ae_model.encode, train=False)
                 z = posterior.sample(rng) * args.latent_scale_factor
             z = z.astype(compute_dtype)
+            # After z is computed
+            jax.debug.print("TRAIN_Z: mean={m}, std={s}, max={mx}", 
+               m=jnp.mean(z), s=jnp.std(z), mx=jnp.max(jnp.abs(z)))
             # Sample t ~ U(1e-5, 1) and ε ~ N(0, I)
             rng_t, rng_noise = jax.random.split(rng_diff, 2)
             t = jax.random.uniform(rng_t, (z.shape[0],), minval=1e-5, maxval=1.0)
@@ -529,6 +532,7 @@ def main():
                 alpha_mean=jnp.mean(alpha),
                 cos_eps=jnp.mean(_cos(eps_hat, noise)),
                 z_mean=jnp.mean(z), z_std=jnp.std(z),
+                z_min=jnp.min(z), z_max=jnp.max(z),
                 xt_mean=jnp.mean(x_t), xt_std=jnp.std(x_t),
                 eps_hat_mean=jnp.mean(eps_hat), eps_hat_std=jnp.std(eps_hat),
             )
