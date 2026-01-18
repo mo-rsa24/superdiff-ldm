@@ -193,9 +193,11 @@ def main():
     loader_kwargs = {
         "batch_size": batch_size,
         "shuffle": shuffle,
-        "num_workers": 0 if args.overfit_one else 0,  # Disable workers for the simple RepeatOne dataset
+        "num_workers": 8 if not args.overfit_one else 0,
+        "persistent_workers": True if not args.overfit_one else False, # Keep workers alive
         "drop_last": drop_last,
-        "pin_memory": True
+        "pin_memory": True,
+        "prefetch_factor": 2 # Prefetch 2 batches per worker
     }
 
     loader = DataLoader(ds, **loader_kwargs)
@@ -272,18 +274,31 @@ def main():
 
     # ----- step fns -----
     def model_apply(ae_params, x, *, rng, train):
-        return ae.apply({'params': ae_params}, x, rng=rng, sample_posterior=True, train=train)
+        return ae.apply(
+            {'params': ae_params},
+            x,
+            rng=rng,
+            sample_posterior=True,
+            train=train,
+            dtype=jnp.bfloat16
+        )
 
     @jax.jit
     def gen_step(gen_state, disc_state, x, step):
         def loss_fn(params):
             rng1, rng2 = jax.random.split(jax.random.PRNGKey(step))
-            xrec, posterior = model_apply(params['ae'], x, rng=rng1, train=True)
+            x_bf16 = x.astype(jnp.bfloat16)
+            xrec, posterior = model_apply(params['ae'], x_bf16, rng=rng1, train=True)
+            xrec_f32 = xrec.astype(jnp.float32)
             g_loss, logs_g, d_loss, logs_d = loss_mod.apply(
                 {'params': disc_state.params['loss']},
-                x_in=x, x_rec=xrec, posterior=posterior, step=jnp.array(step), train=True, mutable=False
+                x_in=x,  # Original float32 input
+                x_rec=xrec_f32,  # Reconstruction cast back to float32
+                posterior=posterior,
+                step=jnp.array(step),
+                train=True,
+                mutable=False
             )
-            # Only return generator portion (nll+kl+g); discriminator updated separately
             return g_loss, (logs_g, xrec, posterior)
         (g_loss, (logs_g, xrec, posterior)), grads = jax.value_and_grad(loss_fn, has_aux=True)(gen_state.params)
         gen_state = gen_state.apply_gradients(grads=grads)
