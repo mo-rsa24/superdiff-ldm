@@ -107,12 +107,7 @@ ARGS=(
   --ldm_base_ch "$LDM_BASE_CH" --ldm_ch_mults "$LDM_CH_MULTS" --ldm_num_res_blocks "$LDM_NUM_RES_BLOCKS" --ldm_attn_res "$LDM_ATTN_RES"
   --lr "$LR" --weight_decay "$WEIGHT_DECAY" --grad_clip "$GRAD_CLIP"
   --epochs "$EPOCHS" --batch_per_device "$BATCH_PER_DEVICE"
-  --seed "$SEED" --sample_every "$SAMPLE_EVERY"
-  --log_every "$LOG_EVERY"
-  --output_root "$OUTPUT_ROOT" --exp_name "$EXP_NAME"
-  --ldm_base_ch "$LDM_BASE_CH" \
-  --ldm_ch_mults "$LDM_CH_MULTS" \
-  --ldm_attn_res "$LDM_ATTN_RES"
+  --seed "$SEED" --sample_every "$SAMPLE_EVERY" --log_every "$LOG_EVERY" --output_root "$OUTPUT_ROOT" --exp_name "$EXP_NAME"
 )
 
 if [[ -n "$LDM_Z_CHANNELS" ]]; then
