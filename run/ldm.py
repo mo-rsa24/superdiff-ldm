@@ -234,30 +234,19 @@ def load_autoencoder(config_path, ckpt_path):
     ae_variables = ae_model.init({'params': rng, 'dropout': rng}, fake_img, rng=rng)
 
     # Optimizer scaffold to load checkpoint
-    def get_ae_tx(ae_args, lr):
-        base_tx = optax.chain(
-            optax.clip_by_global_norm(ae_args.get("grad_clip", 1.0)) if ae_args.get("grad_clip",
-                                                                                    1.0) > 0 else optax.identity(),
-            optax.adamw(
-                lr,
-                weight_decay=ae_args.get("weight_decay", 1e-4),
-                b1=ae_args.get("adam_beta1", 0.9),
-                b2=ae_args.get("adam_beta2", 0.999),
-                eps=ae_args.get("adam_eps", 1e-8),
-            ),
+    def get_ae_tx(lr, grad_clip, weight_decay):
+        return optax.chain(
+            optax.clip_by_global_norm(grad_clip) if grad_clip > 0 else optax.identity(),
+            optax.adamw(lr, weight_decay=weight_decay)
         )
-        m = ae_args.get("max_consecutive_nan_updates", 0)
-        if m and m > 0:
-            return optax.apply_if_finite(base_tx, max_consecutive_errors=m)
-        return base_tx
+    tx = get_ae_tx(lr=ae_args.get('lr', 1e-4), grad_clip=ae_args.get('grad_clip', 1.0),
+                   weight_decay=ae_args.get('weight_decay', 1e-4))
 
-    tx = get_ae_tx(ae_args, lr=ae_args.get("lr", 1e-4))
     gen_params = {'ae': ae_variables['params']}
     from losses.lpips_gan import LPIPSWithDiscriminatorJAX, LPIPSGANConfig
     loss_cfg = LPIPSGANConfig(disc_num_layers=ae_args.get('disc_layers', 3))
     loss_mod = LPIPSWithDiscriminatorJAX(loss_cfg)
-    loss_params_dummy = \
-    loss_mod.init({'params': rng}, x_in=fake_img, x_rec=fake_img, posterior=None, step=jnp.array(0))['params']
+    loss_params_dummy = loss_mod.init({'params': rng}, x_in=fake_img, x_rec=fake_img, posterior=None, step=jnp.array(0))['params']
     disc_params_dummy = {'loss': loss_params_dummy}
 
     dummy_gen_state = TrainState.create(apply_fn=None, params=gen_params, tx=tx)
