@@ -22,15 +22,12 @@ WORKDIR="${WORKDIR:-$PWD}"
 PYFILE="${PYFILE:-run/ldm.py}"
 DATA_ROOT="/home-mscluster/mmolefe/Playground/PhD/datasets/cleaned"
 LATENT_SCALE_FACTOR="${LATENT_SCALE_FACTOR:-1.0}"
-PREENCODED_LATENTS_DIR="${PREENCODED_LATENTS_DIR:-}"
-PREENCODED_MANIFEST="${PREENCODED_MANIFEST:-}"
 # Data & Debug
 TASK="${TASK:-TB}"
 SPLIT="${SPLIT:-train}"
 IMG_SIZE="${IMG_SIZE:-256}"
 DISEASE="${DISEASE:-1}" # Use 1 for diseased, 0 for normal
 OVERFIT_ONE="${OVERFIT_ONE:-0}"
-LDM_Z_CHANNELS="${LDM_Z_CHANNELS:-}"
 OVERFIT_K="${OVERFIT_K:-0}"
 REPEAT_LEN="${REPEAT_LEN:-500}"
 LOG_EVERY="${LOG_EVERY:-100}"
@@ -115,18 +112,6 @@ ARGS=(
   --ldm_attn_res "$LDM_ATTN_RES"
 )
 
-if [[ -n "$LDM_Z_CHANNELS" ]]; then
-  ARGS+=( --ldm_z_channels "$LDM_Z_CHANNELS" )
-fi
-
-if [[ -n "$PREENCODED_LATENTS_DIR" ]]; then
-  ARGS+=( --preencoded_latents_dir "$PREENCODED_LATENTS_DIR" )
-fi
-if [[ -n "$PREENCODED_MANIFEST" ]]; then
-  ARGS+=( --preencoded_manifest "$PREENCODED_MANIFEST" )
-fi
-
-
 # Debugging
 if [[ "$OVERFIT_ONE" == "1" || "$OVERFIT_ONE" == "true" ]]; then ARGS+=( --overfit_one --repeat_len "$REPEAT_LEN" );
 elif (( OVERFIT_K > 0 )); then ARGS+=( --overfit_k "$OVERFIT_K" );
@@ -175,17 +160,11 @@ kv "DATASET"        "$([[ "$DISEASE" == 1 ]] && echo "Diseased" || echo "Normal"
 kv "EPOCHS"         "$EPOCHS"
 kv "BATCHxDEVS"     "$BATCH_PER_DEVICE x $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo 1)"
 kv "AE_CHECKPOINT"  "$AE_CKPT_PATH"
-kv "Z_CHANNELS"     "${LDM_Z_CHANNELS:-Default}"
 kv "OVERFIT"        "(of1=$OVERFIT_ONE, tinyK=$OVERFIT_K)"
 kv "W&B"            "$WANDB (${WANDB_PROJECT}) tags=[$WANDB_TAGS]"
 kv "EMA Enabled" "${USE_EMA}"
 if [[ "$USE_EMA" == "1" ]]; then
   kv "EMA Decay" "${EMA_DECAY}"
 fi
-kv "bfloat16 Enabled" "${USE_BFLOAT16}"
-kv "Remat Enabled" "${USE_REMAT}"
 banner "Run"
-kv "Preencoded Dir" "${PREENCODED_LATENTS_DIR:-<none>}"
-kv "Preencoded Manifest" "${PREENCODED_MANIFEST:-<none>}"
-kv "CPUs Allocated:" "${SLURM_CPUS_PER_TASK}"
 srun python -u "$PYFILE" "${ARGS[@]}"

@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from datasets.ChestXRay import ChestXrayDataset
-from run.ldm import load_autoencoder, load_autoencoder_
+from run.ldm import load_autoencoder
 
 
 # --- Visualization and helper functions ---
@@ -129,7 +129,7 @@ def main():
     output_dir.mkdir(exist_ok=True)
 
     print("--- Loading Autoencoder & Dataset ---")
-    ae_model, ae_params = load_autoencoder_(args.ae_config_path, args.ae_ckpt_path)
+    ae_model, ae_params = load_autoencoder(args.ae_config_path, args.ae_ckpt_path)
     dataset = ChestXrayDataset(root_dir=args.data_root, task=args.task, split='train', img_size=args.img_size,
                                class_filter=args.class_filter)
     num_samples = min(len(dataset), args.num_samples_for_scale)

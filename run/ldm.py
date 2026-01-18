@@ -16,11 +16,10 @@ from torchvision.utils import save_image
 import torch
 from typing import Any
 from datasets.ChestXRay import ChestXrayDataset
-from datasets.Latents import PreencodedLatentDataset
-from diffusion.sampling import DDPM_ancestral_sampler
-from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn, alpha_bar_fn
+from diffusion.vp_equation import alpha_fn, marginal_prob_std_fn, diffusion_coeff_fn
 from models.ae_kl import AutoencoderKL
 from models.cxr_unet import ScoreNet
+from diffusion.sampling import Euler_Maruyama_sampler  # make sure this has the corrected drift
 
 # W&B is optional
 try:
@@ -173,8 +172,7 @@ def parse_args():
     p.add_argument("--ldm_base_ch", type=int, default=128)
     p.add_argument("--ldm_num_res_blocks", type=int, default=2)
     p.add_argument("--ldm_attn_res", type=str, default="16", help="Resolutions for attention blocks, e.g., '16,8'")
-    p.add_argument("--ldm_z_channels", type=int, default=None,
-                   help="Explicitly set LDM channels (e.g., 1) to train on a bottleneck subset of the VAE latent.")
+
     # --- Optimizer ---
     p.add_argument("--lr", type=float, default=1e-5)
     p.add_argument("--weight_decay", type=float, default=1e-4)
@@ -236,64 +234,10 @@ def load_autoencoder(config_path, ckpt_path):
     ae_variables = ae_model.init({'params': rng, 'dropout': rng}, fake_img, rng=rng)
 
     # Optimizer scaffold to load checkpoint
-    def get_ae_tx(lr, grad_clip, weight_decay):
-        return optax.chain(
-            optax.clip_by_global_norm(grad_clip) if grad_clip > 0 else optax.identity(),
-            optax.adamw(lr, weight_decay=weight_decay)
-        )
-
-    tx = get_ae_tx(lr=ae_args.get('lr', 1e-4), grad_clip=ae_args.get('grad_clip', 1.0),
-                   weight_decay=ae_args.get('weight_decay', 1e-4))
-
-    gen_params = {'ae': ae_variables['params']}
-    from losses.lpips_gan import LPIPSWithDiscriminatorJAX, LPIPSGANConfig
-    loss_cfg = LPIPSGANConfig(disc_num_layers=ae_args.get('disc_layers', 3))
-    loss_mod = LPIPSWithDiscriminatorJAX(loss_cfg)
-    loss_params_dummy = loss_mod.init({'params': rng}, x_in=fake_img, x_rec=fake_img, posterior=None, step=jnp.array(0))['params']
-    disc_params_dummy = {'loss': loss_params_dummy}
-
-    dummy_gen_state = TrainState.create(apply_fn=None, params=gen_params, tx=tx)
-    dummy_disc_state = TrainState.create(apply_fn=None, params=disc_params_dummy, tx=tx)
-
-    print(f"Loading AE checkpoint from: {ckpt_path}")
-    with tf.io.gfile.GFile(ckpt_path, "rb") as f:
-        blob = f.read()
-
-    restored_gen_state, _ = from_bytes((dummy_gen_state, dummy_disc_state), blob)
-    print("Autoencoder loaded successfully.")
-    return ae_model, restored_gen_state.params['ae']
-
-def load_autoencoder_(config_path, ckpt_path):
-    print(f"Loading AE from config: {config_path}")
-    with open(config_path, 'r') as f:
-        ae_args = json.load(f)
-
-    # Parse ch_mults relative to base_ch if needed
-    if isinstance(ae_args['ch_mults'], str):
-        ch_mult_factors = tuple(int(c.strip()) for c in ae_args['ch_mults'].split(',') if c.strip())
-        base_ch = ae_args.get('base_ch', 64)
-        ae_ch_mults = tuple(base_ch * m for m in ch_mult_factors)
-    else:
-        ae_ch_mults = tuple(ae_args['ch_mults'])
-
-    attn_res = tuple(int(r) for r in ae_args.get('attn_res', '16').split(',') if r)
-
-    enc_cfg = dict(ch_mults=ae_ch_mults, num_res_blocks=ae_args['num_res_blocks'], z_ch=ae_args['z_channels'],
-                   double_z=True, attn_resolutions=attn_res, in_ch=1)
-    dec_cfg = dict(ch_mults=ae_ch_mults, num_res_blocks=ae_args['num_res_blocks'], out_ch=1,
-                   attn_resolutions=attn_res)
-
-    ae_model = AutoencoderKL(enc_cfg=enc_cfg, dec_cfg=dec_cfg, embed_dim=ae_args['embed_dim'])
-
-    # Init variables
-    rng = jax.random.PRNGKey(0)
-    fake_img = jnp.ones((1, ae_args['img_size'], ae_args['img_size'], 1))
-    ae_variables = ae_model.init({'params': rng, 'dropout': rng}, fake_img, rng=rng)
-
-    # Optimizer scaffold to load checkpoint
     def get_ae_tx(ae_args, lr):
         base_tx = optax.chain(
-            optax.clip_by_global_norm(ae_args.get("grad_clip", 1.0)) if ae_args.get("grad_clip", 1.0) > 0 else optax.identity(),
+            optax.clip_by_global_norm(ae_args.get("grad_clip", 1.0)) if ae_args.get("grad_clip",
+                                                                                    1.0) > 0 else optax.identity(),
             optax.adamw(
                 lr,
                 weight_decay=ae_args.get("weight_decay", 1e-4),
@@ -307,13 +251,13 @@ def load_autoencoder_(config_path, ckpt_path):
             return optax.apply_if_finite(base_tx, max_consecutive_errors=m)
         return base_tx
 
-
     tx = get_ae_tx(ae_args, lr=ae_args.get("lr", 1e-4))
     gen_params = {'ae': ae_variables['params']}
     from losses.lpips_gan import LPIPSWithDiscriminatorJAX, LPIPSGANConfig
     loss_cfg = LPIPSGANConfig(disc_num_layers=ae_args.get('disc_layers', 3))
     loss_mod = LPIPSWithDiscriminatorJAX(loss_cfg)
-    loss_params_dummy = loss_mod.init({'params': rng}, x_in=fake_img, x_rec=fake_img, posterior=None, step=jnp.array(0))['params']
+    loss_params_dummy = \
+    loss_mod.init({'params': rng}, x_in=fake_img, x_rec=fake_img, posterior=None, step=jnp.array(0))['params']
     disc_params_dummy = {'loss': loss_params_dummy}
 
     dummy_gen_state = TrainState.create(apply_fn=None, params=gen_params, tx=tx)
@@ -353,20 +297,6 @@ def main():
     # --- Setup Dataset ---
     base_ds = ChestXrayDataset(root_dir=args.data_root, task=args.task, split=args.split, img_size=args.img_size,
                                class_filter=args.class_filter)
-    if args.preencoded_latents_dir:
-        base_ds = PreencodedLatentDataset(
-            args.preencoded_latents_dir,
-            manifest_name=args.preencoded_manifest,
-        )
-    else:
-        base_ds = ChestXrayDataset(
-            root_dir=args.data_root,
-            task=args.task,
-            split=args.split,
-            img_size=args.img_size,
-            class_filter=args.class_filter,
-        )
-    print(f"[{datetime.now()}] ✅ Dataset Initialized. Size: {len(base_ds)}", flush=True)  # ADD THIS
     batch_size = args.batch_per_device * jax.local_device_count()
     if args.overfit_one:
         ds = Subset(base_ds, [0])
@@ -384,18 +314,13 @@ def main():
     loader = DataLoader(ds, **loader_kwargs)
 
     # --- Load Pretrained Autoencoder ---
-    ae_model, ae_params = load_autoencoder_(args.ae_config_path, args.ae_ckpt_path)
+    ae_model, ae_params = load_autoencoder(args.ae_config_path, args.ae_ckpt_path)
     ae_params = jax.device_put_replicated(ae_params, jax.local_devices())
 
     # --- Setup LDM UNet ---
     with open(args.ae_config_path, 'r') as f:
         ae_args = json.load(f)
-
-    vae_z_channels = ae_args['z_channels']
-    ldm_z_channels = args.ldm_z_channels if args.ldm_z_channels is not None else vae_z_channels
-
-    if ldm_z_channels < vae_z_channels:
-        print(f"⚠️  Training with CHANNEL BOTTLENECK: VAE({vae_z_channels}) -> LDM({ldm_z_channels})")
+    z_channels = ae_args['z_channels']
 
     # Diagnostics to compute latent spatial size
     if isinstance(ae_args['ch_mults'], str):
@@ -406,49 +331,38 @@ def main():
     latent_size = args.img_size // downsample_factor
 
     print("--- Shape & Channel Verification ---")
-    print(f"AE z_channels: {vae_z_channels}")
+    print(f"AE z_channels: {z_channels}")
     print(f"AE ch_mults: {ae_args['ch_mults']}")
     print(f"Downsample factor: {downsample_factor}")
     print(f"Expected latent spatial size: {latent_size}x{latent_size}")
 
     ldm_chans = tuple(args.ldm_base_ch * int(m) for m in args.ldm_ch_mults.split(','))
     attn_res = tuple(int(r) for r in args.ldm_attn_res.split(','))
-    compute_dtype = jnp.bfloat16 if args.use_bfloat16 else jnp.float32
-
-    ldm_model = ScoreNet(
-        z_channels=ldm_z_channels,
-        channels=ldm_chans,
-        num_res_blocks=args.ldm_num_res_blocks,
-        attn_resolutions=attn_res,
-        use_remat=args.use_remat,
-        dtype=compute_dtype,
-        param_dtype=jnp.float32,
-    )
+    ldm_model = ScoreNet(z_channels=z_channels, channels=ldm_chans,
+                         num_res_blocks=args.ldm_num_res_blocks, attn_resolutions=attn_res)
     rng, init_rng = jax.random.split(rng)
-    fake_latent = jnp.ones((1, latent_size, latent_size, ldm_z_channels))
+    fake_latent = jnp.ones((1, latent_size, latent_size, z_channels))
     fake_time = jnp.ones((1,))
     ldm_params = ldm_model.init(init_rng, fake_latent, fake_time)['params']
 
     tx = optax.chain(optax.clip_by_global_norm(args.grad_clip), optax.adamw(args.lr, weight_decay=args.weight_decay))
     ema_params = ldm_params if args.use_ema else None
     ldm_state = TrainStateWithEMA.create(
-        apply_fn=ldm_model.apply, params=ldm_params, ema_params=ema_params, tx=tx
+        apply_fn=ldm_model.apply,
+        params=ldm_params,
+        ema_params=ema_params,  # Add this line
+        tx=tx
     )
-
     if args.resume_dir and tf.io.gfile.exists(ckpt_latest):
-        try:
-            with tf.io.gfile.GFile(ckpt_latest, "rb") as f:
-                blob = f.read()
-            ldm_state = from_bytes(ldm_state, blob)
-            print(f"[info] Resumed LDM from {ckpt_latest}")
-        except Exception as e:
-            print(f"[warning] Failed to resume: {e}. Starting from scratch.")
-
+        print(f"[info] Resuming LDM from {ckpt_latest}")
+        with tf.io.gfile.GFile(ckpt_latest, "rb") as f:
+            blob = f.read()
+        ldm_state = from_bytes(ldm_state, blob)
     ldm_state = jax.device_put_replicated(ldm_state, jax.local_devices())
 
     use_wandb = bool(args.wandb and _WANDB)
     if use_wandb:
-        wandb_config = {**vars(args), "vae_z_channels": vae_z_channels, "ldm_z_channels": ldm_z_channels}
+        wandb_config = {**vars(args), "z_channels": z_channels}
         wandb.init(
             project=args.wandb_project,
             entity=args.wandb_entity,
@@ -458,48 +372,46 @@ def main():
             tags=[t.strip() for t in args.wandb_tags.split(',')] if args.wandb_tags else None
         )
 
+    # ---------------------------------------------------------
+    # Precompute a fixed latent z0 for overfit-one (deterministic)
+    # ---------------------------------------------------------
     precomputed_z0 = None
     if args.overfit_one:
-        if args.preencoded_latents_dir:
-            z0 = jnp.asarray(base_ds[0][0].numpy())[None, ...]
-        else:
-            one_loader = DataLoader(Subset(base_ds, [0]), batch_size=1, shuffle=False, num_workers=0, drop_last=False)
-            (x0, _), = list(one_loader)
-            x0 = jnp.asarray(x0.numpy()).transpose(0, 2, 3, 1)
-            x0 = (x0 + 1.0) / 2.0
-            unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
-            posterior0 = ae_model.apply({'params': unrep_ae_params}, x0, method=ae_model.encode, train=False)
-            rng_z0 = jax.random.PRNGKey(42)
-            z0 = posterior0.sample(rng_z0)
-
+        one_loader = DataLoader(Subset(base_ds, [0]), batch_size=1, shuffle=False, num_workers=0, drop_last=False)
+        (x0, _), = list(one_loader)
+        x0 = jnp.asarray(x0.numpy()).transpose(0, 2, 3, 1)  # NCHW -> NHWC
+        # Your dataset is in [-1,1]; AE trained on [0,1] → keep this scaling
+        x0 = (x0 + 1.0) / 2.0
+        unrep_ae_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], ae_params))
+        posterior0 = ae_model.apply({'params': unrep_ae_params}, x0, method=ae_model.encode, train=False)
+        z0 = posterior0.mode() * args.latent_scale_factor  # fixed latent, no encode noise
+        # Repeat to global batch then shard
         global_bs = args.batch_per_device * jax.local_device_count()
         z0_tiled = jnp.tile(z0, (global_bs, 1, 1, 1))
         precomputed_z0 = z0_tiled.reshape((jax.local_device_count(), -1) + z0.shape[1:])
+        print("Precomputed z0 for overfit-one:", precomputed_z0.shape)
 
     # --- Define Training Step ---
-    def train_step(rng, ldm_state, ae_params, z_batch, precomputed_z0):
+    def train_step(rng, ldm_state, ae_params, x_batch, precomputed_z0):
         """One pmap-ed training step."""
-        # z_batch: precomputed latents or latents encoded from images.
+        # x_batch: images in [0,1]; you already encode -> z elsewhere if needed.
         rng, rng_diff = jax.random.split(rng, 2)
 
         def loss_fn(ldm_params):
             if precomputed_z0 is not None:
-                z = precomputed_z0 * args.latent_scale_factor
-            elif args.preencoded_latents_dir:
-                z = z_batch
+                z = precomputed_z0
             else:
-                posterior = ae_model.apply({'params': ae_params}, z_batch, method=ae_model.encode, train=False)
+                posterior = ae_model.apply({'params': ae_params}, x_batch, method=ae_model.encode, train=False)
                 z = posterior.sample(rng) * args.latent_scale_factor
-            if z.shape[-1] > ldm_z_channels:
-                z = z[..., :ldm_z_channels]
-            z = z.astype(compute_dtype)
+
+            # Sample t ~ U(1e-5, 1) and ε ~ N(0, I)
             rng_t, rng_noise = jax.random.split(rng_diff, 2)
             t = jax.random.uniform(rng_t, (z.shape[0],), minval=1e-5, maxval=1.0)
-            noise = jax.random.normal(rng_noise, z.shape).astype(compute_dtype)
+            noise = jax.random.normal(rng_noise, z.shape)
 
             # VP forward perturbation
-            sigma = marginal_prob_std_fn(t).astype(compute_dtype)  # σ(t)  [B]
-            alpha = alpha_fn(t).astype(compute_dtype)  # α(t)  [B]
+            sigma = marginal_prob_std_fn(t)  # σ(t)  [B]
+            alpha = alpha_fn(t)  # α(t)  [B]
             sigma_b = sigma[:, None, None, None]
             alpha_b = alpha[:, None, None, None]
             x_t = alpha_b * z + sigma_b * noise  # x_t = α z + σ ε
@@ -545,15 +457,15 @@ def main():
         progress_bar = tqdm(loader, desc=f"Epoch {ep + 1}/{args.epochs}", leave=False)
         for batch in progress_bar:
             x, _ = batch
-            if args.preencoded_latents_dir:
-                z = jnp.asarray(x.numpy())
-            else:
-                z = jnp.asarray(x.numpy()).transpose(0, 2, 3, 1)
-                z = (z + 1.0) / 2.0
-            z_sharded = z.reshape((jax.local_device_count(), -1) + z.shape[1:])
+            x = jnp.asarray(x.numpy()).transpose(0, 2, 3, 1)
+            # Your dataset tensor is in [-1,1]; AE expects [0,1]
+            x = (x + 1.0) / 2.0
+            x_sharded = x.reshape((jax.local_device_count(), -1) + x.shape[1:])
+
             rng, step_rng = jax.random.split(rng)
             rng_sharded = jax.random.split(step_rng, jax.local_device_count())
-            ldm_state, loss, aux = pmapped_train_step(rng_sharded, ldm_state, ae_params, z_sharded, precomputed_z0)
+            # ldm_state, loss = pmapped_train_step(rng_sharded, ldm_state, ae_params, x_sharded, precomputed_z0)
+            ldm_state, loss, aux = pmapped_train_step(rng_sharded, ldm_state, ae_params, x_sharded, precomputed_z0)
 
             if global_step % args.log_every == 0:
                 loss_val = float(np.asarray(loss[0]))
@@ -589,7 +501,31 @@ def main():
             else:
                 sampling_params = unrep_ldm_params
 
+            # --- sanity A: decode the fixed training latent (z0) directly ---
+            if precomputed_z0 is not None:
+                # take device-0 slice and undo sharding
+                z0_host = jax.device_get(precomputed_z0[0, 0:1, ...])  # shape (1,H,W,C) on host
+                # IMPORTANT: the AE expects latents divided by the scale factor
+                z0_for_decode = z0_host / args.latent_scale_factor
+                x0_hat = ae_model.apply({'params': unrep_ae_params}, z0_for_decode, method=ae_model.decode, train=False)
+                x0_hat = jnp.clip(x0_hat, 0., 1.)
+                x0_hat = jnp.transpose(x0_hat, (0, 3, 1, 2))  # NHWC -> NCHW
+                x0_hat_t = torch.from_numpy(np.asarray(x0_hat))
+                save_image(x0_hat_t, os.path.join(samples_dir, f"sanityA_recon_z0_ep{ep + 1:04d}.png"))
 
+            # --- sanity B: decode a noisy latent at mid-time (t=0.5) ---
+            if precomputed_z0 is not None:
+                mid_t = jnp.ones((1,)) * 0.5
+                std_mid = marginal_prob_std_fn(mid_t)[0]
+                rng_tmp = jax.random.PRNGKey(123)
+                noisy = z0_host + std_mid * jax.random.normal(rng_tmp, z0_host.shape)
+                noisy_for_decode = noisy / args.latent_scale_factor
+                x_mid = ae_model.apply({'params': unrep_ae_params}, noisy_for_decode, method=ae_model.decode,
+                                       train=False)
+                x_mid = jnp.clip(x_mid, 0., 1.)
+                x_mid = jnp.transpose(x_mid, (0, 3, 1, 2))
+                x_mid_t = torch.from_numpy(np.asarray(x_mid))
+                save_image(x_mid_t, os.path.join(samples_dir, f"sanityB_decode_noisy_latent_ep{ep + 1:04d}.png"))
             if args.use_ema:
                 open_block("ema", step=global_step, epoch=ep + 1, note="Validate EMA Impact")
                 flat_params = jnp.concatenate([jnp.ravel(x) for x in jax.tree_util.tree_leaves(unrep_ldm_params)])
@@ -597,6 +533,7 @@ def main():
                 cosine_sim = jnp.dot(flat_params, flat_ema_params) / (
                             jnp.linalg.norm(flat_params) * jnp.linalg.norm(flat_ema_params))
                 print(f"[info] Cosine similarity between base and EMA weights: {cosine_sim:.6f}")
+                pretty_table("ema", metrics)
                 close_block("ema", step=global_step)
 
                 if use_wandb:
@@ -604,7 +541,8 @@ def main():
 
             open_block("sample", step=global_step, epoch=ep + 1, note="Euler-Maruyama SDE Sampler")
             sample_rng = jax.random.fold_in(rng, ep + 1)
-            samples_grid, final_latent = DDPM_ancestral_sampler(
+            sample_rng = jax.random.fold_in(sample_rng, global_step)
+            samples_grid, final_latent = Euler_Maruyama_sampler(
                 rng=sample_rng,
                 ldm_model=ldm_model,
                 ldm_params=sampling_params,
@@ -612,12 +550,10 @@ def main():
                 ae_params=unrep_ae_params,
                 marginal_prob_std_fn=marginal_prob_std_fn,
                 diffusion_coeff_fn=diffusion_coeff_fn,
-                alpha_bar_fn=alpha_bar_fn,
                 latent_size=latent_size,
                 batch_size=args.sample_batch_size,
-                z_channels=ldm_z_channels,
-                vae_z_channels=vae_z_channels,
-                z_std=1.0 / args.latent_scale_factor
+                z_channels=z_channels,
+                z_std=args.latent_scale_factor
             )
             final_latent_np = np.asarray(final_latent)
             log_sample_diversity(final_latent_np, step=global_step, epoch=ep + 1)

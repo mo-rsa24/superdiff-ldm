@@ -5,7 +5,6 @@
 #SBATCH --time=72:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --ntasks=1 # Total number of tasks
 
 set -euo pipefail
 
@@ -47,15 +46,13 @@ DROPOUT="${DROPOUT:-0.0}"
 # Loss
 KL_WEIGHT="${KL_WEIGHT:-1.0e-6}"
 PIXEL_WEIGHT="${PIXEL_WEIGHT:-1.0}"
-PERCEPTUAL_WEIGHT="${PERCEPTUAL_WEIGHT:-0.05}"
-DISC_START="${DISC_START:-5000}"
+PERCEPTUAL_WEIGHT="${PERCEPTUAL_WEIGHT:-0.0}"
+DISC_START="${DISC_START:-50001}"
 DISC_FACTOR="${DISC_FACTOR:-1.0}"
 DISC_WEIGHT="${DISC_WEIGHT:-0.1}"
-DISC_LAYERS="${DISC_LAYERS:-3}"
-DISC_LOSS="${DISC_LOSS:-hinge}"
 
 # Optimizer
-LR="${LR:-2e-4}"
+LR="${LR:-5e-5}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-1e-4}"
 GRAD_CLIP="${GRAD_CLIP:-1.0}"
 EPOCHS="${EPOCHS:-100}"
@@ -125,8 +122,6 @@ ARGS=(
   --disc_start "$DISC_START"
   --disc_factor "$DISC_FACTOR"
   --disc_weight "$DISC_WEIGHT"
-  --disc_layers "$DISC_LAYERS"
-  --disc_loss "$DISC_LOSS"
   --lr "$LR"
   --weight_decay "$WEIGHT_DECAY"
   --grad_clip "$GRAD_CLIP"

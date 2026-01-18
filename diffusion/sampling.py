@@ -18,60 +18,59 @@ def _broadcast_time(t_scalar, x):
     return jnp.ones((N,) + extra_ones, dtype=x.dtype) * t_scalar
 
 
-def DDPM_ancestral_sampler(
-        rng, ldm_model, ldm_params, ae_model, ae_params,
-        marginal_prob_std_fn, diffusion_coeff_fn, alpha_bar_fn,
-        latent_size, batch_size, z_channels, vae_z_channels=None, z_std=1.0,
-        n_steps=500, eps=1e-5
+def Euler_Maruyama_sampler(
+    rng, ldm_model, ldm_params, ae_model, ae_params,
+    marginal_prob_std_fn, diffusion_coeff_fn,
+    latent_size, batch_size, z_channels, z_std=1.0,
+    n_steps=700, eps=1e-3  # Use eps=1e-3 for stability with this SDE
 ):
+    """
+    Corrected Euler-Maruyama sampler using the correct reverse-time SDE.
+    """
+    print("Running CORRECTED Euler-Maruyama sampler with stable equations...")
     rngs = jax.random.split(rng, batch_size)
     single_sample_shape = (latent_size, latent_size, z_channels)
-
     init_x = jax.vmap(lambda key: jax.random.normal(key, single_sample_shape))(rngs)
-    init_x = init_x * marginal_prob_std_fn(jnp.array([1.0]))[0]
+    init_x = init_x * marginal_prob_std_fn(jnp.ones(batch_size))[:, None, None, None]
 
-    timesteps = jnp.linspace(1.0, eps, n_steps + 1)
+    time_steps = jnp.linspace(1., eps, n_steps)
+    step_size = time_steps[0] - time_steps[1]
     x = init_x
 
-    for i in tqdm(range(n_steps), desc="DDPM Sampling"):
-        t_now = timesteps[i]
-        t_next = timesteps[i + 1]
+    for i, t in enumerate(tqdm(time_steps, desc="Sampling")):
+        step_key = jax.random.fold_in(rng, i)
+        vec_t = jnp.ones(batch_size) * t
+        g = diffusion_coeff_fn(vec_t)
+        std = marginal_prob_std_fn(vec_t)
+        assert jnp.all(jnp.isfinite(g))
+        predicted_noise = ldm_model.apply({'params': ldm_params}, x, vec_t)
+        beta_vec = (g ** 2)[:, None, None, None]
+        score = -predicted_noise / (std[:, None, None, None] + 1e-8)
+        drift = -0.5 * beta_vec * x - beta_vec * score
 
-        vec_t = jnp.ones(batch_size) * t_now
-        vec_t_next = jnp.ones(batch_size) * t_next
+        # drift = -0.5 * beta(vec_t)[:, None, None, None] * x - (g**2)[:, None, None, None] * score
 
-        eps_theta = ldm_model.apply({'params': ldm_params}, x, vec_t)
+        diffusion = g[:, None, None, None] * jax.random.normal(step_key, x.shape)
+        x_mean = x - drift * step_size
+        x = x_mean + diffusion * jnp.sqrt(step_size)
+    final_z_for_decode = x # The sampler already produces a latent at the correct scale
+    z_for_decode = final_z_for_decode * z_std
+    x_hat = ae_model.apply({'params': ae_params}, z_for_decode, method=ae_model.decode, train=False)
+    x_hat = jnp.clip(x_hat, 0., 1.)
+    x_hat = jnp.transpose(x_hat, (0, 3, 1, 2)) # NHWC -> NCHW
+    x_hat_t = torch.from_numpy(np.asarray(x_hat))
 
-        alpha_bar_now = alpha_bar_fn(vec_t)[:, None, None, None]
-        alpha_bar_next = alpha_bar_fn(vec_t_next)[:, None, None, None]
-        std_now = marginal_prob_std_fn(vec_t)[:, None, None, None]
-        sqrt_alpha_bar_now = jnp.sqrt(alpha_bar_now + 1e-5)
+    grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
+    return grid, x
 
-        pred_x0 = (x - std_now * eps_theta) / sqrt_alpha_bar_now
-        ratio = alpha_bar_now / (alpha_bar_next + 1e-5)
-        sigma_sq = (1.0 - alpha_bar_next) / (1.0 - alpha_bar_now + 1e-8) * (1.0 - ratio)
-        sigma = jnp.sqrt(jnp.clip(sigma_sq, 0.0, None))
-        dir_xt_coeff = jnp.sqrt(jnp.clip(1.0 - alpha_bar_next - sigma_sq, 0.0, None))
+signal_to_noise_ratio = 0.16  # @param {'type':'number'}
 
-        noise = jax.random.normal(jax.random.fold_in(rng, i), x.shape)
-        x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_theta) + (sigma * noise)
+## The number of sampling steps.
+num_steps = 500  # @param {'type':'integer'}
 
-    final_latent = x
 
-    grid = None
-    if ae_model is not None:
-        target_channels = vae_z_channels if vae_z_channels is not None else z_channels
-
-        if x.shape[-1] < target_channels:
-            B, H, W, C = x.shape
-            padded_x = jnp.zeros((B, H, W, target_channels))
-            x = padded_x.at[..., :C].set(x)
-
-        z_for_decode = x * z_std
-        x_hat = ae_model.apply({'params': ae_params}, z_for_decode, method=ae_model.decode, train=False)
-        x_hat = jnp.clip(x_hat, 0., 1.)
-        x_hat = jnp.transpose(x_hat, (0, 3, 1, 2))
-        x_hat_t = torch.from_numpy(np.asarray(x_hat))
-        grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
-
-    return grid, final_latent
+def select_sampler(name: str):
+    name = name.lower()
+    if name in ("em", "euler", "euler-maruyama"):
+        return Euler_Maruyama_sampler
+    raise ValueError(f"Unknown sampler: {name}")
