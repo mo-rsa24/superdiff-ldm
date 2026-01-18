@@ -219,6 +219,21 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #  --overfit_one
 
 
+# z_channels = 4
+#./launchers/single_runs/ldm/train_ldm_normal.sh full_train \
+#  --ae_ckpt_path runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/ckpts/last.flax \
+#  --ae_config_path runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/run_meta.json \
+#  --latent_scale_factor 0.997568 \
+#  --sample_every 300 --log_every 300 --img_size 128 --use_ema \
+#  --epochs 3000 \
+#  --repeat_len 100 \
+#  --wandb_project cxr-ldm-composition-test \
+#  --ldm_base_ch 64 --ldm_ch_mults 1,2 --ldm_num_res_blocks 1 --ldm_attn_res 8 \
+#  --lr 1e-4 --batch_per_device 32 --sample_batch_size 32 --wandb \
+#  --overfit_one
+#
+
+
 # z_channels = 128
 #./launchers/single_runs/ldm/train_ldm_normal.sh full_train \
 #  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/ckpts/last.flax \
