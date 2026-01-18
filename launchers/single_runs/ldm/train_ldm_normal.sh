@@ -14,21 +14,25 @@ header() { printf "\n${BLUE}${BOLD}# %s${RESET}\n" "$1"; rule; }
 # --- Defaults (can be overridden by command-line arguments) ---
 export TASK="TB"
 export ENV_NAME="jaxstack"
-export IMG_SIZE="128"
+export IMG_SIZE="256"
 export TRAINING_MODE="${1:-full_train}" # Reads mode (e.g., full_train) from the first argument
 export DISEASE="0" # 1 for TB, 0 for Normal
+
+export XLA_PYTHON_CLIENT_PREALLOCATE=true
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
+export PYTHONUNBUFFERED=1
 
 # --- Hyperparameter Defaults ---
 export LR="1e-4"
 export WEIGHT_DECAY="1e-4"
 export LDM_BASE_CH="128"
 export GRAD_CLIP="1.0"
-export BATCH_PER_DEVICE="16"
+export BATCH_PER_DEVICE="32"
 export EPOCHS="1500"
-export LOG_EVERY="10"
-export SAMPLE_EVERY="50"
+export LOG_EVERY="100"
+export SAMPLE_EVERY="300"
 #/home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/
-export SAMPLE_BATCH_SIZE="16"
+export SAMPLE_BATCH_SIZE="32"
 export LDM_CH_MULTS="1,2,4,4"
 export LDM_NUM_RES_BLOCKS="3"
 export LDM_ATTN_RES="16"
@@ -37,7 +41,7 @@ export WANDB_PROJECT="cxr-ldm-composition"
 export WANDB_ENTITY=""
 export WANDB_RUN_GROUP="ldm-normal"
 export WANDB_TAGS="ldm,normal,256"
-export OVERFIT_ONE="1"
+export OVERFIT_ONE="0"
 export OVERFIT_K="0"
 export REPEAT_LEN="100"
 export LDM_Z_CHANNELS=""
@@ -46,8 +50,7 @@ export LDM_Z_CHANNELS=""
 export AE_RUN_DIR="${AE_RUN_DIR:-}"
 export AE_CKPT_PATH="${AE_CKPT_PATH:-}"
 export AE_CONFIG_PATH="${AE_CONFIG_PATH:-}"
-export LATENT_SCALE_FACTOR="0.99999905"
-#export PREENCODED_LATENTS_DIR="/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/tb_train"
+export LATENT_SCALE_FACTOR="0.99937266"
 export PREENCODED_LATENTS_DIR="${PREENCODED_LATENTS_DIR:-}"
 export PREENCODED_MANIFEST="${PREENCODED_MANIFEST:-}"
 
@@ -59,8 +62,8 @@ export STAGING_ROOT="${STAGING_ROOT:-${HOME}/cluster_staging}"
 # --- EMA Configuration ---
 export USE_EMA="1" # Use "1" for true, "0" for false
 export EMA_DECAY="0.999"
-export USE_BFLOAT16="0" # Use "1" for true, "0" for false
-export USE_REMAT="0" # Use "1" for true, "0" for false
+export USE_BFLOAT16="1" # Use "1" for true, "0" for false
+export USE_REMAT="1" # Use "1" for true, "0" for false
 # --- Robust Argument Parsing Loop ---
 OTHER_ARGS=()
 shift || true # Shift away the first argument (training_mode) if present

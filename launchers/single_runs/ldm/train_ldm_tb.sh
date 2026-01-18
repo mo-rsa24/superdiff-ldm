@@ -18,30 +18,41 @@ export IMG_SIZE="256"
 export TRAINING_MODE="${1:-full_train}" # Reads mode (e.g., full_train) from the first argument
 export DISEASE="1" # 1 for TB, 0 for Normal
 
+export XLA_PYTHON_CLIENT_PREALLOCATE=true
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
+export PYTHONUNBUFFERED=1
+
 # --- Hyperparameter Defaults ---
 export LR="1e-4"
 export WEIGHT_DECAY="1e-4"
-export LDM_BASE_CH="192"
+export LDM_BASE_CH="128"
 export GRAD_CLIP="1.0"
-export BATCH_PER_DEVICE="16"
+export BATCH_PER_DEVICE="32"
 export EPOCHS="1500"
 export LOG_EVERY="100"
-export SAMPLE_EVERY="250"
-export SAMPLE_BATCH_SIZE="2"
+export SAMPLE_EVERY="300"
+#/home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/
+export SAMPLE_BATCH_SIZE="32"
 export LDM_CH_MULTS="1,2,4,4"
 export LDM_NUM_RES_BLOCKS="3"
-export LDM_ATTN_RES="32,16,8"
+export LDM_ATTN_RES="16"
 export WANDB="1"
 export WANDB_PROJECT="cxr-ldm-composition"
 export WANDB_ENTITY=""
 export WANDB_RUN_GROUP="ldm-tb"
 export WANDB_TAGS="ldm,tb,256"
+export OVERFIT_ONE="0"
+export OVERFIT_K="0"
+export REPEAT_LEN="100"
+export LDM_Z_CHANNELS=""
 
 # --- Shared VAE and Scale Factor (❗ IMPORTANT: Update these values) ---
 export AE_RUN_DIR="${AE_RUN_DIR:-}"
 export AE_CKPT_PATH="${AE_CKPT_PATH:-}"
 export AE_CONFIG_PATH="${AE_CONFIG_PATH:-}"
-export LATENT_SCALE_FACTOR="0.99999905"
+export LATENT_SCALE_FACTOR="0.99937266"
+export PREENCODED_LATENTS_DIR="${PREENCODED_LATENTS_DIR:-}"
+export PREENCODED_MANIFEST="${PREENCODED_MANIFEST:-}"
 
 # --- SLURM Defaults ---
 export SLURM_PARTITION="bigbatch"
@@ -51,6 +62,8 @@ export STAGING_ROOT="${STAGING_ROOT:-${HOME}/cluster_staging}"
 # --- EMA Configuration ---
 export USE_EMA="1" # Use "1" for true, "0" for false
 export EMA_DECAY="0.999"
+export USE_BFLOAT16="1" # Use "1" for true, "0" for false
+export USE_REMAT="1" # Use "1" for true, "0" for false
 # --- Robust Argument Parsing Loop ---
 OTHER_ARGS=()
 shift || true # Shift away the first argument (training_mode) if present
@@ -64,7 +77,7 @@ while [[ $# -gt 0 ]]; do
     --ldm_base_ch)        export LDM_BASE_CH="$2"; shift 2 ;;
     --grad_clip)          export GRAD_CLIP="$2"; shift 2 ;;
     --epochs)             export EPOCHS="$2"; shift 2 ;;
-    --batch_per_device)   export BATCH_PER_DEVICE="$2"; shift 2 ;;
+    --batch_per_device)   export BATCH_PER_DEVICE="$2"; shift 2 ;; #
     --ldm_ch_mults)       export LDM_CH_MULTS="$2"; shift 2 ;;
     --ldm_num_res_blocks) export LDM_NUM_RES_BLOCKS="$2"; shift 2 ;;
     --ldm_attn_res)       export LDM_ATTN_RES="$2"; shift 2 ;;
@@ -75,6 +88,8 @@ while [[ $# -gt 0 ]]; do
     --ae_config_path)     export AE_CONFIG_PATH="$2"; shift 2 ;;
     --ae_run_dir)         export AE_RUN_DIR="$2"; shift 2 ;;
     --latent_scale_factor) export LATENT_SCALE_FACTOR="$2"; shift 2 ;;
+    --preencoded_latents_dir) export PREENCODED_LATENTS_DIR="$2"; shift 2 ;;
+    --preencoded_manifest) export PREENCODED_MANIFEST="$2"; shift 2 ;;
     --wandb_project)      export WANDB_PROJECT="$2"; shift 2 ;;
     --wandb_name)         export WANDB_NAME="$2"; shift 2 ;;
     --wandb_tags)         export WANDB_TAGS="$2"; shift 2 ;;
@@ -82,6 +97,11 @@ while [[ $# -gt 0 ]]; do
     --wandb_entity)       export WANDB_ENTITY="$2"; shift 2 ;;
     --time)               export TIME_LIMIT="$2"; shift 2 ;;
     --workdir)            export WORKDIR="$2"; shift 2 ;;
+    --use_bfloat16)       export USE_BFLOAT16="$2"; shift 2 ;;
+    --use_remat)          export USE_REMAT="$2"; shift 2 ;;
+    --overfit_one)        export OVERFIT_ONE="1"; shift ;;
+    --overfit_k)          export OVERFIT_K="$2"; shift 2 ;;
+    --repeat_len)         export REPEAT_LEN="$2"; shift 2 ;;
     *)                    OTHER_ARGS+=("$1"); shift ;; # Save unrecognized arg
   esac
 done
@@ -123,6 +143,7 @@ rsync -a \
   --exclude 'composed_output_single' \
   --exclude 'composed_output' \
   --exclude 'runs_ldm' \
+  --exclude 'preencoded_latents' \
   --exclude 'runs' \
   --exclude 'and_out' \
   --exclude 'superdiff_and_output' \
@@ -169,6 +190,11 @@ kv "Log Every (Steps)" "${LOG_EVERY}"
 kv "Sample Every (Epochs)" "${SAMPLE_EVERY}"
 kv "Sample Batch Size" "${SAMPLE_BATCH_SIZE}"
 kv "Latent Scale Factor" "${LATENT_SCALE_FACTOR}"
+if [[ -n "$LDM_Z_CHANNELS" ]]; then
+  kv "LDM Latent Channels" "${LDM_Z_CHANNELS} (Bottleneck)"
+else
+  kv "LDM Latent Channels" "Default (Match VAE)"
+fi
 rule
 
 JOB_ID=$(sbatch --partition="$SLURM_PARTITION" \
@@ -176,15 +202,67 @@ JOB_ID=$(sbatch --partition="$SLURM_PARTITION" \
   --time="$TIME_LIMIT" \
   --output="${REPO_ROOT}/logs/%x-%j.out" \
   --error="${REPO_ROOT}/logs/%x-%j.err" \
-  --export=ALL,ENV_NAME="$ENV_NAME",WORKDIR="$WORKDIR",TASK="$TASK",IMG_SIZE="$IMG_SIZE",DISEASE="$DISEASE",AE_CKPT_PATH="$AE_CKPT_PATH",AE_CONFIG_PATH="$AE_CONFIG_PATH",LATENT_SCALE_FACTOR="$LATENT_SCALE_FACTOR",LR="$LR",WEIGHT_DECAY="$WEIGHT_DECAY",LDM_BASE_CH="$LDM_BASE_CH",GRAD_CLIP="$GRAD_CLIP",BATCH_PER_DEVICE="$BATCH_PER_DEVICE",EPOCHS="$EPOCHS",LOG_EVERY="$LOG_EVERY",SAMPLE_EVERY="$SAMPLE_EVERY",SAMPLE_BATCH_SIZE="$SAMPLE_BATCH_SIZE",LDM_CH_MULTS="$LDM_CH_MULTS",LDM_NUM_RES_BLOCKS="$LDM_NUM_RES_BLOCKS",LDM_ATTN_RES="$LDM_ATTN_RES",WANDB="$WANDB",WANDB_PROJECT="$WANDB_PROJECT",WANDB_ENTITY="$WANDB_ENTITY",WANDB_TAGS="$WANDB_TAGS",WANDB_RUN_GROUP="$WANDB_RUN_GROUP",WANDB_NAME="$WANDB_NAME",RUN_NAME="$RUN_NAME",TRAINING_MODE="$TRAINING_MODE",GIT_HASH="$GIT_HASH",GIT_BRANCH="$GIT_BRANCH",GIT_PARENT="$GIT_PARENT",USE_EMA="$USE_EMA",EMA_DECAY="$EMA_DECAY" \
+  --export=ALL \
   slurm_scripts/cxr_ldm.slurm "${OTHER_ARGS[@]}" | awk '{print $4}')
 status_line "🎉 Submitted" "Job ID: $JOB_ID"
 status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 
-# TB LDM (increased capacity experiment)
+# Run script
+# z_channels = 4
 #./launchers/single_runs/ldm/train_ldm_tb.sh full_train \
-#  --batch_per_device 2 \
+#  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
+#  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
+#  --latent_scale_factor 0.8770391159445711 \
+#  --sample_every 300 --log_every 300 --ldm_z_channels 1 \
+#  --epochs 3000 \
+#  --repeat_len 100 \
+#  --wandb_project cxr-ldm-composition-test \
+#  --ldm_base_ch 64 --ldm_ch_mults 1,2 --ldm_num_res_blocks 1 --ldm_attn_res 8 \
+#  --lr 1e-4 --batch_per_device 32 --sample_batch_size 32 --wandb \
+#  --overfit_one
+
+
+#./launchers/single_runs/ldm/train_ldm_tb.sh full_train   --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
+#--ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
+#--latent_scale_factor 0.997567979960659   --sample_every 50 --log_every 10   --epochs 2000   --repeat_len 100   --wandb_project cxr-ldm-composition-test \
+#--ldm_base_ch 128 --ldm_ch_mults 1,2,4,4 --ldm_num_res_blocks 3 --ldm_attn_res 16,8   --lr 1e-4 --batch_per_device 16 --sample_batch_size 16 --wandb  --overfit_one
+
+#./launchers/single_runs/ldm/train_ldm_tb.sh full_train   --ae_ckpt_path /home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/ckpts/last.flax \
+#--ae_config_path /home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/run_meta.json \
+#--latent_scale_factor 0.997567979960659
+
+
+#
+#./launchers/single_runs/ldm/train_ldm_tb.sh full_train   --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
+#--ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
+#--latent_scale_factor 0.997567979960659   --sample_every 50 --log_every 10   --epochs 2000   --repeat_len 100   --wandb_project cxr-ldm-composition-test \
+#--ldm_base_ch 128 --ldm_ch_mults 1,2,4,4 --ldm_num_res_blocks 3 --ldm_attn_res 16,8   --lr 1e-4 --batch_per_device 16 --sample_batch_size 16 --wandb  --overfit_one
+
+
+
+# z_channels = 4
+#./launchers/single_runs/ldm/train_ldm_tb.sh full_train \
+#  --ae_ckpt_path runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/ckpts/last.flax \
+#  --ae_config_path runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/run_meta.json \
+#  --latent_scale_factor 0.997568 \
+#  --sample_every 300 --log_every 300 --img_size 128 --use_ema \
+#  --epochs 3000 \
+#  --repeat_len 100 \
+#  --wandb_project cxr-ldm-composition-test \
+#  --ldm_base_ch 64 --ldm_ch_mults 1,2 --ldm_num_res_blocks 1 --ldm_attn_res 8 \
+#  --lr 1e-4 --batch_per_device 32 --sample_batch_size 32 --wandb \
+#  --overfit_one
+#
+
+
+# z_channels = 128
+#./launchers/single_runs/ldm/train_ldm_tb.sh full_train \
 #  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/ckpts/last.flax \
 #  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/run_meta.json \
 #  --latent_scale_factor 0.99999905 \
+#  --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/tb_train" \
+#  --preencoded_manifest "manifest.jsonl"
+#  --sample_every 100 \
+#  --repeat_len 16
 #  --wandb_project cxr-ldm-composition \
+#  --overfit_one

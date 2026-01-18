@@ -27,13 +27,13 @@ PREENCODED_MANIFEST="${PREENCODED_MANIFEST:-}"
 # Data & Debug
 TASK="${TASK:-TB}"
 SPLIT="${SPLIT:-train}"
-IMG_SIZE="${IMG_SIZE:-128}"
+IMG_SIZE="${IMG_SIZE:-256}"
 DISEASE="${DISEASE:-0}" # Use 1 for diseased, 0 for normal
-OVERFIT_ONE="${OVERFIT_ONE:-1}"
+OVERFIT_ONE="${OVERFIT_ONE:-0}"
 LDM_Z_CHANNELS="${LDM_Z_CHANNELS:-}"
 OVERFIT_K="${OVERFIT_K:-0}"
 REPEAT_LEN="${REPEAT_LEN:-100}"
-LOG_EVERY="${LOG_EVERY:-50}"
+LOG_EVERY="${LOG_EVERY:-100}"
 # Autoencoder paths (REQUIRED to be set by launcher script)
 AE_CKPT_PATH="${AE_CKPT_PATH:?Must set AE_CKPT_PATH}"
 AE_CONFIG_PATH="${AE_CONFIG_PATH:?Must set AE_CONFIG_PATH}"
@@ -49,14 +49,14 @@ LR="${LR:-1e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-1e-4}"
 GRAD_CLIP="${GRAD_CLIP:-1.0}"
 EPOCHS="${EPOCHS:-1500}"
-USE_EMA="${USE_EMA:-0}" # Default to off if not set
+USE_EMA="${USE_EMA:-1}" # Default to off if not set
 EMA_DECAY="${EMA_DECAY:-0.999}"
-BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-16}"
-SAMPLE_EVERY="${SAMPLE_EVERY:-50}"
-LOG_EVERY="${LOG_EVERY:-10}"
+BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-32}"
+SAMPLE_EVERY="${SAMPLE_EVERY:-300}"
+LOG_EVERY="${LOG_EVERY:-100}"
 SEED="${SEED:-42}"
-USE_BFLOAT16="${USE_BFLOAT16:-0}"
-USE_REMAT="${USE_REMAT:-0}"
+USE_BFLOAT16="${USE_BFLOAT16:-1}"
+USE_REMAT="${USE_REMAT:-1}"
 
 # Experiment naming / output
 OUTPUT_ROOT="${OUTPUT_ROOT:-runs_ldm}"
@@ -113,6 +113,8 @@ ARGS=(
 if [[ -n "$LDM_Z_CHANNELS" ]]; then
   ARGS+=( --ldm_z_channels "$LDM_Z_CHANNELS" )
 fi
+
+
 
 if [[ -n "$PREENCODED_LATENTS_DIR" ]]; then
   ARGS+=( --preencoded_latents_dir "$PREENCODED_LATENTS_DIR" )
