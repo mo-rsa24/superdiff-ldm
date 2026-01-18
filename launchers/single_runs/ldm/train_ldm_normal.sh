@@ -14,7 +14,7 @@ header() { printf "\n${BLUE}${BOLD}# %s${RESET}\n" "$1"; rule; }
 # --- Defaults (can be overridden by command-line arguments) ---
 export TASK="TB"
 export ENV_NAME="jaxstack"
-export IMG_SIZE="256"
+export IMG_SIZE="128"
 export TRAINING_MODE="${1:-full_train}" # Reads mode (e.g., full_train) from the first argument
 export DISEASE="0" # 1 for TB, 0 for Normal
 
@@ -23,22 +23,23 @@ export LR="1e-4"
 export WEIGHT_DECAY="1e-4"
 export LDM_BASE_CH="128"
 export GRAD_CLIP="1.0"
-export BATCH_PER_DEVICE="32"
+export BATCH_PER_DEVICE="16"
 export EPOCHS="1500"
-export LOG_EVERY="100"
+export LOG_EVERY="10"
 export SAMPLE_EVERY="50"
-export SAMPLE_BATCH_SIZE="32"
+#/home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/
+export SAMPLE_BATCH_SIZE="16"
 export LDM_CH_MULTS="1,2,4,4"
 export LDM_NUM_RES_BLOCKS="3"
-export LDM_ATTN_RES="16,8"
+export LDM_ATTN_RES="16"
 export WANDB="1"
 export WANDB_PROJECT="cxr-ldm-composition"
 export WANDB_ENTITY=""
 export WANDB_RUN_GROUP="ldm-normal"
 export WANDB_TAGS="ldm,normal,256"
-export OVERFIT_ONE="0"
+export OVERFIT_ONE="1"
 export OVERFIT_K="0"
-export REPEAT_LEN="500"
+export REPEAT_LEN="100"
 export LDM_Z_CHANNELS=""
 
 # --- Shared VAE and Scale Factor (❗ IMPORTANT: Update these values) ---
@@ -95,7 +96,6 @@ while [[ $# -gt 0 ]]; do
     --workdir)            export WORKDIR="$2"; shift 2 ;;
     --use_bfloat16)       export USE_BFLOAT16="$2"; shift 2 ;;
     --use_remat)          export USE_REMAT="$2"; shift 2 ;;
-    --ldm_z_channels)     export LDM_Z_CHANNELS="$2"; shift 2 ;;
     --overfit_one)        export OVERFIT_ONE="1"; shift ;;
     --overfit_k)          export OVERFIT_K="$2"; shift 2 ;;
     --repeat_len)         export REPEAT_LEN="$2"; shift 2 ;;
@@ -223,6 +223,18 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #--ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
 #--latent_scale_factor 0.997567979960659   --sample_every 50 --log_every 10   --epochs 2000   --repeat_len 100   --wandb_project cxr-ldm-composition-test \
 #--ldm_base_ch 128 --ldm_ch_mults 1,2,4,4 --ldm_num_res_blocks 3 --ldm_attn_res 16,8   --lr 1e-4 --batch_per_device 16 --sample_batch_size 16 --wandb  --overfit_one
+
+./launchers/single_runs/ldm/train_ldm_normal.sh full_train   --ae_ckpt_path /home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/ckpts/last.flax \
+--ae_config_path /home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/run_meta.json \
+--latent_scale_factor 0.997567979960659
+
+
+#
+#./launchers/single_runs/ldm/train_ldm_normal.sh full_train   --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
+#--ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
+#--latent_scale_factor 0.997567979960659   --sample_every 50 --log_every 10   --epochs 2000   --repeat_len 100   --wandb_project cxr-ldm-composition-test \
+#--ldm_base_ch 128 --ldm_ch_mults 1,2,4,4 --ldm_num_res_blocks 3 --ldm_attn_res 16,8   --lr 1e-4 --batch_per_device 16 --sample_batch_size 16 --wandb  --overfit_one
+
 
 
 # z_channels = 4
