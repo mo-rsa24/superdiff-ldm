@@ -108,6 +108,7 @@ rsync -a \
   --exclude 'composed_output_single' \
   --exclude 'composed_output' \
   --exclude 'runs_ldm' \
+  --exclude 'preencoded_latents' \
   --exclude 'runs' \
   --exclude 'and_out' \
   --exclude 'superdiff_and_output' \
@@ -135,3 +136,25 @@ JOB_ID=$(sbatch --partition="$SLURM_PARTITION" \
   slurm_scripts/cxr_ae.slurm "${OTHER_ARGS[@]}" | awk '{print $4}')
 status_line "🎉 Submitted" "Job ID: $JOB_ID"
 status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
+
+#bash launchers/single_runs/vae/train_ae_unified.sh \
+#  --data_root /datasets/mmolefe/cleaned \
+#  --task All_CXR \
+#  --split train \
+#  --img_size 256 \
+#  --base_ch 128 \
+#  --ch_mults 1,2,4 \
+#  --num_res_blocks 3 \
+#  --attn_res 16,8 \
+#  --z_channels 1 \
+#  --lr 2e-4 \
+#  --weight_decay 1e-4 \
+#  --epochs 100 \
+#  --batch_per_device 8 \
+#  --sample_every 10 \
+#  --log_every 1 \
+#  --output_root runs \
+#  --exp_name cxr_ae \
+#  --wandb \
+#  --wandb_project unified-cxr-vae \
+#  --wandb_tags unified-ae

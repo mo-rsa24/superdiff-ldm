@@ -215,7 +215,7 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #  --repeat_len 100 \
 #  --wandb_project cxr-ldm-composition-test \
 #  --ldm_base_ch 64 --ldm_ch_mults 1,2 --ldm_num_res_blocks 1 --ldm_attn_res 8 \
-#  --lr 1e-4 --batch_per_device 4 --sample_batch_size 4 --wandb \
+#  --lr 1e-4 --batch_per_device 32 --sample_batch_size 32 --wandb \
 #  --overfit_one
 
 
