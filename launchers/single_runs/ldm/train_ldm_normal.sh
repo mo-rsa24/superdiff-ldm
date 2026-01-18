@@ -39,7 +39,7 @@ export WANDB_TAGS="ldm,normal,256"
 export OVERFIT_ONE="0"
 export OVERFIT_K="0"
 export REPEAT_LEN="500"
-export SELECT_CHANNEL=""
+export LDM_Z_CHANNELS=""
 
 # --- Shared VAE and Scale Factor (❗ IMPORTANT: Update these values) ---
 export AE_RUN_DIR="${AE_RUN_DIR:-}"
@@ -95,7 +95,7 @@ while [[ $# -gt 0 ]]; do
     --workdir)            export WORKDIR="$2"; shift 2 ;;
     --use_bfloat16)       export USE_BFLOAT16="$2"; shift 2 ;;
     --use_remat)          export USE_REMAT="$2"; shift 2 ;;
-    --select_channel)     export SELECT_CHANNEL="$2"; shift 2 ;;
+    --ldm_z_channels)     export LDM_Z_CHANNELS="$2"; shift 2 ;;
     --overfit_one)        export OVERFIT_ONE="1"; shift ;;
     --overfit_k)          export OVERFIT_K="$2"; shift 2 ;;
     --repeat_len)         export REPEAT_LEN="$2"; shift 2 ;;
@@ -187,6 +187,11 @@ kv "Log Every (Steps)" "${LOG_EVERY}"
 kv "Sample Every (Epochs)" "${SAMPLE_EVERY}"
 kv "Sample Batch Size" "${SAMPLE_BATCH_SIZE}"
 kv "Latent Scale Factor" "${LATENT_SCALE_FACTOR}"
+if [[ -n "$LDM_Z_CHANNELS" ]]; then
+  kv "LDM Latent Channels" "${LDM_Z_CHANNELS} (Bottleneck)"
+else
+  kv "LDM Latent Channels" "Default (Match VAE)"
+fi
 rule
 
 JOB_ID=$(sbatch --partition="$SLURM_PARTITION" \
@@ -204,9 +209,9 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #./launchers/single_runs/ldm/train_ldm_normal.sh full_train \
 #  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
 #  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
-#  --latent_scale_factor 0.99937266 \
-#  --sample_every 10 --log_every 10 \
-#  --epochs 100 \
+#  --latent_scale_factor 0.8770391159445711 \
+#  --sample_every 300 --log_every 300 --ldm_z_channels 1 \
+#  --epochs 3000 \
 #  --repeat_len 100 \
 #  --wandb_project cxr-ldm-composition-test \
 #  --ldm_base_ch 64 --ldm_ch_mults 1,2 --ldm_num_res_blocks 1 --ldm_attn_res 8 \

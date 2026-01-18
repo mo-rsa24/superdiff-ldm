@@ -30,7 +30,7 @@ SPLIT="${SPLIT:-train}"
 IMG_SIZE="${IMG_SIZE:-256}"
 DISEASE="${DISEASE:-1}" # Use 1 for diseased, 0 for normal
 OVERFIT_ONE="${OVERFIT_ONE:-0}"
-SELECT_CHANNEL="${SELECT_CHANNEL:-}"
+LDM_Z_CHANNELS="${LDM_Z_CHANNELS:-}"
 OVERFIT_K="${OVERFIT_K:-0}"
 REPEAT_LEN="${REPEAT_LEN:-500}"
 LOG_EVERY="${LOG_EVERY:-100}"
@@ -115,6 +115,10 @@ ARGS=(
   --ldm_attn_res "$LDM_ATTN_RES"
 )
 
+if [[ -n "$LDM_Z_CHANNELS" ]]; then
+  ARGS+=( --ldm_z_channels "$LDM_Z_CHANNELS" )
+fi
+
 if [[ -n "$PREENCODED_LATENTS_DIR" ]]; then
   ARGS+=( --preencoded_latents_dir "$PREENCODED_LATENTS_DIR" )
 fi
@@ -128,9 +132,6 @@ if [[ "$OVERFIT_ONE" == "1" || "$OVERFIT_ONE" == "true" ]]; then ARGS+=( --overf
 elif (( OVERFIT_K > 0 )); then ARGS+=( --overfit_k "$OVERFIT_K" );
 fi
 
-if [[ -n "$SELECT_CHANNEL" ]]; then
-  ARGS+=( --select_channel "$SELECT_CHANNEL" )
-fi
 # --- Add EMA arguments if enabled ---
 if [[ "$USE_EMA" == "1" ]]; then
   ARGS+=(--use_ema --ema_decay "$EMA_DECAY")
@@ -174,6 +175,7 @@ kv "DATASET"        "$([[ "$DISEASE" == 1 ]] && echo "Diseased" || echo "Normal"
 kv "EPOCHS"         "$EPOCHS"
 kv "BATCHxDEVS"     "$BATCH_PER_DEVICE x $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo 1)"
 kv "AE_CHECKPOINT"  "$AE_CKPT_PATH"
+kv "Z_CHANNELS"     "${LDM_Z_CHANNELS:-Default}"
 kv "OVERFIT"        "(of1=$OVERFIT_ONE, tinyK=$OVERFIT_K)"
 kv "W&B"            "$WANDB (${WANDB_PROJECT}) tags=[$WANDB_TAGS]"
 kv "EMA Enabled" "${USE_EMA}"
