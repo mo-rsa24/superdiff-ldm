@@ -190,6 +190,9 @@ def parse_args():
     p.add_argument("--log_every", type=int, default=100)
     p.add_argument("--sample_every", type=int, default=5)
     p.add_argument("--sample_batch_size", type=int, default=16)
+    # In parse_args():
+    p.add_argument("--select_channel", type=int, default=None,
+                   help="Index of the single latent channel to train on (drops others).")
     p.add_argument("--use_bfloat16", action="store_true", help="Enable bfloat16 compute to reduce activation memory.")
     p.add_argument("--use_remat", action="store_true", help="Enable rematerialization for memory savings.")
     # 2. Add EMA command-line arguments
@@ -390,7 +393,9 @@ def main():
     with open(args.ae_config_path, 'r') as f:
         ae_args = json.load(f)
     z_channels = ae_args['z_channels']
-
+    if args.select_channel is not None:
+        print(f"⚠️ FORCE-SLICING LATENTS: Training ONLY on channel index {args.select_channel}")
+        z_channels = 1  # Override architecture to accept 1 channel
     # Diagnostics to compute latent spatial size
     if isinstance(ae_args['ch_mults'], str):
         num_downsamples = len(ae_args['ch_mults'].split(',')) - 1
@@ -501,7 +506,10 @@ def main():
                 z = z_batch
             else:
                 posterior = ae_model.apply({'params': ae_params}, z_batch, method=ae_model.encode, train=False)
-                z = posterior.sample(rng) * args.latent_scale_factor
+                z = posterior.sample(rng)
+                if args.select_channel is not None:
+                    z = z[..., args.select_channel: args.select_channel + 1]
+                z = z * args.latent_scale_factor
             z = z.astype(compute_dtype)
             # Sample t ~ U(1e-5, 1) and ε ~ N(0, I)
             rng_t, rng_noise = jax.random.split(rng_diff, 2)

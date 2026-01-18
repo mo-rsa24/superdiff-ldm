@@ -30,6 +30,7 @@ SPLIT="${SPLIT:-train}"
 IMG_SIZE="${IMG_SIZE:-256}"
 DISEASE="${DISEASE:-1}" # Use 1 for diseased, 0 for normal
 OVERFIT_ONE="${OVERFIT_ONE:-0}"
+SELECT_CHANNEL="${SELECT_CHANNEL:-}"
 OVERFIT_K="${OVERFIT_K:-0}"
 REPEAT_LEN="${REPEAT_LEN:-500}"
 LOG_EVERY="${LOG_EVERY:-100}"
@@ -127,6 +128,9 @@ if [[ "$OVERFIT_ONE" == "1" || "$OVERFIT_ONE" == "true" ]]; then ARGS+=( --overf
 elif (( OVERFIT_K > 0 )); then ARGS+=( --overfit_k "$OVERFIT_K" );
 fi
 
+if [[ -n "$SELECT_CHANNEL" ]]; then
+  ARGS+=( --select_channel "$SELECT_CHANNEL" )
+fi
 # --- Add EMA arguments if enabled ---
 if [[ "$USE_EMA" == "1" ]]; then
   ARGS+=(--use_ema --ema_decay "$EMA_DECAY")
