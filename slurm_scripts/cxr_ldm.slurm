@@ -116,14 +116,20 @@ fi
 
 
 
+# --- Data Staging to Local SSD ---
+LOCAL_SCRATCH="/tmp/${SLURM_JOB_ID}_latents"
+mkdir -p "$LOCAL_SCRATCH"
+
 if [[ -n "$PREENCODED_LATENTS_DIR" ]]; then
-  ARGS+=( --preencoded_latents_dir "$PREENCODED_LATENTS_DIR" )
+    echo "🚚 Staging: Rsyncing latents to local SSD ($LOCAL_SCRATCH)..."
+    rsync -aq "$PREENCODED_LATENTS_DIR/" "$LOCAL_SCRATCH/"
+    export PREENCODED_LATENTS_DIR="$LOCAL_SCRATCH"
 fi
 if [[ -n "$PREENCODED_MANIFEST" ]]; then
   ARGS+=( --preencoded_manifest "$PREENCODED_MANIFEST" )
 fi
 
-
+export XLA_FLAGS="--xla_gpu_enable_triton_gemm=true --xla_gpu_graph_level=2"
 # Debugging
 if [[ "$OVERFIT_ONE" == "1" || "$OVERFIT_ONE" == "true" ]]; then ARGS+=( --overfit_one --repeat_len "$REPEAT_LEN" );
 elif (( OVERFIT_K > 0 )); then ARGS+=( --overfit_k "$OVERFIT_K" );
@@ -186,3 +192,7 @@ kv "Preencoded Dir" "${PREENCODED_LATENTS_DIR:-<none>}"
 kv "Preencoded Manifest" "${PREENCODED_MANIFEST:-<none>}"
 kv "CPUs Allocated:" "${SLURM_CPUS_PER_TASK}"
 srun python -u "$PYFILE" "${ARGS[@]}"
+
+# --- Cleanup ---
+echo "🧹 Cleaning up local SSD..."
+rm -rf "$LOCAL_SCRATCH"
