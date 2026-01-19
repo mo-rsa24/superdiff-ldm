@@ -22,7 +22,7 @@ ok(){ printf "${GRN}** %s${RST}\n" "$*"; }
 # ----------------------------
 WORKDIR="${WORKDIR:-$PWD}"
 PYFILE="${PYFILE:-run/autoencoder.py}"
-DATA_ROOT="${DATA_ROOT:-/datasets/mmolefe/cleaned}" # Allow override
+DATA_ROOT="${DATA_ROOT:/home-mscluster/mmolefe/Playground/PhD/datasets/cleaned}" # Allow override
 ENV_NAME="${ENV_NAME:-jaxstack}"
 
 # Data & Debug

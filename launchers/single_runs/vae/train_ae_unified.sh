@@ -13,7 +13,7 @@ rule() { printf "${BLUE}%0.s-${RESET}" {1..50}; printf "\n"; }
 
 # --- Defaults (can be overridden by command-line args) ---
 export ENV_NAME="jaxstack"
-export DATA_ROOT="../datasets/cleaned"
+export DATA_ROOT="/home-mscluster/mmolefe/Playground/PhD/datasets/cleaned"
 export TASK="All_CXR"
 export IMG_SIZE="256"
 export CLASS_FILTER="None"
