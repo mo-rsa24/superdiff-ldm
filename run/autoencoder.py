@@ -260,14 +260,6 @@ def main():
         def loss_fn(params):
             rng1, rng2 = jax.random.split(jax.random.PRNGKey(step))
             x_bf16 = x.astype(jnp.bfloat16)
-
-            # Forward: Get moments for diagnostics
-            moments = ae.apply({'params': params['ae']}, x_bf16, method=ae.encode)
-            mean, logvar = jnp.split(moments, 2, axis=-1)
-            std = jnp.exp(0.5 * logvar)
-
-            # Sampling
-            q = ae.encode(x_bf16, train=True)  # Re-using helper or just sampling manually
             # The DiagonalGaussian class is local in ae_kl.py, but we can reconstruct it or rely on call
             # Let's use the standard call to avoid imports issues if helper isn't exported:
             xrec, posterior = model_apply(params['ae'], x_bf16, rng=rng1, train=True)
