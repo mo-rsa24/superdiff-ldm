@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=cxr-ae
 #SBATCH --partition=bigbatch
-#SBATCH --exclude=mscluster65,mscluster76
+#SBATCH --exclude=mscluster65,mscluster76,mscluster59,mscluster48,mscluster82,mscluster75,mscluster72,mscluster68
 #SBATCH --time=72:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
