@@ -15,16 +15,16 @@ rule() { printf "${BLUE}%0.s-${RESET}" {1..50}; printf "\n"; }
 export ENV_NAME="jaxstack"
 export DATA_ROOT="../datasets/cleaned"
 export TASK="All_CXR"
-export IMG_SIZE="128"
+export IMG_SIZE="256"
 export CLASS_FILTER="None"
 export BASE_CH="128"
 export CH_MULTS="1,2,4"
-export Z_CHANNELS="1"
+export Z_CHANNELS="4"
 export EMBED_DIM="None"
 export NUM_RES_BLOCKS="3"
 export ATTN_RES="16,8"
 export LR="2e-4"
-export KL_WEIGHT="1.0e-6"
+export KL_WEIGHT="1.0e-5"
 export EPOCHS="100"
 export BATCH_PER_DEVICE="8"
 export SAMPLE_EVERY="10"
@@ -137,24 +137,10 @@ JOB_ID=$(sbatch --partition="$SLURM_PARTITION" \
 status_line "🎉 Submitted" "Job ID: $JOB_ID"
 status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 
-#bash launchers/single_runs/vae/train_ae_unified.sh \
+#./launchers/single_runs/vae/train_ae_unified.sh \
 #  --data_root /datasets/mmolefe/cleaned \
 #  --task All_CXR \
 #  --split train \
-#  --img_size 256 \
-#  --base_ch 128 \
-#  --ch_mults 1,2,4 \
-#  --num_res_blocks 3 \
-#  --attn_res 16,8 \
-#  --z_channels 1 \
-#  --lr 2e-4 \
-#  --weight_decay 1e-4 \
-#  --epochs 100 \
-#  --batch_per_device 8 \
-#  --sample_every 10 \
-#  --log_every 1 \
-#  --output_root runs \
-#  --exp_name cxr_ae \
 #  --wandb \
 #  --wandb_project unified-cxr-vae \
 #  --wandb_tags unified-ae

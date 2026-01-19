@@ -75,7 +75,7 @@ def parse_args():
     # p.add_argument("--ch_mults", type=str, default="128,256,512")
     p.add_argument("--num_res_blocks", type=int, default=3)
     p.add_argument("--dropout", type=float, default=0.0)
-    p.add_argument("--z_channels", type=int, default=128)
+    p.add_argument("--z_channels", type=int, default=4)
     p.add_argument("--attn_res", type=str, default="16,8",
                    help="Comma-separated resolutions for attention, e.g., '16,8'")
     p.add_argument(
@@ -86,21 +86,21 @@ def parse_args():
     )
 
     # Loss settings (LDM-like)
-    p.add_argument("--kl_weight", type=float, default=1.0e-6)
+    p.add_argument("--kl_weight", type=float, default=1.0e-5)
     p.add_argument("--pixel_weight", type=float, default=1.0)
-    p.add_argument("--disc_start", type=int, default=5000)
+    p.add_argument("--disc_start", type=int, default=50000)
     p.add_argument("--disc_factor", type=float, default=1.0)
     p.add_argument("--disc_weight", type=float, default=0.1)
     p.add_argument("--disc_layers", type=int, default=2)
     p.add_argument("--disc_loss", choices=["hinge","vanilla"], default="hinge")
-    p.add_argument("--perceptual_weight", type=float, default=0.05)
+    p.add_argument("--perceptual_weight", type=float, default=0.01)
 
     # Optimizer
     p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--grad_clip", type=float, default=1.0)
     p.add_argument("--epochs", type=int, default=100)
-    p.add_argument("--batch_per_device", type=int, default=2)
+    p.add_argument("--batch_per_device", type=int, default=32)
     p.add_argument("--seed", type=int, default=0)
 
     # Logging & ckpts
@@ -108,8 +108,8 @@ def parse_args():
     p.add_argument("--exp_name", default="cxr_ae")
     p.add_argument("--run_name", default=None)
     p.add_argument("--resume_dir", default=None)
-    p.add_argument("--sample_every", type=int, default=1)
-    p.add_argument("--log_every", type=int, default=100)
+    p.add_argument("--sample_every", type=int, default=20)
+    p.add_argument("--log_every", type=int, default=5)
 
     # W&B
     p.add_argument("--wandb", action="store_true")

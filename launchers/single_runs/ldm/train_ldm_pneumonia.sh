@@ -222,6 +222,14 @@ status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 #  --latent_scale_factor 0.999373 --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/normal" \
 #  --wandb_project cxr-ldm-composition-2 --wandb
 
+
+# Old Autoencoder
+#./launchers/single_runs/ldm/train_ldm_normal.sh full_train \
+#  --ae_ckpt_path /home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/ckpts/last.flax \
+#  --ae_config_path /home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/run_meta.json \
+#  --latent_scale_factor 0.997567979960659 --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/old" \
+#  --wandb_project cxr-ldm-composition-2 --wandb
+
 # TB
 #./launchers/single_runs/ldm/train_ldm_tb.sh full_train \
 #  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
