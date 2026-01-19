@@ -5,26 +5,25 @@
 #SBATCH --time=72:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --ntasks=1 # Total number of tasks
+#SBATCH --ntasks=1
 
 set -euo pipefail
 
 # --- Pretty printing helpers ---
-CYN=$(printf '\\033[36m'); BLU=$(printf '\\033[34m'); BLD=$(printf '\\033[1m');
-RED=$(printf '\\033[31m'); GRN=$(printf '\\033[32m');
-RST=$(printf '\\033[0m')
-banner(){ printf "\\n${BLU}${BLD}== %s ==${RST}\\n" "$*"; }
-kv(){ printf "  ${CYN}%-22s${RST} %s\\n" "$1" "$2"; }
-err(){ printf "${RED}!! %s${RST}\\n" "$*"; }
-ok(){ printf "${GRN}** %s${RST}\\n" "$*"; }
+CYN=$(printf '\033[36m'); BLU=$(printf '\033[34m'); BLD=$(printf '\033[1m');
+RED=$(printf '\033[31m'); GRN=$(printf '\033[32m'); RST=$(printf '\033[0m')
+banner(){ printf "\n${BLU}${BLD}== %s ==${RST}\n" "$*"; }
+kv(){ printf "  ${CYN}%-22s${RST} %s\n" "$1" "$2"; }
+err(){ printf "${RED}!! %s${RST}\n" "$*"; }
+ok(){ printf "${GRN}** %s${RST}\n" "$*"; }
 
 # ----------------------------
-# Defaults (override via en)
+# Defaults (Matches autoencoder.py to avoid hidden skew)
 # ----------------------------
 WORKDIR="${WORKDIR:-$PWD}"
 PYFILE="${PYFILE:-run/autoencoder.py}"
-DATA_ROOT="/datasets/mmolefe/cleaned"
-ENV_NAME="${ENV_NAME:-jaxstack}" # Environment name for mamba
+DATA_ROOT="${DATA_ROOT:-/datasets/mmolefe/cleaned}" # Allow override
+ENV_NAME="${ENV_NAME:-jaxstack}"
 
 # Data & Debug
 TASK="${TASK:-TB}"
@@ -76,6 +75,7 @@ WANDB_PROJECT="${WANDB_PROJECT:-cxr-ae}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 WANDB_TAGS="${WANDB_TAGS:-}"
 WANDB_ID="${WANDB_ID:-}"
+WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-}"
 
 # ----------------------------
 # Environment Setup
@@ -89,19 +89,16 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export TF_FORCE_GPU_ALLOW_GROWTH=true
 export TF_CPP_MIN_LOG_LEVEL=3
 
-
-
 kv "Working directory" "$WORKDIR"
 kv "Python path" "$PYTHONPATH"
-echo "PYTHONPATH set to: $PYTHONPATH"
-echo "Commit: ${GIT_COMMIT_SHORT:-unknown} | Branch: ${GIT_BRANCH:-unknown} | W&B Name: ${WANDB_NAME:-unset}"
+echo "Commit: ${GIT_COMMIT_SHORT:-unknown} | Branch: ${GIT_BRANCH:-unknown}"
+
 # Activate Conda/Mamba Environment
 set +u
 source ~/.bashrc
 mamba activate "${ENV_NAME:?Must set ENV_NAME}"
 set -u
 ok "Activated micromamba environment: ${ENV_NAME}"
-
 
 # ----------------------------
 # Arguments for Python script
@@ -140,8 +137,10 @@ ARGS=(
 )
 
 # Debugging
-if [[ "$OVERFIT_ONE" == "1" ]]; then ARGS+=( --overfit_one --repeat_len "$REPEAT_LEN" );
-elif (( OVERFIT_K > 0 )); then ARGS+=( --overfit_k "$OVERFIT_K" );
+if [[ "$OVERFIT_ONE" == "1" ]]; then
+  ARGS+=( --overfit_one --repeat_len "$REPEAT_LEN" )
+elif (( OVERFIT_K > 0 )); then
+  ARGS+=( --overfit_k "$OVERFIT_K" )
 fi
 
 # Optional run name / resume
@@ -149,12 +148,12 @@ fi
 [[ -n "$RESUME_DIR" ]] && ARGS+=( --resume_dir "$RESUME_DIR" )
 
 # WandB
-if [[ "$WANDB" == "1" ]];
-then
+if [[ "$WANDB" == "1" ]]; then
   ARGS+=( --wandb --wandb_project "$WANDB_PROJECT" )
   [[ -n "$WANDB_ENTITY" ]] && ARGS+=( --wandb_entity "$WANDB_ENTITY" )
   [[ -n "$WANDB_TAGS" ]] && ARGS+=( --wandb_tags "$WANDB_TAGS" )
   [[ -n "$WANDB_ID" ]] && ARGS+=( --wandb_id "$WANDB_ID" )
+  [[ -n "$WANDB_RUN_GROUP" ]] && ARGS+=( --wandb_group "$WANDB_RUN_GROUP" )
 fi
 
 # ----------------------------
@@ -162,20 +161,15 @@ fi
 # ----------------------------
 banner "AE Training Info"
 kv "Python script"  "$PYFILE"
-kv "Run name"       "$RUN_NAME"
 kv "Task"           "$TASK"
 kv "Image size"     "$IMG_SIZE"
-kv "Base channels"  "$BASE_CH"
-kv "Channel mults"  "\"$CH_MULTS\""
 kv "Z channels"     "$Z_CHANNELS"
 kv "KL weight"      "$KL_WEIGHT"
 kv "Batch/device"   "$BATCH_PER_DEVICE"
-kv "Epochs"         "$EPOCHS"
-kv "W&B Enabled"    "$WANDB"
+kv "W&B Group"      "$WANDB_RUN_GROUP"
 
 banner "AE Training Run"
 srun python -u "$PYFILE" "$@" "${ARGS[@]}"
 RC=$?
-
 banner "Done (ExitCode: $RC)"
 [[ $RC -eq 0 ]] && ok "Success." || { err "Failure (exit $RC)"; exit "$RC"; }
