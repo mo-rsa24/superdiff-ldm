@@ -207,62 +207,34 @@ JOB_ID=$(sbatch --partition="$SLURM_PARTITION" \
 status_line "🎉 Submitted" "Job ID: $JOB_ID"
 status_line "📝 Logs at" "${REPO_ROOT}/logs/${JOB_NAME}-${JOB_ID}.out"
 
-# Run script
-# z_channels = 4
+
+# Pneumonia
 #./launchers/single_runs/ldm/train_ldm_pneumonia.sh full_train \
 #  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
 #  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
-#  --latent_scale_factor 0.8770391159445711 \
-#  --sample_every 300 --log_every 300 --ldm_z_channels 1 \
-#  --epochs 3000 \
-#  --repeat_len 100 \
-#  --wandb_project cxr-ldm-composition-test \
-#  --ldm_base_ch 64 --ldm_ch_mults 1,2 --ldm_num_res_blocks 1 --ldm_attn_res 8 \
-#  --lr 1e-4 --batch_per_device 32 --sample_batch_size 32 --wandb \
-#  --overfit_one
+#  --latent_scale_factor 0.999373 --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/normal" \
+#  --wandb_project cxr-ldm-composition-2 --wandb
 
+# Normal
+#./launchers/single_runs/ldm/train_ldm_normal.sh full_train \
+#  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
+#  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
+#  --latent_scale_factor 0.999373 --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/normal" \
+#  --wandb_project cxr-ldm-composition-2 --wandb
 
-#./launchers/single_runs/ldm/train_ldm_pneumonia.sh full_train   --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
-#--ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
-#--latent_scale_factor 0.997567979960659   --sample_every 50 --log_every 10   --epochs 2000   --repeat_len 100   --wandb_project cxr-ldm-composition-test \
-#--ldm_base_ch 128 --ldm_ch_mults 1,2,4,4 --ldm_num_res_blocks 3 --ldm_attn_res 16,8   --lr 1e-4 --batch_per_device 16 --sample_batch_size 16 --wandb  --overfit_one
+# TB
+#./launchers/single_runs/ldm/train_ldm_tb.sh full_train \
+#  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
+#  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
+#  --latent_scale_factor 0.999373 --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/normal" \
+#  --wandb_project cxr-ldm-composition-2 --wandb
 
-#./launchers/single_runs/ldm/train_ldm_pneumonia.sh full_train   --ae_ckpt_path /home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/ckpts/last.flax \
-#--ae_config_path /home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/run_meta.json \
-#--latent_scale_factor 0.997567979960659
+# Run this from the login node to follow the logs
+#tail -f logs/ldm-normal-<JOB_ID>.out
 
+# Replace <JOB_ID> with your actual Job ID
+#srun --jobid=<JOB_ID> --overlap du -sh /tmp/<JOB_ID>_latents
 
-#
-#./launchers/single_runs/ldm/train_ldm_pneumonia.sh full_train   --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/ckpts/last.flax \
-#--ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-eb7c6d6_20260112-063726/runs/unified-ae-proto-increase-ae-autoencoder-eb7c6d6-20260112-063726/20260112-063740/run_meta.json \
-#--latent_scale_factor 0.997567979960659   --sample_every 50 --log_every 10   --epochs 2000   --repeat_len 100   --wandb_project cxr-ldm-composition-test \
-#--ldm_base_ch 128 --ldm_ch_mults 1,2,4,4 --ldm_num_res_blocks 3 --ldm_attn_res 16,8   --lr 1e-4 --batch_per_device 16 --sample_batch_size 16 --wandb  --overfit_one
+#srun --jobid=<JOB_ID> --overlap nvidia-smi
 
-
-
-# z_channels = 4
-#./launchers/single_runs/ldm/train_ldm_pneumonia.sh full_train \
-#  --ae_ckpt_path runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/ckpts/last.flax \
-#  --ae_config_path runs/unified-ae-128-z4_z4_20251008-161725/20251008-170121/run_meta.json \
-#  --latent_scale_factor 0.997568 \
-#  --sample_every 300 --log_every 300 --img_size 128 --use_ema \
-#  --epochs 3000 \
-#  --repeat_len 100 \
-#  --wandb_project cxr-ldm-composition-test \
-#  --ldm_base_ch 64 --ldm_ch_mults 1,2 --ldm_num_res_blocks 1 --ldm_attn_res 8 \
-#  --lr 1e-4 --batch_per_device 32 --sample_batch_size 32 --wandb \
-#  --overfit_one
-#
-
-
-# z_channels = 128
-#./launchers/single_runs/ldm/train_ldm_pneumonia.sh full_train \
-#  --ae_ckpt_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/ckpts/last.flax \
-#  --ae_config_path /home-mscluster/mmolefe/cluster_staging/unified-ae-proto-1f2a36b_20260110-013819/runs/unified-ae-proto-increase-ae-autoencoder-1f2a36b-20260110-013819/20260110-013836/run_meta.json \
-#  --latent_scale_factor 0.99999905 \
-#  --preencoded_latents_dir "/home-mscluster/mmolefe/Playground/PhD/superdiff-ldm/preencoded_latents/pneumonia_train" \
-#  --preencoded_manifest "manifest.jsonl"
-#  --sample_every 100 \
-#  --repeat_len 16
-#  --wandb_project cxr-ldm-composition \
-#  --overfit_one
+#srun --jobid=<JOB_ID> --overlap watch -n 1 nvidia-smi
