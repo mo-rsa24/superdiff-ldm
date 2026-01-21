@@ -103,8 +103,8 @@ def load_ldm_state(run_dir, ckpt_name, seed=0, dummy_batch_size=1):
 
 def superdiff_and_sampler(
         rng,
-        model_1, params_1,  # Normal Model (vel_obj)
-        model_2, params_2,  # TB Model (vel_bg)
+        model_1, params_1,  # Normal Model
+        model_2, params_2,  # TB Model
         ae_model, ae_params,
         marginal_prob_std_fn,
         latent_size,
@@ -115,124 +115,89 @@ def superdiff_and_sampler(
         lift=0.0
 ):
     """
-    Stochastic SuperDiff Sampler (Logical AND) adapted for JAX and Unconditional Models.
-    Based on Algorithm 1 from the paper and the provided snippet.
+    Stochastic SuperDiff Sampler (Logical AND) - JAX Implementation.
+    Corrected to fix vmap/shape errors.
     """
-
-    # 1. Setup Timesteps and Sigmas
-    # We use the standard VP-SDE convention where t goes from 1.0 down to epsilon
     t0 = 1.0
     t1 = 1e-5
-    # Create array of timesteps (High -> Low)
     timesteps = jnp.linspace(t0, t1, num_steps)
-
-    # Pre-calculate sigmas for these timesteps
-    # Note: marginal_prob_std_fn(t) returns sigma(t)
-    # The snippet expects sigmas[i+1] to be the NEXT step (lower noise)
-    sigmas = jax.vmap(lambda t: marginal_prob_std_fn(t, None)[1])(timesteps)
+    sigmas = marginal_prob_std_fn(timesteps)
 
     # Initial Noise
     rng, step_rng = jax.random.split(rng)
     # Scale initial noise by sigma[0] (max noise)
     latents = jax.random.normal(step_rng, (batch_size, latent_size, latent_size, z_channels)) * sigmas[0]
 
-    # Initialize tracking variables (optional, for debugging or visualization)
-    # Using JAX loop carry to handle state
-
-    def get_vel(model, params, x, t, sigma):
-        """Standard LDM output (score/eps)."""
-        # ScoreNet typically expects t as shape (batch,)
+    # Helper for model inference
+    def get_vel(model, params, x, t):
+        # Broadcast t to [Batch_Size]
         t_batch = jnp.full((x.shape[0],), t)
-        # Apply model
-        output = model.apply({'params': params}, x, t_batch)
-        # Note: Depending on your ScoreNet training, the output might be 'score' or 'epsilon'.
-        # The SuperDiff algorithm usually assumes the model output matches the 'velocity'
-        # in the ODE/SDE. For VP-SDE, if model predicts eps, velocity ~ eps.
-        return output
+        return model.apply({'params': params}, x, t_batch)
 
     # Loop Step Function
     def step_fn(carry, i):
-        latents, rng, kappa_accum = carry
+        latents, rng = carry
 
-        # Current timestep indices
+        # Current timestep and sigma
         t = timesteps[i]
         sigma = sigmas[i]
 
         # Look ahead for dsigma
-        # For the last step, we assume dsigma is roughly the same as previous or handle edge case
+        # For the last step, use the previous delta or 0
         sigma_next = jax.lax.select(
             i < num_steps - 1,
             sigmas[i + 1],
-            sigmas[i] - (sigmas[i - 1] - sigmas[i])  # Simple extrapolation for last step
+            sigmas[i] - (sigmas[i - 1] - sigmas[i])
         )
         dsigma = sigma_next - sigma
 
         # 1. Calculate Velocities (Model Outputs)
-        # Model 1 = "Object" (e.g., Normal)
-        # Model 2 = "Background" (e.g., TB)
-        vel_obj = get_vel(model_1, params_1, latents, t, sigma)
-        vel_bg = get_vel(model_2, params_2, latents, t, sigma)
+        vel_obj = get_vel(model_1, params_1, latents, t)
+        vel_bg = get_vel(model_2, params_2, latents, t)
 
         # 2. Sample Noise for the SDE step
         rng, noise_rng = jax.random.split(rng)
         noise = jnp.sqrt(2 * jnp.abs(dsigma) * sigma) * jax.random.normal(noise_rng, latents.shape)
 
         # 3. SuperDiff Logic (Logical AND)
-        # Since models are unconditional, vel_uncond = 0 and guidance_scale = 1.0 (implicitly).
-        # We define independent step `dx_ind` based on Model 2 (BG) as the reference,
-        # or we can treat them symmetrically.
-        # Adapting the snippet: dx_ind = 2*dsigma*(vel_uncond + scale*(vel_bg-vel_uncond)) + noise
-        # With vel_uncond=0, scale=1 -> dx_ind = 2*dsigma*vel_bg + noise
+        # Independent step reference (using Model 2 as background/reference)
         dx_ind = 2 * dsigma * vel_bg + noise
 
-        # Numerator for Kappa
-        # (vel_bg - vel_obj) * (vel_bg + vel_obj) = vel_bg^2 - vel_obj^2
+        # Numerator: Energy Difference Term
+        # (vel_bg^2 - vel_obj^2)
         diff_sq = (vel_bg - vel_obj) * (vel_bg + vel_obj)
         term1 = (jnp.abs(dsigma) * diff_sq).sum(axis=(1, 2, 3))
 
-        # Interaction term: dx_ind * (vel_obj - vel_bg)
+        # Interaction term
         term2 = (dx_ind * (vel_obj - vel_bg)).sum(axis=(1, 2, 3))
 
-        # Lift term
+        # Lift term (optional bias)
         term3 = sigma * lift / num_steps
 
         numerator = term1 - term2 + term3
 
-        # Denominator for Kappa
-        # 2 * dsigma * scale * ||vel_obj - vel_bg||^2
-        # scale = 1.0
+        # Denominator
         denom = 2 * dsigma * ((vel_obj - vel_bg) ** 2).sum(axis=(1, 2, 3))
 
-        # Calculate Kappa (per batch item)
-        # Add epsilon to denom to prevent division by zero
+        # Calculate Kappa
         kappa = numerator / (denom + 1e-8)
 
-        # Broadcast Kappa for image math: [B] -> [B, 1, 1, 1]
+        # Broadcast Kappa [B] -> [B, 1, 1, 1]
         kappa_reshaped = kappa[:, None, None, None]
 
         # 4. Construct Composite Vector Field
-        # vf = vel_uncond + scale*((vel_bg - vel_uncond) + kappa*(vel_obj-vel_bg))
-        # Simplifies to: vf = vel_bg + kappa * (vel_obj - vel_bg)
-        # This is linear interpolation: (1-k) * vel_bg + k * vel_obj
+        # vf = vel_bg + kappa * (vel_obj - vel_bg)
         vf = vel_bg + kappa_reshaped * (vel_obj - vel_bg)
 
         # 5. Update Latents
         dx = 2 * dsigma * vf + noise
         latents_next = latents + dx
 
-        return (latents_next, rng, kappa), kappa
+        return (latents_next, rng), kappa
 
-    # Execute Loop
-    init_carry = (latents, rng, jnp.zeros((batch_size,)))
-    (final_latents, _, _), kappas_history = jax.lax.scan(step_fn, init_carry, jnp.arange(num_steps))
-
-    # Decode Latents (using provided AE)
-    # The latent scale correction (training vs inference mismatch)
+    init_carry = (latents, rng)
+    (final_latents, _), kappas_history = jax.lax.scan(step_fn, init_carry, jnp.arange(num_steps))
     scaled_latents = final_latents * z_std_correction
-
-    # Decode using VAE (assuming ae_model.apply handles decoding)
-    # Check AE architecture usage in `sample_only.py` or `viz.ipynb`
-    # Usually: output = ae.apply({'params': ae_params}, latents, method=ae.decode)
     decoded = ae_model.apply({'params': ae_params}, scaled_latents, method=ae_model.decode)
 
     return decoded, final_latents

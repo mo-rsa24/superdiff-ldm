@@ -9,7 +9,6 @@ from notebooks.utils import get_text_embedding
 
 @torch.no_grad
 def get_vel(unet, t, sigma, latents, embeddings, eps=None, get_div=False, device=torch.device("cuda"), dtype=torch.float16):
-    # unet.set_attn_processor(AttnProcessor())
     t = t.to(device, dtype=torch.float16)
 
     def v(_x, _e):
@@ -36,10 +35,10 @@ def get_vel(unet, t, sigma, latents, embeddings, eps=None, get_div=False, device
 
     return vel, div
 
-def get_latents(scheduler, z_channels: int =4, device = torch.device("cuda"), dtype = torch.float16, height: int = 512, width: int = 512, num_inference_steps: int = 500, batch_size: int = 6):
+def get_latents(scheduler, z_channels: int =4, device = torch.device("cuda"), dtype = torch.float16,  num_inference_steps: int = 500, batch_size: int = 6, latent_width: int = 64, latent_height: int = 64):
     generator = torch.cuda.manual_seed(1)
     latents = torch.randn(
-        (batch_size, z_channels, height // 4, width // 4),
+        (batch_size, z_channels, latent_width, latent_height),
         generator=generator,
         device=device,
         dtype=dtype
@@ -48,7 +47,7 @@ def get_latents(scheduler, z_channels: int =4, device = torch.device("cuda"), dt
     latents = latents * scheduler.init_noise_sigma
     return latents
 
-def superDiffAND(obj_prompt: List[str], bg_prompt: List[str], scheduler: EulerDiscreteScheduler, num_inference_steps: int = 512, batch_size: int = 6, device = torch.device("cuda")):
+def stochastic_super_diff_and(latents, obj_prompt: List[str], bg_prompt: List[str], scheduler: EulerDiscreteScheduler, guidance_scale: int = 7.5 , num_inference_steps: int = 512, batch_size: int = 6, device = torch.device("cuda")):
     obj_embeddings = get_text_embedding(obj_prompt * batch_size)
     bg_embeddings = get_text_embedding(bg_prompt * batch_size)
     uncond_embeddings = get_text_embedding([""] * batch_size)
@@ -78,3 +77,4 @@ def superDiffAND(obj_prompt: List[str], bg_prompt: List[str], scheduler: EulerDi
         ll_obj[i + 1] = ll_obj[i] + (-torch.abs(dsigma) / sigma * (vel_obj) ** 2 - (dx * (vel_obj / sigma))).sum(
             (1, 2, 3))
         ll_bg[i + 1] = ll_bg[i] + (-torch.abs(dsigma) / sigma * (vel_bg) ** 2 - (dx * (vel_bg / sigma))).sum((1, 2, 3))
+    return latents, kappa, ll_obj, ll_bg
