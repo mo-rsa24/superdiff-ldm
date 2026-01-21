@@ -213,7 +213,7 @@ def main():
     parser.add_argument("--run_dir_1", type=str, required=True, help="Path to Normal Model exp")
     parser.add_argument("--run_dir_2", type=str, required=True, help="Path to TB Model exp")
     parser.add_argument("--ckpt_name", type=str, default="last.flax")
-    parser.add_argument("--output_name", type=str, default="superdiff_and_mix.png")
+    parser.add_argument("--output_name", type=str, default="superdiff_and_mix_2.png")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--steps", type=int, default=700)
