@@ -15,13 +15,14 @@ from typing import Any
 # Import your modules
 from models.cxr_unet import ScoreNet
 from models.ae_kl import AutoencoderKL
-from diffusion.vp_equation import marginal_prob_std_fn, diffusion_coeff_fn
-from diffusion.sampling import Euler_Maruyama_sampler
+from diffusion.vp_equation import marginal_prob_std_fn, diffusion_coeff_fn, alpha_bar_fn
+from diffusion.sampling import DDPM_ancestral_sampler
 
 
 # Define the State class (must match training)
 class TrainStateWithEMA(TrainState):
     ema_params: Any = None
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -151,8 +152,7 @@ def main():
 
     rng, sample_rng = jax.random.split(rng)
 
-    # Run Sampler
-    samples_grid, final_latents = Euler_Maruyama_sampler(
+    samples_grid, final_latents = DDPM_ancestral_sampler(
         rng=sample_rng,
         ldm_model=ldm_model,
         ldm_params=params,
@@ -160,11 +160,11 @@ def main():
         ae_params=ae_params,
         marginal_prob_std_fn=marginal_prob_std_fn,
         diffusion_coeff_fn=diffusion_coeff_fn,
+        alpha_bar_fn=alpha_bar_fn,
         latent_size=latent_size,
         batch_size=args.batch_size,
         z_channels=z_channels,
-        z_std=z_std_correction,
-        n_steps=500
+        z_std=z_std_correction
     )
 
     # Stats
@@ -173,7 +173,7 @@ def main():
         f"Latent Stats - Mean: {lat_np.mean():.4f}, Std: {lat_np.std():.4f}, Min: {lat_np.min():.4f}, Max: {lat_np.max():.4f}")
 
     # Save
-    out_path = os.path.join(args.run_dir, "samples", args.output_name)
+    out_path = os.path.join(args.run_dir, "final_samples", args.output_name)
     save_image(samples_grid, out_path)
     print(f"Saved sample to: {out_path}")
 
