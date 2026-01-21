@@ -283,7 +283,7 @@ def main():
     # Normalize if necessary (assuming VAE output is 0-1 or -1 to 1)
     # Usually Diffusers VAE outputs are raw, but user code might vary.
     # Just clamping for safety.
-    # images_torch = torch.clamp(images_torch, 0, 1)
+    images_torch = torch.clamp(images_torch, 0, 1)
 
     out_path = os.path.join(args.run_dir_1, "final_samples", args.output_name)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
