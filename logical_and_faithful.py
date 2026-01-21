@@ -120,7 +120,8 @@ def run_comparison_sampling(rng, m1, p1, m2, p2, ae_model, ae_params, sz, ch, nu
         # 2. Sample Noise for the step (shared for kappa calc and diffusion step)
         rng, step_rng = jax.random.split(rng)
         z = jax.random.normal(step_rng, x.shape)
-        g_t = diffusion_coeff_fn(t)  # Scalar
+        g_t_batch = diffusion_coeff_fn(jnp.expand_dims(t, axis=0))
+        g_t = g_t_batch[0]
 
         # 3. Determine Drift / Superposition
         if mode == "average":
