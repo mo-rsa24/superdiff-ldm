@@ -47,30 +47,62 @@ def get_latents(scheduler, z_channels: int =4, device = torch.device("cuda"), dt
     latents = latents * scheduler.init_noise_sigma
     return latents
 
-def stochastic_super_diff_and(latents, obj_prompt: List[str], bg_prompt: List[str], scheduler: EulerDiscreteScheduler, guidance_scale: int = 7.5 , num_inference_steps: int = 512, batch_size: int = 6, device = torch.device("cuda")):
-    obj_embeddings = get_text_embedding(obj_prompt * batch_size)
-    bg_embeddings = get_text_embedding(bg_prompt * batch_size)
-    uncond_embeddings = get_text_embedding([""] * batch_size)
+
+def stochastic_super_diff_and(
+        latents,
+        obj_prompt: List[str],
+        bg_prompt: List[str],
+        scheduler: EulerDiscreteScheduler,
+        unet,  # ADDED: Need UNet passed in
+        tokenizer,  # ADDED: Need Tokenizer passed in
+        text_encoder,  # ADDED: Need Text Encoder passed in
+        guidance_scale: float = 7.5,
+        num_inference_steps: int = 50,
+        batch_size: int = 4,
+        device=torch.device("cuda"),
+        dtype=torch.float16  # ADDED: dtype support
+):
+    # Pass tokenizer and text_encoder to get_text_embedding
+    obj_embeddings = get_text_embedding(obj_prompt * batch_size, tokenizer, text_encoder, device)
+    bg_embeddings = get_text_embedding(bg_prompt * batch_size, tokenizer, text_encoder, device)
+    uncond_embeddings = get_text_embedding([""] * batch_size, tokenizer, text_encoder, device)
 
     lift = 0.0
-    ll_obj = torch.ones((num_inference_steps + 1, batch_size), device=device)
-    ll_bg = torch.ones((num_inference_steps + 1, batch_size), device=device)
-    kappa = 0.5 * torch.ones((num_inference_steps + 1, batch_size), device=device)
+    ll_obj = torch.ones((num_inference_steps + 1, batch_size), device=device, dtype=dtype)
+    ll_bg = torch.ones((num_inference_steps + 1, batch_size), device=device, dtype=dtype)
+    kappa = 0.5 * torch.ones((num_inference_steps + 1, batch_size), device=device, dtype=dtype)
+
+    scheduler.set_timesteps(num_inference_steps)
+
     for i, t in enumerate(scheduler.timesteps):
         dsigma = scheduler.sigmas[i + 1] - scheduler.sigmas[i]
         sigma = scheduler.sigmas[i]
-        vel_obj, _ = get_vel(t, sigma, latents, [obj_embeddings])
-        vel_bg, _ = get_vel(t, sigma, latents, [bg_embeddings])
-        vel_uncond, _ = get_vel(t, sigma, latents, [uncond_embeddings])
+
+        # Pass unet and dtype
+        vel_obj, _ = get_vel(unet, t, sigma, latents, [obj_embeddings], device=device, dtype=dtype)
+        vel_bg, _ = get_vel(unet, t, sigma, latents, [bg_embeddings], device=device, dtype=dtype)
+        vel_uncond, _ = get_vel(unet, t, sigma, latents, [uncond_embeddings], device=device, dtype=dtype)
 
         noise = torch.sqrt(2 * torch.abs(dsigma) * sigma) * torch.randn_like(latents)
-        dx_ind = 2 * dsigma * (vel_uncond + guidance_scale * (vel_bg - vel_uncond)) + noise
-        kappa[i + 1] = (torch.abs(dsigma) * (vel_bg - vel_obj) * (vel_bg + vel_obj)).sum((1, 2, 3)) - (
-                    dx_ind * ((vel_obj - vel_bg))).sum((1, 2, 3)) + sigma * lift / num_inference_steps
-        kappa[i + 1] /= 2 * dsigma * guidance_scale * ((vel_obj - vel_bg) ** 2).sum((1, 2, 3))
 
+        # SuperDiff Logic
+        dx_ind = 2 * dsigma * (vel_uncond + guidance_scale * (vel_bg - vel_uncond)) + noise
+
+        # Terms for Kappa
+        term1 = (torch.abs(dsigma) * (vel_bg - vel_obj) * (vel_bg + vel_obj)).sum((1, 2, 3))
+        term2 = (dx_ind * (vel_obj - vel_bg)).sum((1, 2, 3))
+        term3 = sigma * lift / num_inference_steps
+
+        numerator = term1 - term2 + term3
+        denominator = 2 * dsigma * guidance_scale * ((vel_obj - vel_bg) ** 2).sum((1, 2, 3))
+
+        # Update Kappa with stability epsilon
+        kappa[i + 1] = numerator / (denominator + 1e-8)
+
+        # Composite Vector Field
         vf = vel_uncond + guidance_scale * (
                     (vel_bg - vel_uncond) + kappa[i + 1][:, None, None, None] * (vel_obj - vel_bg))
+
         dx = 2 * dsigma * vf + noise
         latents += dx
 
