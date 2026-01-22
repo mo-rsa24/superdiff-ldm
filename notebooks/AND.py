@@ -16,6 +16,7 @@ height, width = 512, 512
 latent_height, latent_width = 64, 64
 batch_size = 4
 steps = 500
+lift = 0.4
 
 # 2. Load Models
 models = get_sd_models(dtype=dtype, device=device)
@@ -49,6 +50,7 @@ latents, kappa, ll_obj, ll_bg = stochastic_super_diff_and(
     text_encoder=text_encoder,
     num_inference_steps=steps,
     batch_size=batch_size,
+    lift=lift,
     device=device,
     dtype=dtype
 )
@@ -56,6 +58,6 @@ latents, kappa, ll_obj, ll_bg = stochastic_super_diff_and(
 # 5. Decode
 img = get_image(vae, latents, nrow=2, ncol=2)
 img.show()
-img.save("superdiff_result.png")
+img.save("superdiff_result_256.png")
 
 plot_trajectories(ll_obj, ll_bg, kappa)
