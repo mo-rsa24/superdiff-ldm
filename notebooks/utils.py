@@ -5,10 +5,10 @@ from PIL import Image
 import matplotlib.pyplot as plt
 
 def get_sd_models(model_id: str = "runwayml/stable-diffusion-v1-5", dtype=torch.float16, device=torch.device("cuda")): # CompVis/stable-diffusion-v1-4
-    vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", dtype=dtype, use_safetensors=True).to(device)
+    vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", torch_dtype=dtype, use_safetensors=True).to(device)
     tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer")
-    text_encoder = CLIPTextModel.from_pretrained(model_id, subfolder="text_encoder", dtype=dtype, use_safetensors=True).to(device)
-    unet = UNet2DConditionModel.from_pretrained(model_id, subfolder="unet", dtype=dtype, use_safetensors=True).to(device)
+    text_encoder = CLIPTextModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=dtype, use_safetensors=True).to(device)
+    unet = UNet2DConditionModel.from_pretrained(model_id, subfolder="unet", torch_dtype=dtype, use_safetensors=True).to(device)
     return {"vae": vae, "tokenizer": tokenizer, "text_encoder": text_encoder, "unet": unet}
 
 
