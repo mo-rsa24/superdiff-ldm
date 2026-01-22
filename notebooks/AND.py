@@ -3,9 +3,8 @@ import torch
 from operator import itemgetter
 from diffusers import EulerDiscreteScheduler
 
-# Fix imports assuming files are in the same folder
 from dynamics import get_latents, stochastic_super_diff_and
-from utils import get_sd_models, get_image
+from notebooks.utils import get_sd_models, get_image, plot_trajectories
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -19,15 +18,15 @@ batch_size = 4
 steps = 50
 
 # 2. Load Models
-models = get_sd_models(dtype, device)
+models = get_sd_models(dtype=dtype, device=device)
 vae, tokenizer, text_encoder, unet = itemgetter(
     "vae", "tokenizer", "text_encoder", "unet"
 )(models)
 
 scheduler = EulerDiscreteScheduler.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="scheduler")
 
-obj_prompt = ["A Dog On The Left"]
-bg_prompt = ["A Cat On The Right"]
+obj_prompt = ["Dog"]
+bg_prompt = ["Cat"]
 
 # 3. Get Latents
 latents = get_latents(
@@ -40,8 +39,6 @@ latents = get_latents(
     latent_width=latent_width
 )
 
-# 4. Run SuperDiff
-# Fixed: Passing unet, tokenizer, text_encoder, and dtype explicitly
 latents, kappa, ll_obj, ll_bg = stochastic_super_diff_and(
     latents,
     obj_prompt,
@@ -60,3 +57,5 @@ latents, kappa, ll_obj, ll_bg = stochastic_super_diff_and(
 img = get_image(vae, latents, nrow=2, ncol=2)
 img.show()
 img.save("superdiff_result.png")
+
+plot_trajectories(ll_obj, ll_bg, kappa)

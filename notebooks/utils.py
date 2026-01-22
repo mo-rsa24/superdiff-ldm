@@ -2,17 +2,13 @@ import torch
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers import AutoencoderKL, UNet2DConditionModel
 from PIL import Image
+import matplotlib.pyplot as plt
 
-
-def get_sd_models(dtype=torch.float16, device=torch.device("cuda")):
-    # Changed model to v1-5 for better quality, or keep v1-4 if preferred
-    model_id = "runwayml/stable-diffusion-v1-5"
-
-    vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", torch_dtype=dtype).to(device)
+def get_sd_models(model_id: str = "runwayml/stable-diffusion-v1-5", dtype=torch.float16, device=torch.device("cuda")): # CompVis/stable-diffusion-v1-4
+    vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", dtype=dtype, use_safetensors=True).to(device)
     tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer")
-    text_encoder = CLIPTextModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=dtype).to(device)
-    unet = UNet2DConditionModel.from_pretrained(model_id, subfolder="unet", torch_dtype=dtype).to(device)
-
+    text_encoder = CLIPTextModel.from_pretrained(model_id, subfolder="text_encoder", dtype=dtype, use_safetensors=True).to(device)
+    unet = UNet2DConditionModel.from_pretrained(model_id, subfolder="unet", dtype=dtype, use_safetensors=True).to(device)
     return {"vae": vae, "tokenizer": tokenizer, "text_encoder": text_encoder, "unet": unet}
 
 
@@ -37,10 +33,23 @@ def get_image(vae, latents, nrow, ncol):
     image = torch.vstack(rows)
     return Image.fromarray(image.cpu().numpy())
 
-
+# et_vel(unet, t, sigma, latents, embeddings, eps=None, get_div=False, device=torch.device("cuda"), dtype=torch.float16)
 @torch.no_grad()
 def get_text_embedding(prompt, tokenizer, text_encoder, device=torch.device("cuda")):
     text_input = tokenizer(
         prompt, padding="max_length", max_length=tokenizer.model_max_length, truncation=True, return_tensors="pt"
     )
     return text_encoder(text_input.input_ids.to(device))[0]
+
+def plot_trajectories(ll_obj, ll_bg, kappa):
+    plt.figure(figsize=(12, 5))
+    plt.subplot(121)
+    plt.plot((ll_obj - ll_bg).cpu().numpy(), c='royalblue')
+    plt.ylabel('logp_obj - logp_bg')
+    plt.xlabel('num iterations')
+    plt.grid()
+    plt.subplot(122)
+    plt.plot(kappa.cpu().numpy(), c='royalblue')
+    plt.ylabel('kappa')
+    plt.xlabel('num iterations')
+    plt.grid()

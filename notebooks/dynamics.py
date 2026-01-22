@@ -38,7 +38,7 @@ def get_vel(unet, t, sigma, latents, embeddings, eps=None, get_div=False, device
 def get_latents(scheduler, z_channels: int =4, device = torch.device("cuda"), dtype = torch.float16,  num_inference_steps: int = 500, batch_size: int = 6, latent_width: int = 64, latent_height: int = 64):
     generator = torch.cuda.manual_seed(1)
     latents = torch.randn(
-        (batch_size, z_channels, latent_width, latent_height),
+        (batch_size, z_channels, latent_height, latent_width),
         generator=generator,
         device=device,
         dtype=dtype
@@ -53,21 +53,20 @@ def stochastic_super_diff_and(
         obj_prompt: List[str],
         bg_prompt: List[str],
         scheduler: EulerDiscreteScheduler,
-        unet,  # ADDED: Need UNet passed in
-        tokenizer,  # ADDED: Need Tokenizer passed in
-        text_encoder,  # ADDED: Need Text Encoder passed in
+        unet,
+        tokenizer,
+        text_encoder,
         guidance_scale: float = 7.5,
-        num_inference_steps: int = 50,
+        num_inference_steps: int = 100,
         batch_size: int = 4,
         device=torch.device("cuda"),
-        dtype=torch.float16  # ADDED: dtype support
+        dtype=torch.float16,
+        lift: float = 0.0
 ):
-    # Pass tokenizer and text_encoder to get_text_embedding
     obj_embeddings = get_text_embedding(obj_prompt * batch_size, tokenizer, text_encoder, device)
     bg_embeddings = get_text_embedding(bg_prompt * batch_size, tokenizer, text_encoder, device)
     uncond_embeddings = get_text_embedding([""] * batch_size, tokenizer, text_encoder, device)
 
-    lift = 0.0
     ll_obj = torch.ones((num_inference_steps + 1, batch_size), device=device, dtype=dtype)
     ll_bg = torch.ones((num_inference_steps + 1, batch_size), device=device, dtype=dtype)
     kappa = 0.5 * torch.ones((num_inference_steps + 1, batch_size), device=device, dtype=dtype)
