@@ -15,7 +15,7 @@ device = torch.device("cuda")
 height, width = 512, 512
 latent_height, latent_width = 64, 64
 batch_size = 4
-steps = 50
+steps = 500
 
 # 2. Load Models
 models = get_sd_models(dtype=dtype, device=device)
