@@ -16,7 +16,7 @@ height, width = 512, 512
 latent_height, latent_width = 64, 64
 batch_size = 4
 steps = 500
-lift = 0.4
+lift = -10
 
 # 2. Load Models
 models = get_sd_models(dtype=dtype, device=device)
@@ -26,8 +26,8 @@ vae, tokenizer, text_encoder, unet = itemgetter(
 
 scheduler = EulerDiscreteScheduler.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="scheduler")
 
-obj_prompt = ["Dog"]
-bg_prompt = ["Cat"]
+obj_prompt = ["A Dog On The Left"]
+bg_prompt = ["A Cat On The Right"]
 
 # 3. Get Latents
 latents = get_latents(

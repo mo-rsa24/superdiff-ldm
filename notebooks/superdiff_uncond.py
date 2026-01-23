@@ -5,7 +5,7 @@ import argparse
 import json
 import jax
 import jax.numpy as jnp
-from diffusion.vp_equation import marginal_prob_std
+from diffusion.vp_equation import marginal_prob_std_fn, diffusion_coeff_fn, alpha_bar_fn, score_function_hutchinson_estimator
 from PIL import Image
 import numpy as np
 from flax.training.train_state import TrainState
@@ -164,6 +164,115 @@ def stochastic_super_diff_and_uncond(
 
     return latents, jnp.array(kappa_log)
 
+def ddpm_ancestral_superdiff_and_uncond(
+    rng,
+    latents,
+    model_normal, params_normal,
+    model_tb, params_tb,
+    num_inference_steps,
+    lift=0.0,
+    kappa_clip=2.0,
+):
+    """
+    Hybrid SUPERDIFF-AND:
+      - models output epsilon (ε̂)
+      - convert to score: s = -ε̂ / σ(t)
+      - compute kappa using divergence estimates (Hutchinson) + inner-product term
+      - mix scores, convert back to ε̂_mix
+      - take a DDPM ancestral posterior step using ε̂_mix (sharp, stable)
+
+    Inputs/outputs match your code structure. :contentReference[oaicite:1]{index=1}
+    """
+    timesteps = jnp.linspace(1.0, 1e-5, num_inference_steps + 1)
+    kappa_log = []
+
+    x = latents
+
+    def _sum_except_batch(xx):
+        # sum over (H,W,C) axes -> keep batch dimension
+        axes = tuple(range(1, xx.ndim))
+        return jnp.sum(xx, axis=axes, keepdims=True)
+
+    for i in tqdm(range(num_inference_steps), desc="SuperDiff AND (DDPM ancestral)"):
+        t_now  = timesteps[i]
+        t_next = timesteps[i + 1]
+
+        B = x.shape[0]
+        vec_t      = jnp.full((B,), t_now)
+        vec_t_next = jnp.full((B,), t_next)
+
+        # ---- (1) ε predictions from both experts ----
+        eps_normal = model_normal.apply({'params': params_normal}, x, vec_t)
+        eps_tb     = model_tb.apply({'params': params_tb}, x, vec_t)
+
+        # ---- (2) Convert ε -> score: s = -ε/σ ----
+        std_now = marginal_prob_std_fn(vec_t)[:, None, None, None]  # σ(t)
+        sN = -eps_normal / std_now
+        sT = -eps_tb     / std_now
+
+        # ---- (3) Divergence estimates div(s) via Hutchinson ----
+        # estimator expects a function returning ε̂; it internally converts to div(score)
+        rng, k1, k2 = jax.random.split(rng, 3)
+
+        divN, _ = score_function_hutchinson_estimator(
+            x, vec_t,
+            score_fn=model_normal.apply,
+            params=params_normal,
+            key=jax.random.fold_in(k1, i),
+        )
+        divT, _ = score_function_hutchinson_estimator(
+            x, vec_t,
+            score_fn=model_tb.apply,
+            params=params_tb,
+            key=jax.random.fold_in(k2, i),
+        )
+
+        divN_b = divN[:, None, None, None]
+        divT_b = divT[:, None, None, None]
+
+        # ---- (4) Compute κ (SuperDiff-inspired, score-space) ----
+        # Structure matches your vp_equation-style expression: g(t)^2 (divN-divT) + <sN, sN-sT> / ||sN-sT||^2
+        g2 = diffusion_coeff_fn(vec_t)[:, None, None, None] ** 2
+
+        numerator   = g2 * (divN_b - divT_b) + _sum_except_batch(sN * (sN - sT))
+        if lift != 0.0:
+            numerator = numerator + (std_now * (lift / num_inference_steps))
+
+        denominator = _sum_except_batch((sN - sT) ** 2) + 1e-12
+        kappa = numerator / denominator
+
+        # stability clamp (recommended for TB ∧ Normal)
+        if kappa_clip is not None:
+            kappa = jnp.clip(kappa, -kappa_clip, kappa_clip)
+
+        kappa_log.append(kappa.squeeze())
+
+        # ---- (5) Mix scores, convert back to ε̂_mix ----
+        s_mix = sN + kappa * (sT - sN)
+        eps_mix = -std_now * s_mix
+
+        # ---- (6) DDPM ancestral posterior step using ε̂_mix ----
+        alpha_bar_now  = alpha_bar_fn(vec_t)[:, None, None, None]
+        alpha_bar_next = alpha_bar_fn(vec_t_next)[:, None, None, None]
+        sqrt_alpha_bar_now = jnp.sqrt(alpha_bar_now + 1e-5)
+
+        # x0 estimate (same form as your DDPM sampler)
+        pred_x0 = (x - std_now * eps_mix) / sqrt_alpha_bar_now
+
+        ratio = alpha_bar_now / (alpha_bar_next + 1e-5)
+        sigma_sq = (1.0 - alpha_bar_next) / (1.0 - alpha_bar_now + 1e-8) * (1.0 - ratio)
+        sigma = jnp.sqrt(jnp.clip(sigma_sq, 0.0, None))
+        dir_xt_coeff = jnp.sqrt(jnp.clip(1.0 - alpha_bar_next - sigma_sq, 0.0, None))
+
+        rng, kn = jax.random.split(rng)
+        noise = jax.random.normal(jax.random.fold_in(kn, i), x.shape)
+
+        x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_mix) + (sigma * noise)
+
+    return x, jnp.array(kappa_log)
+
+
+
 
 def decode_image(vae, vae_params, latents, latent_scale_factor = 1.0):
     """Decodes latents to images using the VAE."""
@@ -220,14 +329,17 @@ def main():
     latents = jax.random.normal(rng, latent_shape)
 
     # 4. Run Stochastic SuperDiff
-    print("Running SuperDiff Composition...")
-    final_latents, kappas = stochastic_super_diff_and_uncond(
+    print("Running SuperDiff Composition (Hybrid DDPM)...")
+    final_latents, kappas = ddpm_ancestral_superdiff_and_uncond(
+        rng,
         latents,
         model_normal, params_normal,
         model_tb, params_tb,
         num_inference_steps=args.steps,
-        lift=args.lift
+        lift=args.lift,
+        kappa_clip=2.0,   # tune: 1.0–3.0
     )
+
 
     # 5. Decode and Save
     print("Decoding images...")
