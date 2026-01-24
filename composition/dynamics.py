@@ -589,7 +589,7 @@ def ddpm_ancestral_poe_tracking(
         noise = jax.random.normal(jax.random.fold_in(kn, i), x.shape)
 
         x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_mix) + (sigma * noise)
-    return x, jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
+    return x, None, jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
 
 def run_sampler(sampler_name, latents, model_n, params_n, model_t, params_t, steps, lift, score_mode=False):
     """Routes to the correct sampler function."""

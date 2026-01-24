@@ -52,7 +52,7 @@ def main():
         if latents_normal is not None:
             print("Generating Manifold Visualizations...")
             plot_latent_pca(latents_normal, latents_tb, final_latents, output_path=f"{base_name}_pca.png")
-            plot_latent_tsne(latents_normal, latents_tb, final_latents, output_path=f"{base_name}_tsne.png")
+            # plot_latent_tsne(latents_normal, latents_tb, final_latents, output_path=f"{base_name}_tsne.png")
 
 if __name__ == "__main__":
     main()
