@@ -317,13 +317,12 @@ def stochastic_super_diff_and_uncond(
     return latents, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
 
 
-def prepare_latents(args, lsize, zch):
+def prepare_latents(args, lsize, zch, num_rows: int = 4):
     """Prepares initial latents for either a Sweep or a Single Run."""
     if args.sweep:
-        print(f"Mode: Sweep (Rows={args.num_rows}, Cols={len(args.lift_values)})")
         latents, lift_batch = get_sweep_configuration(
             lsize, z_channels=zch, lift_values=tuple(args.lift_values),
-            num_rows=args.num_rows, seed=args.seed
+            num_rows=num_rows, seed=args.seed
         )
         return latents, lift_batch
     else:
