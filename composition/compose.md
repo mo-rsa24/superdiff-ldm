@@ -22,15 +22,39 @@ python compose.py \
 
 ```
 
+
 ### Interpretation of Results
 
 * **Log Trajectories:** Expect the log-likelihoods of Model A and Model B to **diverge** or slope independently. Since there is no "locking" mechanism (like ), the models drift apart as they fight for control.
 * **PCA/t-SNE:** PoE samples will likely form a cluster that is **extreme** or far removed from both the Normal and TB clusters, potentially indicating "out of distribution" artifacts due to gradient summation.
 * **Image Quality:** Look for high contrast, saturation artifacts, or "deep-fried" textures.
 
+**Goal:** Since PoE effectively just adds scores (), it does not natively support the `lift` parameter in the same mathematical way. Running this sweep acts as a **Stability/Identity Test**.
+
+### Run Command
+
+```bash
+python compose.py \
+    --run_dir_normal "runs_ldm/ldm-normal-composition-preencode-latents-ancestral-8b4bb7d-20260120-111058" \
+    --run_dir_tb "runs_ldm/ldm-tb-composition-preencode-latents-ancestral-8b4bb7d-20260120-123239" \
+    --output_path "results/sweep_poe.png" \
+    --steps 200 \
+    --seed 42 \
+    --batch_size 4 \
+    --sampler PoE \
+    --sweep True \
+    --num_rows 4 \
+    --lift_values -1.0 -0.5 0.0 0.5 1.0
+
+```
+
+### Interpretation
+
+* **The "Identical Column" Phenomenon:** Because our PoE implementation uses fixed weights  and ignores `lift`, **every column in a row should look identical**.
+* **Why run this?** If you see differences between columns here, it means there is a bug in your random seed handling or broadcasting. It serves as a control group to prove that the changes in the other sweeps are actually due to the `lift` math and not just random noise.
 ---
 
-## 2. The Gold Standard: SuperDiff Faithful (DDPM Ancestral)
+## 2. SuperDiff Faithful (DDPM Ancestral)
 
 **Hypothesis:** Using the **Itô Density Estimator** to solve for the optimal mixing weight  will create a mathematically consistent "intersection" of the two distributions. The **DDPM Ancestral Sampler** will ensure textures remain sharp and realistic (correct variance).
 
@@ -45,7 +69,7 @@ python compose.py \
     --seed 42 \
     --batch_size 4 \
     --sample_images True \
-    --sampler Ancestral \
+    --sampler Ancestral | Faithful \
     --lift 0.0
 
 ```
@@ -56,6 +80,33 @@ python compose.py \
 * **Kappa ():** Should oscillate around **0.5**. If it saturates at 0.0 or 1.0 constantly, the composition has failed (collapsed to one model).
 * **PCA/t-SNE:** Samples should form a distinct cluster **between** or **overlapping** the Normal and TB clusters, representing a valid "hybrid" distribution.
 * **Image Quality:** High fidelity, sharp details, with semantic features of TB (opacities) smoothly integrated into the Normal lung structure.
+
+**Goal:** Visualize the transition logic. By sweeping `lift` from negative to positive, we bias the $\kappa$ solver.
+* **Negative Lift (-1.0):** Should suppress TB features, looking like a healthy lung.
+* **Zero Lift (0.0):** The optimal "AND" composition.
+* **Positive Lift (+1.0):** Should force TB features (opacities) to appear more aggressively.
+
+### Run Command
+```bash
+python compose.py \
+    --run_dir_normal "runs_ldm/ldm-normal-composition-preencode-latents-ancestral-8b4bb7d-20260120-111058" \
+    --run_dir_tb "runs_ldm/ldm-tb-composition-preencode-latents-ancestral-8b4bb7d-20260120-123239" \
+    --output_path "results/sweep_faithful.png" \
+    --steps 200 \
+    --seed 42 \
+    --batch_size 4 \
+    --sampler Ancestral | Faithful \
+    --sweep True \
+    --num_rows 4 \
+    --lift_values -1.0 -0.5 0.0 0.5 1.0
+
+```
+
+### Interpretation
+
+* **Success:** You should see a smooth gradient across the columns. The lung fields should remain structurally consistent (same rib cage, same heart) while the *texture* of the disease fades in and out.
+* **Failure:** If the image jumps abruptly from "Healthy" to "Sick" without intermediate states, the composition is unstable.
+
 
 ---
 
@@ -85,6 +136,29 @@ python compose.py \
 * **Kappa ():** Expect more spikes or extreme values compared to the smooth Faithful version.
 * **Image Quality:** Images may appear slightly **blurry** or "washed out" compared to DDPM Ancestral, as Euler steps often struggle to maintain perfect texture variance without many steps ().
 
+**Goal:** Compare the "smoothness" of the original Euler algorithm against the Faithful one.
+
+### Run Command
+
+```bash
+python compose.py \
+    --run_dir_normal "runs_ldm/ldm-normal-composition-preencode-latents-ancestral-8b4bb7d-20260120-111058" \
+    --run_dir_tb "runs_ldm/ldm-tb-composition-preencode-latents-ancestral-8b4bb7d-20260120-123239" \
+    --output_path "results/sweep_euler.png" \
+    --steps 200 \
+    --seed 42 \
+    --batch_size 4 \
+    --sampler Euler \
+    --sweep True \
+    --num_rows 4 \
+    --lift_values -1.0 -0.5 0.0 0.5 1.0
+
+```
+
+### Interpretation
+
+* **Comparison:** Look at the column for `lift=0.0` here vs. the Faithful sweep. The Euler result often has lower contrast or "muddier" details in the fine lung vasculature.
+* **Noise:** You might see more variation between rows (different seeds) because the implicit noise estimator has higher variance than the analytic solution.
 ---
 
 ## Comparative Summary
