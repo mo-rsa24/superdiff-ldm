@@ -1,18 +1,13 @@
 from operator import itemgetter
 import jax
 import jax.numpy as jnp
-
 from composition.utils import decode_image, save_image_grid
-from diffusion.vp_equation import marginal_prob_std, marginal_prob_std_fn, diffusion_coeff_fn, alpha_bar_fn, score_function_hutchinson_estimator
-from PIL import Image
+from diffusion.vp_equation import marginal_prob_std, score_function_hutchinson_estimator
 import numpy as np
-from flax.training.train_state import TrainState
-from typing import Any, List, Tuple
-from models.cxr_unet import ScoreNet
+from typing import Tuple
 from diffusion.sampling import Euler_Maruyama_sampler, DDPM_ancestral_sampler
 from diffusion.vp_equation import marginal_prob_std_fn, diffusion_coeff_fn, alpha_bar_fn
 from tqdm import tqdm
-from run.ldm import load_autoencoder_
 
 
 def get_score(model, params, x, t):
@@ -23,17 +18,43 @@ def get_score(model, params, x, t):
     """
     return model.apply({'params': params}, x, t)
 
-def generate_ldm_samples(rng, normal, tb, ae_model, ae_params, batch_size: int = 4,  sampler: str = "Ancestral", n_steps=200, latent_scale_factor=0.99937266, output_path: str ="x_ray_samples.png"):
-    print("Loading Model 1 (Normal)...")
-    model_normal, params_normal, cfg1, lsize, zch = itemgetter("ldm_model", "params", "config", "latent_size",
-                                                               "z_channels")(normal)
-    print("Loading Model 2 (TB)...")
-    model_tb, params_tb, cfg2, _, _ = itemgetter("ldm_model", "params", "config", "latent_size", "z_channels")(tb)
-    print("Sampling Images For Both Models")
+
+def batch_dot(a, b):
+    """
+    Computes the dot product <a, b> per batch item.
+    inputs: (B, H, W, C)
+    output: (B,)
+    """
+    # 1. Multiply element-wise
+    prod = a * b
+    # 2. Flatten all dims except batch (B, -1)
+    prod_flat = prod.reshape(prod.shape[0], -1)
+    # 3. Sum over the flattened dimension to get a scalar per batch
+    return prod_flat.sum(axis=-1)
+
+def generate_ldm_samples(
+    rng,
+    model_normal, params_normal,
+    model_tb, params_tb,
+    ae_model, ae_params,
+    latent_size, z_channels,
+    batch_size: int = 4,
+    sampler: str = "Ancestral",
+    n_steps=200,
+    latent_scale_factor=0.99937266,
+    output_path: str ="x_ray_samples.png"
+):
+    """
+        Generates independent samples from both models for baseline comparison and PCA visualization.
+        Updated to accept explicit model/param arguments instead of extraction containers.
+        """
+    print("Sampling Images For Both Models (Independent Baseline)...")
+
     # 1. Select the Sampler
     if sampler == 'Euler':
         sampler_fn = Euler_Maruyama_sampler
-    elif sampler == 'Ancestral':
+    elif sampler == 'Ancestral' or sampler == 'Faithful' or sampler == 'PoE':
+        # Faithful and PoE usually default to Ancestral for their independent baselines
         sampler_fn = DDPM_ancestral_sampler
     else:
         raise ValueError(f"Unknown sampler: {sampler}")
@@ -45,10 +66,10 @@ def generate_ldm_samples(rng, normal, tb, ae_model, ae_params, batch_size: int =
         "marginal_prob_std_fn": marginal_prob_std_fn,
         "diffusion_coeff_fn": diffusion_coeff_fn,
         "alpha_bar_fn": alpha_bar_fn,
-        "latent_size": lsize,
+        "latent_size": latent_size,
         "batch_size": batch_size,
-        "z_channels": zch,
-        "z_std": 1.0,
+        "z_channels": z_channels,
+        "z_std": 1.0 / latent_scale_factor,
         "n_steps": n_steps,
     }
     # 3. Generate Samples
@@ -68,6 +89,7 @@ def generate_ldm_samples(rng, normal, tb, ae_model, ae_params, batch_size: int =
     sample_out_path = output_path.replace(".png", f"_reference_{sampler}.png")
     save_image_grid(decoded_imgs_np, sample_out_path , 4, 2)
     print(f"Reference samples (Normal top, TB bottom) saved to {sample_out_path}")
+    return latents_normal, latents_tb
 
 def ddpm_ancestral_superdiff_and_uncond(
     rng,
@@ -93,12 +115,25 @@ def ddpm_ancestral_superdiff_and_uncond(
 
     x = latents
 
+    log_diff_history = []  # To track |log q_A - log q_B|
+
+    # Initialize Relative Log Densities (start at 0)
+    log_q_normal = jnp.zeros((latents.shape[0],))
+    log_q_tb = jnp.zeros((latents.shape[0],))
+
+    log_q_normal_hist = []
+    log_q_tb_hist = []
+
+    dt = 1.0 / num_inference_steps
+
     def _sum_except_batch(xx):
         # sum over (H,W,C) axes -> keep batch dimension
         axes = tuple(range(1, xx.ndim))
         return jnp.sum(xx, axis=axes, keepdims=True)
 
     for i in tqdm(range(num_inference_steps), desc="SuperDiff AND (DDPM ancestral)"):
+        if i == 3:
+            break
         t_now  = timesteps[i]
         t_next = timesteps[i + 1]
 
@@ -154,6 +189,23 @@ def ddpm_ancestral_superdiff_and_uncond(
 
         # ---- (5) Mix scores, convert back to ε̂_mix ----
         s_mix = sN + kappa * (sT - sN)
+
+        S_NN = batch_dot(sN, sN)
+        S_TT = batch_dot(sT, sT)
+        # Dot products for update
+        dot_mix_N = batch_dot(s_mix, sN)
+        dot_mix_T = batch_dot(s_mix, sT)
+
+        d_log_N = (dot_mix_N - 0.5 * g2.squeeze() * S_NN) * dt
+        d_log_T = (dot_mix_T - 0.5 * g2.squeeze() * S_TT) * dt
+
+        log_q_normal += d_log_N
+        log_q_tb += d_log_T
+
+        log_q_normal_hist.append(log_q_normal)
+        log_q_tb_hist.append(log_q_tb)
+        log_diff_history.append(log_q_normal - log_q_tb)
+
         eps_mix = -std_now * s_mix
 
         # ---- (6) DDPM ancestral posterior step using ε̂_mix ----
@@ -174,7 +226,7 @@ def ddpm_ancestral_superdiff_and_uncond(
 
         x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_mix) + (sigma * noise)
 
-    return x, jnp.array(kappa_log)
+    return x, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
 
 def stochastic_super_diff_and_uncond(
         latents,
@@ -196,13 +248,30 @@ def stochastic_super_diff_and_uncond(
     # Initialize logs
     kappa_log = []
 
+    log_diff_history = []  # To track |log q_A - log q_B|
+
+    # Initialize Relative Log Densities (start at 0)
+    log_q_normal = jnp.zeros((latents.shape[0],))
+    log_q_tb = jnp.zeros((latents.shape[0],))
+
+    log_q_normal_hist = []
+    log_q_tb_hist = []
+
+    dt = 1.0 / num_inference_steps
+
     for i in tqdm(range(num_inference_steps), desc="SuperDiff AND"):
+        if i == 3:
+            break
         t_current = timesteps[i]
         t_next = timesteps[i + 1]
         t_batch = jnp.full((latents.shape[0],), t_current)
         sigma = marginal_prob_std(t_current)
         sigma_next = marginal_prob_std(t_next)
         dsigma = sigma_next - sigma
+
+        # Get g(t) for the log-density estimator (Shadow Logger requirement)
+        g_t = diffusion_coeff_fn(t_batch)  # Shape (B,)
+        g2 = g_t ** 2
 
         vel_normal = get_score(model_normal, params_normal, latents, t_batch)
         vel_tb = get_score(model_tb, params_tb, latents, t_batch)
@@ -226,12 +295,31 @@ def stochastic_super_diff_and_uncond(
 
         # Composite Vector Field
         vf = vel_normal + kappa_b * (vel_tb - vel_normal)
-
         # 4. Update Latents (Euler-Maruyama step)
         dx = 2 * dsigma * vf + noise
         latents = latents + dx
 
-    return latents, jnp.array(kappa_log)
+        def simple_batch_dot(a, b):
+            return (a * b).reshape(a.shape[0], -1).sum(axis=-1)
+
+            # Compute dot products just for logging
+
+        S_NN = simple_batch_dot(vel_normal, vel_normal)
+        S_TT = simple_batch_dot(vel_tb, vel_tb)
+        dot_mix_N = simple_batch_dot(vf, vel_normal)
+        dot_mix_T = simple_batch_dot(vf, vel_tb)
+
+        d_log_N = (dot_mix_N - 0.5 * g2 * S_NN) * dt
+        d_log_T = (dot_mix_T - 0.5 * g2 * S_TT) * dt
+
+        log_q_normal += d_log_N
+        log_q_tb += d_log_T
+
+        log_q_normal_hist.append(log_q_normal)
+        log_q_tb_hist.append(log_q_tb)
+        log_diff_history.append(log_q_normal - log_q_tb)
+        break
+    return latents, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
 
 def get_sweep_configuration(latent_size, z_channels: int =4, lift_values: Tuple[float] = (-1.0, -0.5, -0.25, 0.25, 0.5, 1.0), num_rows: int = 4, seed: int =0):
     rng = jax.random.PRNGKey(seed)
@@ -250,3 +338,272 @@ def get_sweep_configuration(latent_size, z_channels: int =4, lift_values: Tuple[
     lift_batch = jnp.tile(lifts_jnp, num_rows)  # Shape (Total Batch,)
     print(f"Total Batch Shape: {latents.shape}")
     return latents, lift_batch
+
+def ddpm_ancestral_superdiff_and_uncond_faithful(
+        rng,
+        latents,
+        model_normal, params_normal,
+        model_tb, params_tb,
+        num_inference_steps,
+        lift=0.0,
+        kappa_clip=2.0,
+):
+    """
+    Faithful implementation of SUPERDIFF Algorithm 1 (AND logic) for JAX/Flax.
+
+    Instead of Hutchinson's estimator, this uses the Itô Density Estimator logic
+    (Prop 6 & Thm 1 from the paper) to solve for kappa analytically using only
+    dot products of the scores.
+
+    Inputs/outputs match ddpm_ancestral_superdiff_and_uncond.
+    """
+    timesteps = jnp.linspace(1.0, 1e-5, num_inference_steps + 1)
+    kappa_log = []
+    log_diff_history = []  # To track |log q_A - log q_B|
+
+    # Initialize Relative Log Densities (start at 0)
+    log_q_normal = jnp.zeros((latents.shape[0],))
+    log_q_tb = jnp.zeros((latents.shape[0],))
+
+    log_q_normal_hist = []
+    log_q_tb_hist = []
+
+    x = latents
+    dt = 1.0 / num_inference_steps
+    # Helper: Sum over (H, W, C) to get shape (Batch, 1, 1, 1)
+    def _sum_except_batch(xx):
+        axes = tuple(range(1, xx.ndim))
+        return jnp.sum(xx, axis=axes, keepdims=True)
+
+    for i in tqdm(range(num_inference_steps), desc="SuperDiff Faithful (DDPM)"):
+        if i == 3:
+            break
+        t_now = timesteps[i]
+        t_next = timesteps[i + 1]
+
+        B = x.shape[0]
+        vec_t = jnp.full((B,), t_now)
+        vec_t_next = jnp.full((B,), t_next)
+
+        # ---- (1) ε predictions from both experts ----
+        eps_normal = model_normal.apply({'params': params_normal}, x, vec_t)
+        eps_tb = model_tb.apply({'params': params_tb}, x, vec_t)
+
+        # ---- (2) Convert ε -> score: s = -ε / σ(t) ----
+        std_now = marginal_prob_std_fn(vec_t)[:, None, None, None]  # σ(t)
+        sN = -eps_normal / std_now
+        sT = -eps_tb / std_now
+
+        # ---- (3) Compute Dot Products (Interaction Matrix) ----
+        # S_ij = <s_i, s_j>
+        S_NN = batch_dot(sN, sN)
+        S_TT = batch_dot(sT, sT)
+        S_NT = batch_dot(sN, sT)
+
+        # ---- (4) Solve for Kappa (Analytic Solution for AND) ----
+        # We want d(log q_N) = d(log q_T).
+        # Derivation from Ito Density Estimator (Thm 1):
+        # kappa * ||sT - sN||^2 = <sN, sN - sT> + 0.5 * g(t)^2 * (||sT||^2 - ||sN||^2)
+
+        g_t = diffusion_coeff_fn(vec_t)[:, None, None, None]  # g(t)
+        g2 = g_t ** 2
+
+        # Term A: Drift matching <sN, sN - sT>
+        term_drift = S_NN - S_NT
+
+        # Term B: Ito Correction 0.5 * g^2 * (||sT||^2 - ||sN||^2)
+        # This term replaces the Divergence (Hutchinson) estimator!
+        term_ito = 0.5 * g2 * (S_TT - S_NN)
+
+        # Term C: Lift (Bias)
+        # lift is scaled by sigma or 1/steps effectively
+        term_lift = 0.0
+        if lift is not None:
+            # Matches the scaling in your original function
+            term_lift = std_now * (lift[:, None, None, None] / num_inference_steps)
+
+        numerator = term_drift + term_ito + term_lift
+
+        # Denominator: ||sT - sN||^2 = S_TT + S_NN - 2*S_NT
+        denominator = (S_TT + S_NN - 2 * S_NT) + 1e-12
+
+        kappa = numerator / denominator
+
+        # Stability clamp
+        if kappa_clip is not None:
+            kappa = jnp.clip(kappa, -kappa_clip, kappa_clip)
+
+        kappa_log.append(kappa.squeeze())
+
+        # ---- (5) Mix scores ----
+        # Note: The derivation assumes mixing vector u = sN + kappa * (sT - sN)
+        s_mix = sN + kappa * (sT - sN)
+
+        # Dot products for update
+        dot_mix_N = batch_dot(s_mix, sN)  # (B,)
+        dot_mix_T = batch_dot(s_mix, sT)  # (B,)
+
+        d_log_N = (dot_mix_N - 0.5 * g2.squeeze() * S_NN) * dt
+        d_log_T = (dot_mix_T - 0.5 * g2.squeeze() * S_TT) * dt
+
+        log_q_normal += d_log_N
+        log_q_tb += d_log_T
+
+        log_q_normal_hist.append(log_q_normal)
+        log_q_tb_hist.append(log_q_tb)
+        log_diff_history.append(log_q_normal - log_q_tb)
+
+
+        # ---- (6) DDPM Ancestral Posterior Step ----
+        # (Exact copy of the sampler logic from your existing function)
+        # Convert back to epsilon for the DDPM sampler
+        eps_mix = -std_now * s_mix
+        alpha_bar_now = alpha_bar_fn(vec_t)[:, None, None, None]
+        alpha_bar_next = alpha_bar_fn(vec_t_next)[:, None, None, None]
+        sqrt_alpha_bar_now = jnp.sqrt(alpha_bar_now + 1e-5)
+
+        # x0 estimate
+        pred_x0 = (x - std_now * eps_mix) / sqrt_alpha_bar_now
+
+        # Posterior variance calculation
+        ratio = alpha_bar_now / (alpha_bar_next + 1e-5)
+        sigma_sq = (1.0 - alpha_bar_next) / (1.0 - alpha_bar_now + 1e-8) * (1.0 - ratio)
+        sigma = jnp.sqrt(jnp.clip(sigma_sq, 0.0, None))
+        dir_xt_coeff = jnp.sqrt(jnp.clip(1.0 - alpha_bar_next - sigma_sq, 0.0, None))
+
+        rng, kn = jax.random.split(rng)
+        noise = jax.random.normal(jax.random.fold_in(kn, i), x.shape)
+
+        x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_mix) + (sigma * noise)
+
+    return x, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
+
+
+def ddpm_ancestral_poe_tracking(
+        rng,
+        latents,
+        model_normal, params_normal,
+        model_tb, params_tb,
+        num_inference_steps,
+        weights=(1.0, 1.0)  # (w_normal, w_tb) - Set to (1.0, 1.0) for strict PoE, (0.5, 0.5) for averaging
+):
+    """
+    Product-of-Experts (PoE) composition with DDPM Ancestral Sampling.
+
+    Logic:
+      s_mix = w_A * s_A + w_B * s_B
+
+    Includes tracking of log-density trajectories using the Itô estimator
+    to compare with SuperDiff.
+    """
+    timesteps = jnp.linspace(1.0, 1e-5, num_inference_steps + 1)
+
+    # Initialize Histories
+    log_q_normal_hist = []
+    log_q_tb_hist = []
+
+    # Initialize Relative Log Densities (start at 0)
+    log_q_normal = jnp.zeros((latents.shape[0],))
+    log_q_tb = jnp.zeros((latents.shape[0],))
+
+    x = latents
+    dt = 1.0 / num_inference_steps
+    w_n, w_tb = weights
+
+    # Helper: Sum over (H, W, C)
+    def _sum_except_batch(xx):
+        axes = tuple(range(1, xx.ndim))
+        return jnp.sum(xx, axis=axes, keepdims=True)
+
+    for i in tqdm(range(num_inference_steps), desc="PoE (DDPM Ancestral)"):
+        if i == 3:
+            break
+        t_now = timesteps[i]
+        t_next = timesteps[i + 1]
+
+        B = x.shape[0]
+        vec_t = jnp.full((B,), t_now)
+        vec_t_next = jnp.full((B,), t_next)
+
+        # ---- (1) Get Scores ----
+        eps_normal = model_normal.apply({'params': params_normal}, x, vec_t)
+        eps_tb = model_tb.apply({'params': params_tb}, x, vec_t)
+
+        std_now = marginal_prob_std_fn(vec_t)[:, None, None, None]
+        sN = -eps_normal / std_now
+        sT = -eps_tb / std_now
+
+        # ---- (2) PoE Mix ----
+        # Standard PoE is just the sum.
+        # Note: Summing scores usually results in higher magnitude gradients
+        # which can "sharpen" or "burn" the image.
+        s_mix = (w_n * sN) + (w_tb * sT)
+
+        # Convert back to epsilon for sampler
+        eps_mix = -std_now * s_mix
+
+        # ---- (3) Track Log Trajectories (Itô Estimator) ----
+        # We track how the individual models "feel" about this PoE path
+        g_t = diffusion_coeff_fn(vec_t)[:, None, None, None]
+        g2 = g_t ** 2
+
+        # Calculate dot products
+        S_NN = batch_dot(sN, sN)
+        S_TT = batch_dot(sT, sT)
+        dot_mix_N = batch_dot(s_mix, sN)
+        dot_mix_T = batch_dot(s_mix, sT)
+
+        # Update logs: d(log q) ≈ <s_mix, s_i> - 0.5 * g^2 * ||s_i||^2
+        d_log_N = (dot_mix_N - 0.5 * g2.squeeze() * S_NN) * dt
+        d_log_T = (dot_mix_T - 0.5 * g2.squeeze() * S_TT) * dt
+
+        log_q_normal += d_log_N
+        log_q_tb += d_log_T
+
+        log_q_normal_hist.append(log_q_normal)
+        log_q_tb_hist.append(log_q_tb)
+
+        # ---- (4) DDPM Step ----
+        alpha_bar_now = alpha_bar_fn(vec_t)[:, None, None, None]
+        alpha_bar_next = alpha_bar_fn(vec_t_next)[:, None, None, None]
+        sqrt_alpha_bar_now = jnp.sqrt(alpha_bar_now + 1e-5)
+
+        pred_x0 = (x - std_now * eps_mix) / sqrt_alpha_bar_now
+
+        ratio = alpha_bar_now / (alpha_bar_next + 1e-5)
+        sigma_sq = (1.0 - alpha_bar_next) / (1.0 - alpha_bar_now + 1e-8) * (1.0 - ratio)
+        sigma = jnp.sqrt(jnp.clip(sigma_sq, 0.0, None))
+        dir_xt_coeff = jnp.sqrt(jnp.clip(1.0 - alpha_bar_next - sigma_sq, 0.0, None))
+
+        rng, kn = jax.random.split(rng)
+        noise = jax.random.normal(jax.random.fold_in(kn, i), x.shape)
+
+        x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_mix) + (sigma * noise)
+    return x, jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
+
+def run_sampler(sampler_name, latents, model_n, params_n, model_t, params_t, steps, lift, score_mode=False):
+    """Routes to the correct sampler function."""
+
+    if sampler_name == 'Ancestral':  # faithful
+        print("Running Faithful SuperDiff (DDPM)...")
+        return ddpm_ancestral_superdiff_and_uncond_faithful(
+            jax.random.PRNGKey(0), latents, model_n, params_n, model_t, params_t,
+            num_inference_steps=steps, lift=lift, kappa_clip=2.0
+        )
+
+    elif sampler_name == 'Euler':
+        print("Running Euler SuperDiff (Tracking)...")
+        return stochastic_super_diff_and_uncond(
+            latents, model_n, params_n, model_t, params_t,
+            num_inference_steps=steps, lift=lift, score=score_mode
+        )
+
+    elif sampler_name == 'PoE':
+        print("Running Product-of-Experts (PoE)...")
+        # Lift is unused in PoE, but we pass it for interface consistency if needed
+        return ddpm_ancestral_poe_tracking(
+            jax.random.PRNGKey(0), latents, model_n, params_n, model_t, params_t,
+            num_inference_steps=steps
+        )
+    else:
+        raise ValueError(f"Unknown sampler: {sampler_name}")
