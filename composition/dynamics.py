@@ -317,11 +317,11 @@ def stochastic_super_diff_and_uncond(
     return latents, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
 
 
-def prepare_latents(args, lsize, zch, num_rows: int = 4):
+def prepare_latents(args, lsize, zch,  lift_values: Tuple[float] = (-1.0, -0.5, -0.25, 0.25, 0.5, 1.0), num_rows: int = 4):
     """Prepares initial latents for either a Sweep or a Single Run."""
     if args.sweep:
         latents, lift_batch = get_sweep_configuration(
-            lsize, z_channels=zch, lift_values=tuple(args.lift_values),
+            lsize, z_channels=zch, lift_values=lift_values,
             num_rows=num_rows, seed=args.seed
         )
         return latents, lift_batch
@@ -329,7 +329,10 @@ def prepare_latents(args, lsize, zch, num_rows: int = 4):
         print(f"Mode: Single Run (Batch={args.batch_size})")
         rng = jax.random.PRNGKey(args.seed)
         latents = jax.random.normal(rng, (args.batch_size, lsize, lsize, zch))
-        lift_batch = args.lift  # Scalar or broadcast if needed by sampler
+        if args.sampler == 'Euler':
+            lift_batch = args.lift  # Scalar or broadcast if needed by sampler
+        else:
+            lift_batch = None
         return latents, lift_batch
 
 def get_sweep_configuration(latent_size, z_channels: int =4, lift_values: Tuple[float] = (-1.0, -0.5, -0.25, 0.25, 0.5, 1.0), num_rows: int = 4, seed: int =0):
@@ -592,12 +595,17 @@ def run_sampler(sampler_name, latents, model_n, params_n, model_t, params_t, ste
     """Routes to the correct sampler function."""
 
     if sampler_name == 'Ancestral':  # faithful
+        print("Running Ancestral SuperDiff (DDPM)...")
+        return ddpm_ancestral_superdiff_and_uncond(
+            jax.random.PRNGKey(0), latents, model_n, params_n, model_t, params_t,
+            num_inference_steps=steps, lift=lift, kappa_clip=2.0
+        )
+    elif sampler_name == 'Faithful':
         print("Running Faithful SuperDiff (DDPM)...")
         return ddpm_ancestral_superdiff_and_uncond_faithful(
             jax.random.PRNGKey(0), latents, model_n, params_n, model_t, params_t,
             num_inference_steps=steps, lift=lift, kappa_clip=2.0
         )
-
     elif sampler_name == 'Euler':
         print("Running Euler SuperDiff (Tracking)...")
         return stochastic_super_diff_and_uncond(
