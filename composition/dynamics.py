@@ -316,6 +316,23 @@ def stochastic_super_diff_and_uncond(
         log_diff_history.append(log_q_normal - log_q_tb)
     return latents, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
 
+
+def prepare_latents(args, lsize, zch):
+    """Prepares initial latents for either a Sweep or a Single Run."""
+    if args.sweep:
+        print(f"Mode: Sweep (Rows={args.num_rows}, Cols={len(args.lift_values)})")
+        latents, lift_batch = get_sweep_configuration(
+            lsize, z_channels=zch, lift_values=tuple(args.lift_values),
+            num_rows=args.num_rows, seed=args.seed
+        )
+        return latents, lift_batch
+    else:
+        print(f"Mode: Single Run (Batch={args.batch_size})")
+        rng = jax.random.PRNGKey(args.seed)
+        latents = jax.random.normal(rng, (args.batch_size, lsize, lsize, zch))
+        lift_batch = args.lift  # Scalar or broadcast if needed by sampler
+        return latents, lift_batch
+
 def get_sweep_configuration(latent_size, z_channels: int =4, lift_values: Tuple[float] = (-1.0, -0.5, -0.25, 0.25, 0.5, 1.0), num_rows: int = 4, seed: int =0):
     rng = jax.random.PRNGKey(seed)
     row_latents = []

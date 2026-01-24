@@ -1,6 +1,5 @@
-from composition.dynamics import generate_ldm_samples, run_sampler
-from composition.utils import parse_args, setup_run, \
-    prepare_latents, save_results
+from composition.dynamics import generate_ldm_samples, run_sampler, prepare_latents
+from composition.utils import parse_args, setup_run,save_results
 import jax
 from composition.visualize import plot_log_trajectories, plot_kappa_trajectory, plot_latent_pca, plot_latent_tsne
 

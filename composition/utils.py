@@ -10,8 +10,6 @@ from PIL import Image
 import numpy as np
 from flax.training.train_state import TrainState
 from typing import Any
-
-from composition.dynamics import get_sweep_configuration
 from models.cxr_unet import ScoreNet
 from notebooks.superdiff_sweep import create_labelled_grid
 from run.ldm import load_autoencoder_
@@ -169,23 +167,6 @@ def setup_run(args):
     lsize, zch = itemgetter("latent_size", "z_channels")(normal)
 
     return ae_model, ae_params, model_n, params_n, model_t, params_t, lsize, zch
-
-
-def prepare_latents(args, lsize, zch):
-    """Prepares initial latents for either a Sweep or a Single Run."""
-    if args.sweep:
-        print(f"Mode: Sweep (Rows={args.num_rows}, Cols={len(args.lift_values)})")
-        latents, lift_batch = get_sweep_configuration(
-            lsize, z_channels=zch, lift_values=tuple(args.lift_values),
-            num_rows=args.num_rows, seed=args.seed
-        )
-        return latents, lift_batch
-    else:
-        print(f"Mode: Single Run (Batch={args.batch_size})")
-        rng = jax.random.PRNGKey(args.seed)
-        latents = jax.random.normal(rng, (args.batch_size, lsize, lsize, zch))
-        lift_batch = args.lift  # Scalar or broadcast if needed by sampler
-        return latents, lift_batch
 
 def save_results(final_latents, ae_model, ae_params, args):
     """Decodes and saves the final images."""
