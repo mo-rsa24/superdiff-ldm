@@ -132,8 +132,6 @@ def ddpm_ancestral_superdiff_and_uncond(
         return jnp.sum(xx, axis=axes, keepdims=True)
 
     for i in tqdm(range(num_inference_steps), desc="SuperDiff AND (DDPM ancestral)"):
-        if i == 3:
-            break
         t_now  = timesteps[i]
         t_next = timesteps[i + 1]
 
@@ -260,8 +258,6 @@ def stochastic_super_diff_and_uncond(
     dt = 1.0 / num_inference_steps
 
     for i in tqdm(range(num_inference_steps), desc="SuperDiff AND"):
-        if i == 3:
-            break
         t_current = timesteps[i]
         t_next = timesteps[i + 1]
         t_batch = jnp.full((latents.shape[0],), t_current)
@@ -318,7 +314,6 @@ def stochastic_super_diff_and_uncond(
         log_q_normal_hist.append(log_q_normal)
         log_q_tb_hist.append(log_q_tb)
         log_diff_history.append(log_q_normal - log_q_tb)
-        break
     return latents, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
 
 def get_sweep_configuration(latent_size, z_channels: int =4, lift_values: Tuple[float] = (-1.0, -0.5, -0.25, 0.25, 0.5, 1.0), num_rows: int = 4, seed: int =0):
@@ -376,8 +371,6 @@ def ddpm_ancestral_superdiff_and_uncond_faithful(
         return jnp.sum(xx, axis=axes, keepdims=True)
 
     for i in tqdm(range(num_inference_steps), desc="SuperDiff Faithful (DDPM)"):
-        if i == 3:
-            break
         t_now = timesteps[i]
         t_next = timesteps[i + 1]
 
@@ -516,8 +509,6 @@ def ddpm_ancestral_poe_tracking(
         return jnp.sum(xx, axis=axes, keepdims=True)
 
     for i in tqdm(range(num_inference_steps), desc="PoE (DDPM Ancestral)"):
-        if i == 3:
-            break
         t_now = timesteps[i]
         t_next = timesteps[i + 1]
 
