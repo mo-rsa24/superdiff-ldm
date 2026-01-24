@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from PIL import Image
 import numpy as np
 from flax.training.train_state import TrainState
-from typing import Any
+from typing import Any, Tuple
 from models.cxr_unet import ScoreNet
 from notebooks.superdiff_sweep import create_labelled_grid
 from run.ldm import load_autoencoder_
@@ -168,14 +168,14 @@ def setup_run(args):
 
     return ae_model, ae_params, model_n, params_n, model_t, params_t, lsize, zch
 
-def save_results(final_latents, ae_model, ae_params, args):
+def save_results(final_latents, ae_model, ae_params, args, lift_values: Tuple[float] = (-1.0, -0.5, -0.25, 0.25, 0.5, 1.0), num_rows: int = 4):
     """Decodes and saves the final images."""
     print("Decoding images...")
     images = decode_image(ae_model, ae_params, final_latents, latent_scale_factor=args.latent_scale_factor)
     images_np = np.array(images)
 
     if args.sweep:
-        create_labelled_grid(images_np, args.num_rows, len(args.lift_values), args.lift_values, args.output_path)
+        create_labelled_grid(images_np, num_rows, len(lift_values), args.lift_values, args.output_path)
     else:
         save_image_grid(images_np, args.output_path)
 
