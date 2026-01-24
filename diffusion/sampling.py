@@ -75,3 +75,88 @@ def DDPM_ancestral_sampler(
         grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
 
     return grid, final_latent
+
+
+def Euler_Maruyama_sampler(
+        rng, ldm_model, ldm_params, ae_model, ae_params,
+        marginal_prob_std_fn, diffusion_coeff_fn, alpha_bar_fn,
+        latent_size, batch_size, z_channels, vae_z_channels=None, z_std=1.0,
+        n_steps=500, eps=1e-5
+):
+    """
+    Generate samples using the Euler-Maruyama solver for the reverse SDE.
+    Assumes a VP-SDE (Variance Preserving) structure compatible with the
+    provided marginal_prob_std_fn.
+    """
+    rngs = jax.random.split(rng, batch_size)
+    single_sample_shape = (latent_size, latent_size, z_channels)
+
+    # 1. Initialization (Same as DDPM)
+    init_x = jax.vmap(lambda key: jax.random.normal(key, single_sample_shape))(rngs)
+    init_x = init_x * marginal_prob_std_fn(jnp.array([1.0]))[0]
+
+    timesteps = jnp.linspace(1.0, eps, n_steps + 1)
+    x = init_x
+
+    # 2. Sampling Loop
+    for i in tqdm(range(n_steps), desc="Euler-Maruyama Sampling"):
+        t_now = timesteps[i]
+        t_next = timesteps[i + 1]
+        dt = t_now - t_next  # Step size (positive)
+
+        # Broadcast time to batch
+        vec_t = jnp.ones(batch_size) * t_now
+
+        # Get Model Prediction (Noise eps)
+        eps_theta = ldm_model.apply({'params': ldm_params}, x, vec_t)
+
+        # Get SDE coefficients
+        # g(t) for the diffusion term
+        g_t = diffusion_coeff_fn(vec_t)[:, None, None, None]
+        # sigma(t) for converting noise prediction to score
+        std_t = marginal_prob_std_fn(vec_t)[:, None, None, None]
+
+        # Calculate Score: score = -epsilon / std
+        score = -eps_theta / std_t
+
+        # VP-SDE Drift term f(x,t) = -0.5 * beta(t) * x
+        # Note: beta(t) = g(t)^2
+        beta_t = g_t ** 2
+        drift_f = -0.5 * beta_t * x
+
+        # Reverse SDE Drift: f_rev = f(x,t) - g(t)^2 * score
+        # f_rev = -0.5 * beta * x - beta * score
+        rev_drift = drift_f - (beta_t * score)
+
+        # Diffusion term noise
+        noise = jax.random.normal(jax.random.fold_in(rng, i), x.shape)
+
+        # Euler-Maruyama Step
+        # x_{t-1} = x_t + rev_drift * dt + g(t) * sqrt(dt) * z
+        x_mean = x + (rev_drift * dt)
+        x = x_mean + (g_t * jnp.sqrt(dt) * noise)
+
+    final_latent = x
+
+    # 3. Decoding / Reconstruction (Identical to Reference)
+    grid = None
+    if ae_model is not None:
+        target_channels = vae_z_channels if vae_z_channels is not None else z_channels
+
+        # Handle channel mismatch if LDM latent dim differs from VAE latent dim
+        if x.shape[-1] < target_channels:
+            B, H, W, C = x.shape
+            padded_x = jnp.zeros((B, H, W, target_channels))
+            x = padded_x.at[..., :C].set(x)
+
+        # Decode
+        z_for_decode = x * z_std
+        x_hat = ae_model.apply({'params': ae_params}, z_for_decode, method=ae_model.decode, train=False)
+
+        # Process image for Grid
+        x_hat = jnp.clip(x_hat, 0., 1.)
+        x_hat = jnp.transpose(x_hat, (0, 3, 1, 2))  # NHWC -> NCHW
+        x_hat_t = torch.from_numpy(np.asarray(x_hat))
+        grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
+
+    return grid, final_latent

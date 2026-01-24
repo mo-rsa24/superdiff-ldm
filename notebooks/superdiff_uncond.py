@@ -5,7 +5,7 @@ import argparse
 import json
 import jax
 import jax.numpy as jnp
-from diffusion.vp_equation import marginal_prob_std_fn, diffusion_coeff_fn, alpha_bar_fn, score_function_hutchinson_estimator
+from diffusion.vp_equation import marginal_prob_std, marginal_prob_std_fn, diffusion_coeff_fn, alpha_bar_fn, score_function_hutchinson_estimator
 from PIL import Image
 import numpy as np
 from flax.training.train_state import TrainState
@@ -28,6 +28,7 @@ def parse_args():
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lift", type=float, default=0.0, help="Lift parameter for SuperDiff stability")
+    parser.add_argument("--score", type=bool, default=False, help="Parameter that determines if we should divide by -sigma")
     return parser.parse_args()
 
 
@@ -115,7 +116,8 @@ def stochastic_super_diff_and_uncond(
         model_normal, params_normal,
         model_tb, params_tb,
         num_inference_steps,
-        lift=0.0
+        lift=0.0,
+        score = False
 ):
     """
     Implements Stochastic SuperDiff AND logic for two unconditional score fields.
@@ -139,7 +141,9 @@ def stochastic_super_diff_and_uncond(
 
         vel_normal = get_score(model_normal, params_normal, latents, t_batch)
         vel_tb = get_score(model_tb, params_tb, latents, t_batch)
-
+        if score:
+            vel_normal = - vel_normal / sigma
+            vel_tb = - vel_tb / sigma
 
         # Independent step (baseline trajectory)
         noise = jax.random.normal(jax.random.PRNGKey(i), latents.shape) * jnp.sqrt(2 * jnp.abs(dsigma) * sigma)
@@ -330,15 +334,26 @@ def main():
 
     # 4. Run Stochastic SuperDiff
     print("Running SuperDiff Composition (Hybrid DDPM)...")
-    final_latents, kappas = ddpm_ancestral_superdiff_and_uncond(
-        rng,
-        latents,
-        model_normal, params_normal,
-        model_tb, params_tb,
-        num_inference_steps=args.steps,
-        lift=args.lift,
-        kappa_clip=2.0,   # tune: 1.0–3.0
-    )
+    if not args.score:
+        final_latents, kappas = ddpm_ancestral_superdiff_and_uncond(
+            rng,
+            latents,
+            model_normal, params_normal,
+            model_tb, params_tb,
+            num_inference_steps=args.steps,
+            lift=args.lift,
+            kappa_clip=2.0,   # tune: 1.0–3.0
+        )
+    else:
+        print("Running SuperDiff Composition...")
+        final_latents, kappas = stochastic_super_diff_and_uncond(
+            latents,
+            model_normal, params_normal,
+            model_tb, params_tb,
+            num_inference_steps=args.steps,
+            lift=args.lift,
+            score=args.score
+        )
 
 
     # 5. Decode and Save
