@@ -175,7 +175,7 @@ def save_results(final_latents, ae_model, ae_params, args, lift_values: Tuple[fl
     images_np = np.array(images)
 
     if args.sweep:
-        create_labelled_grid(images_np, num_rows, len(lift_values), args.lift_values, args.output_path)
+        create_labelled_grid(images_np, num_rows, len(lift_values), lift_values, args.output_path)
     else:
         save_image_grid(images_np, args.output_path)
 
