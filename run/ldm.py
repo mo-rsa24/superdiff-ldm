@@ -604,7 +604,7 @@ def main():
 
             open_block("sample", step=global_step, epoch=ep + 1, note="Euler-Maruyama SDE Sampler")
             sample_rng = jax.random.fold_in(rng, ep + 1)
-            samples_grid, final_latent = DDPM_ancestral_sampler(
+            samples_grid, final_latent, _ = DDPM_ancestral_sampler(
                 rng=sample_rng,
                 ldm_model=ldm_model,
                 ldm_params=sampling_params,

@@ -22,7 +22,7 @@ def DDPM_ancestral_sampler(
         rng, ldm_model, ldm_params, ae_model, ae_params,
         marginal_prob_std_fn, diffusion_coeff_fn, alpha_bar_fn,
         latent_size, batch_size, z_channels, vae_z_channels=None, z_std=1.0,
-        n_steps=500, eps=1e-5
+        n_steps=500, eps=1e-5, return_trajectory=False
 ):
     rngs = jax.random.split(rng, batch_size)
     single_sample_shape = (latent_size, latent_size, z_channels)
@@ -32,6 +32,8 @@ def DDPM_ancestral_sampler(
 
     timesteps = jnp.linspace(1.0, eps, n_steps + 1)
     x = init_x
+
+    trajectory = [] if return_trajectory else None
 
     for i in tqdm(range(n_steps), desc="DDPM Sampling"):
         t_now = timesteps[i]
@@ -55,7 +57,8 @@ def DDPM_ancestral_sampler(
 
         noise = jax.random.normal(jax.random.fold_in(rng, i), x.shape)
         x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_theta) + (sigma * noise)
-
+        if return_trajectory:
+            trajectory.append(pred_x0)
     final_latent = x
 
     grid = None
@@ -73,15 +76,15 @@ def DDPM_ancestral_sampler(
         x_hat = jnp.transpose(x_hat, (0, 3, 1, 2))
         x_hat_t = torch.from_numpy(np.asarray(x_hat))
         grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
-
-    return grid, final_latent
+    traj_ret = jnp.array(trajectory) if return_trajectory else None
+    return grid, final_latent, traj_ret
 
 
 def Euler_Maruyama_sampler(
         rng, ldm_model, ldm_params, ae_model, ae_params,
         marginal_prob_std_fn, diffusion_coeff_fn, alpha_bar_fn,
         latent_size, batch_size, z_channels, vae_z_channels=None, z_std=1.0,
-        n_steps=500, eps=1e-5
+        n_steps=500, eps=1e-5, return_trajectory=False
 ):
     """
     Generate samples using the Euler-Maruyama solver for the reverse SDE.
@@ -98,6 +101,7 @@ def Euler_Maruyama_sampler(
     timesteps = jnp.linspace(1.0, eps, n_steps + 1)
     x = init_x
 
+    trajectory = [] if return_trajectory else None
     # 2. Sampling Loop
     for i in tqdm(range(n_steps), desc="Euler-Maruyama Sampling"):
         t_now = timesteps[i]
@@ -135,7 +139,10 @@ def Euler_Maruyama_sampler(
         # x_{t-1} = x_t + rev_drift * dt + g(t) * sqrt(dt) * z
         x_mean = x + (rev_drift * dt)
         x = x_mean + (g_t * jnp.sqrt(dt) * noise)
-
+        if return_trajectory:
+            alpha_bar_now = alpha_bar_fn(vec_t)[:, None, None, None]
+            pred_x0 = (x - std_t * eps_theta) / jnp.sqrt(alpha_bar_now + 1e-5)
+            trajectory.append(pred_x0)
     final_latent = x
 
     # 3. Decoding / Reconstruction (Identical to Reference)
@@ -158,5 +165,5 @@ def Euler_Maruyama_sampler(
         x_hat = jnp.transpose(x_hat, (0, 3, 1, 2))  # NHWC -> NCHW
         x_hat_t = torch.from_numpy(np.asarray(x_hat))
         grid = make_grid(x_hat_t, nrow=int(jnp.sqrt(batch_size)))
-
-    return grid, final_latent
+    traj_ret = jnp.array(trajectory) if return_trajectory else None
+    return grid, final_latent, traj_ret

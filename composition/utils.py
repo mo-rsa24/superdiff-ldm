@@ -26,7 +26,10 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--latent_scale_factor", type=float, default=0.99937266)
     parser.add_argument("--steps", type=int, default=500)
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--num_samples", type=int, default=100,
+                        help="Total number of latents to generate for analysis (manifold)")
+    parser.add_argument("--batch_size", type=int, default=4, help="Number of samples to process per GPU step")
+    parser.add_argument("--num_visual_samples", type=int, default=4, help="Number of images to decode and save to disk")
     parser.add_argument("--lift", type=float, default=0.0, help="Lift parameter for SuperDiff stability")
     parser.add_argument("--score", type=bool, default=False, help="Parameter that determines if we should divide by -sigma")
     parser.add_argument("--sweep", type=bool, default=False, help="Parameter that determines if we should generates sampling with varying lift parameter")
@@ -168,6 +171,14 @@ def setup_run(args):
 
     return ae_model, ae_params, model_n, params_n, model_t, params_t, lsize, zch
 
+def setup_config(args):
+    """Loads models and configurations."""
+    meta_path = os.path.join(args.run_dir_normal, "ldm_meta.json")
+    with open(meta_path, 'r') as f:
+        config_1 = json.load(f)
+    ae_model, ae_params, normal, tb = load_models(config_1, args.run_dir_normal, args.run_dir_tb)
+    return ae_model, ae_params, normal, tb
+
 def save_results(final_latents, ae_model, ae_params, args, lift_values: Tuple[float] = (-1.0, -0.5, -0.25, 0.25, 0.5, 1.0), num_rows: int = 4):
     """Decodes and saves the final images."""
     print("Decoding images...")
@@ -180,3 +191,35 @@ def save_results(final_latents, ae_model, ae_params, args, lift_values: Tuple[fl
         save_image_grid(images_np, args.output_path)
 
     print(f"Result saved to {args.output_path}")
+
+
+def save_filmstrip(vae, vae_params, trajectory, output_path, latent_scale_factor=1.0, num_frames=8):
+    """
+    Decodes specific timesteps from a latent trajectory to visualize the 'thought process'.
+
+    Args:
+        trajectory: Array of shape (Steps, Batch, H, W, C)
+        num_frames: How many snapshots to take from start to finish.
+    """
+    print(f"Generating Filmstrip ({num_frames} frames)...")
+    traj = np.array(trajectory)
+    steps = traj.shape[0]
+
+    # Select indices: Start, ..., End
+    indices = np.linspace(0, steps - 1, num_frames, dtype=int)
+
+    # Extract latents for Batch Index 0 (Single Sample)
+    # Shape: (Num_Frames, H, W, C)
+    selected_latents = traj[indices, 0, :, :, :]
+
+    # Decode
+    # Note: Early steps (t close to 1.0) will decode to pure noise/static.
+    # Mid steps will look like blurry X-rays.
+    images = decode_image(vae, vae_params, selected_latents, latent_scale_factor)
+
+    # Convert to Numpy for saving
+    images_np = np.array(images)
+
+    # Save as 1 Row x N Cols
+    save_image_grid(images_np, output_path, rows=1, cols=num_frames)
+    print(f"Filmstrip saved to {output_path}")

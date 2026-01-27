@@ -91,6 +91,142 @@ def generate_ldm_samples(
     print(f"Reference samples (Normal top, TB bottom) saved to {sample_out_path}")
     return latents_normal, latents_tb
 
+
+def generate_batched_baseline(
+        rng,
+        model_pkg,
+        num_samples,
+        batch_size,
+        sampler="Ancestral",
+        n_steps=200,
+        latent_scale_factor=0.99937266,
+        return_trajectory=False
+):
+    """
+    Generates 'num_samples' latents using a standard sampler (no composition).
+    Loops over batches and returns the concatenated result.
+    """
+    model, params, _, lsize, zch = itemgetter("ldm_model", "params", "config", "latent_size", "z_channels")(model_pkg)
+
+    if sampler == 'Euler':
+        sampler_fn = Euler_Maruyama_sampler
+    elif sampler == 'Ancestral' or sampler == 'Faithful' or sampler == 'PoE':
+        # Faithful and PoE usually default to Ancestral for their independent baselines
+        sampler_fn = DDPM_ancestral_sampler
+    else:
+        raise ValueError(f"Unknown sampler: {sampler}")
+
+    # Kwargs for the standard samplers
+    sample_kwargs = {
+        "ae_model": None, "ae_params": None,
+        "marginal_prob_std_fn": marginal_prob_std_fn,
+        "diffusion_coeff_fn": diffusion_coeff_fn,
+        "alpha_bar_fn": alpha_bar_fn,
+        "latent_size": lsize,
+        "z_channels": zch,
+        "z_std": 1.0 / latent_scale_factor,
+        "n_steps": n_steps,
+    }
+
+    all_latents = []
+    num_batches = int(np.ceil(num_samples / batch_size))
+    viz_trajectory = None
+    # Loop over batches
+    for i in tqdm(range(num_batches), desc="Baseline Generation"):
+        # Calculate current batch size (handle remainder)
+        current_bs = min(batch_size, num_samples - len(all_latents) * batch_size)
+        step_rng = jax.random.fold_in(rng, i)
+        capture_this_batch = (return_trajectory and i == 0)
+        sample_kwargs["batch_size"] = current_bs
+        sample_kwargs["return_trajectory"] = capture_this_batch
+        _, batch_latents, batch_traj = sampler_fn(ldm_model=model, ldm_params=params, rng=step_rng, **sample_kwargs)
+        if capture_this_batch:
+            viz_trajectory = batch_traj
+        all_latents.append(batch_latents)
+
+    return jnp.concatenate(all_latents, axis=0), viz_trajectory
+
+
+def run_composition_batched(
+        rng,
+        args,
+        model_n, params_n,
+        model_t, params_t,
+        latent_shape
+):
+    """
+    Orchestrates the Composition Sampling loop.
+    1. Loops 'num_samples' / 'batch_size' times.
+    2. Runs the specific composition sampler for each batch.
+    3. Accumulates Latents, Kappas, and Logs.
+    4. Returns consolidated arrays.
+    """
+    all_final_latents = []
+    all_kappas = []
+    all_log_a = []
+    all_log_b = []
+
+    lsize, zch = latent_shape
+    num_batches = int(np.ceil(args.num_samples / args.batch_size))
+    print(f"Starting Composition: {args.sampler}")
+    print(f"Total Samples: {args.num_samples} | Batch Size: {args.batch_size} | Iterations: {num_batches}")
+    viz_trajectory = None
+    for i in range(num_batches):
+        capture_traj = (i == 0)
+        current_bs = min(args.batch_size, args.num_samples - len(all_final_latents) * args.batch_size)
+        step_rng = jax.random.fold_in(rng, i)
+
+        # Generate initial noise for this batch
+        batch_latents = jax.random.normal(step_rng, (current_bs, lsize, lsize, zch))
+
+        # Route to correct sampler
+        if args.sampler == 'Faithful':
+            lift = None if args.lift == 0.0 else args.lift
+            res = ddpm_ancestral_superdiff_and_uncond_faithful(
+                step_rng, batch_latents, model_n, params_n, model_t, params_t,
+                num_inference_steps=args.steps, lift=lift, return_trajectory=capture_traj
+            )
+        elif args.sampler == 'Ancestral':
+            res = ddpm_ancestral_superdiff_and_uncond(
+                step_rng, batch_latents, model_n, params_n, model_t, params_t,
+                num_inference_steps=args.steps, lift=args.lift, return_trajectory=capture_traj
+            )
+        elif args.sampler == 'Euler':
+            res = stochastic_super_diff_and_uncond(
+                batch_latents, model_n, params_n, model_t, params_t,
+                num_inference_steps=args.steps, lift=args.lift, score=args.score,
+                return_trajectory=capture_traj
+            )
+        elif args.sampler == 'PoE':
+            res = ddpm_ancestral_poe_tracking(
+                step_rng, batch_latents, model_n, params_n, model_t, params_t,
+                num_inference_steps=args.steps, return_trajectory=capture_traj
+            )
+        else:
+            raise ValueError(f"Unknown sampler {args.sampler}")
+
+        l, k, la, lb, traj = res
+
+        if capture_traj:
+            viz_trajectory = traj
+
+        all_final_latents.append(l)
+        if k is not None: all_kappas.append(k)
+        all_log_a.append(la)
+        all_log_b.append(lb)
+
+        print(f"Batch {i + 1}/{num_batches} finished.")
+
+    # Consolidate Results
+    final_latents = jnp.concatenate(all_final_latents, axis=0)
+
+    # Logs are usually (Steps, Batch). We concatenate on Axis 1 to get (Steps, Total_Samples)
+    full_log_a = jnp.concatenate(all_log_a, axis=1) if all_log_a else None
+    full_log_b = jnp.concatenate(all_log_b, axis=1) if all_log_b else None
+    full_kappas = jnp.concatenate(all_kappas, axis=1) if all_kappas else None
+
+    return final_latents, full_kappas, full_log_a, full_log_b, viz_trajectory
+
 def ddpm_ancestral_superdiff_and_uncond(
     rng,
     latents,
@@ -99,6 +235,7 @@ def ddpm_ancestral_superdiff_and_uncond(
     num_inference_steps,
     lift=0.0,
     kappa_clip=2.0,
+    return_trajectory=False
 ):
     """
     Hybrid SUPERDIFF-AND:
@@ -125,6 +262,8 @@ def ddpm_ancestral_superdiff_and_uncond(
     log_q_tb_hist = []
 
     dt = 1.0 / num_inference_steps
+
+    trajectory = [] if return_trajectory else None
 
     def _sum_except_batch(xx):
         # sum over (H,W,C) axes -> keep batch dimension
@@ -223,8 +362,9 @@ def ddpm_ancestral_superdiff_and_uncond(
         noise = jax.random.normal(jax.random.fold_in(kn, i), x.shape)
 
         x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_mix) + (sigma * noise)
-
-    return x, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
+        if return_trajectory:
+            trajectory.append(pred_x0)
+    return x, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist), trajectory
 
 def stochastic_super_diff_and_uncond(
         latents,
@@ -232,7 +372,8 @@ def stochastic_super_diff_and_uncond(
         model_tb, params_tb,
         num_inference_steps,
         lift=0.0,
-        score = False
+        score = False,
+        return_trajectory=False
 ):
     """
     Implements Stochastic SuperDiff AND logic for two unconditional score fields.
@@ -242,7 +383,7 @@ def stochastic_super_diff_and_uncond(
     """
 
     timesteps = jnp.linspace(1.0, 1e-5, num_inference_steps + 1)
-
+    trajectory = [] if return_trajectory else None
     # Initialize logs
     kappa_log = []
 
@@ -314,7 +455,9 @@ def stochastic_super_diff_and_uncond(
         log_q_normal_hist.append(log_q_normal)
         log_q_tb_hist.append(log_q_tb)
         log_diff_history.append(log_q_normal - log_q_tb)
-    return latents, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
+        if return_trajectory:
+            trajectory.append(latents)
+    return latents, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist), trajectory
 
 
 def prepare_latents(args, lsize, zch,  lift_values: Tuple[float] = (-1.0, -0.5, -0.25, 0.25, 0.5, 1.0), num_rows: int = 4):
@@ -361,6 +504,7 @@ def ddpm_ancestral_superdiff_and_uncond_faithful(
         num_inference_steps,
         lift=0.0,
         kappa_clip=2.0,
+        return_trajectory=False
 ):
     """
     Faithful implementation of SUPERDIFF Algorithm 1 (AND logic) for JAX/Flax.
@@ -374,7 +518,6 @@ def ddpm_ancestral_superdiff_and_uncond_faithful(
     timesteps = jnp.linspace(1.0, 1e-5, num_inference_steps + 1)
     kappa_log = []
     log_diff_history = []  # To track |log q_A - log q_B|
-
     # Initialize Relative Log Densities (start at 0)
     log_q_normal = jnp.zeros((latents.shape[0],))
     log_q_tb = jnp.zeros((latents.shape[0],))
@@ -384,6 +527,8 @@ def ddpm_ancestral_superdiff_and_uncond_faithful(
 
     x = latents
     dt = 1.0 / num_inference_steps
+
+    trajectory = [] if return_trajectory else None
     # Helper: Sum over (H, W, C) to get shape (Batch, 1, 1, 1)
     def _sum_except_batch(xx):
         axes = tuple(range(1, xx.ndim))
@@ -408,9 +553,9 @@ def ddpm_ancestral_superdiff_and_uncond_faithful(
 
         # ---- (3) Compute Dot Products (Interaction Matrix) ----
         # S_ij = <s_i, s_j>
-        S_NN = batch_dot(sN, sN)
-        S_TT = batch_dot(sT, sT)
-        S_NT = batch_dot(sN, sT)
+        S_NN = batch_dot(sN, sN)[:, None, None, None]
+        S_TT = batch_dot(sT, sT)[:, None, None, None]
+        S_NT = batch_dot(sN, sT)[:, None, None, None]
 
         # ---- (4) Solve for Kappa (Analytic Solution for AND) ----
         # We want d(log q_N) = d(log q_T).
@@ -487,8 +632,10 @@ def ddpm_ancestral_superdiff_and_uncond_faithful(
         noise = jax.random.normal(jax.random.fold_in(kn, i), x.shape)
 
         x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_mix) + (sigma * noise)
+        if return_trajectory:
+            trajectory.append(pred_x0)  # Store pred_x0 for consistency with baseline samplers
 
-    return x, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
+    return x, jnp.array(kappa_log), jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist), trajectory
 
 
 def ddpm_ancestral_poe_tracking(
@@ -497,7 +644,8 @@ def ddpm_ancestral_poe_tracking(
         model_normal, params_normal,
         model_tb, params_tb,
         num_inference_steps,
-        weights=(1.0, 1.0)  # (w_normal, w_tb) - Set to (1.0, 1.0) for strict PoE, (0.5, 0.5) for averaging
+        weights=(1.0, 1.0),  # (w_normal, w_tb) - Set to (1.0, 1.0) for strict PoE, (0.5, 0.5) for averaging
+        return_trajectory=False
 ):
     """
     Product-of-Experts (PoE) composition with DDPM Ancestral Sampling.
@@ -509,7 +657,7 @@ def ddpm_ancestral_poe_tracking(
     to compare with SuperDiff.
     """
     timesteps = jnp.linspace(1.0, 1e-5, num_inference_steps + 1)
-
+    trajectory = [] if return_trajectory else None
     # Initialize Histories
     log_q_normal_hist = []
     log_q_tb_hist = []
@@ -589,7 +737,9 @@ def ddpm_ancestral_poe_tracking(
         noise = jax.random.normal(jax.random.fold_in(kn, i), x.shape)
 
         x = (jnp.sqrt(alpha_bar_next) * pred_x0) + (dir_xt_coeff * eps_mix) + (sigma * noise)
-    return x, None, jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist)
+        if return_trajectory:
+            trajectory.append(pred_x0)
+    return x, None, jnp.array(log_q_normal_hist), jnp.array(log_q_tb_hist), trajectory
 
 def run_sampler(sampler_name, latents, model_n, params_n, model_t, params_t, steps, lift, score_mode=False):
     """Routes to the correct sampler function."""

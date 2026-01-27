@@ -1,7 +1,7 @@
 from composition.dynamics import generate_ldm_samples, run_sampler, prepare_latents
 from composition.utils import parse_args, setup_run,save_results
 import jax
-from composition.visualize import plot_log_trajectories, plot_kappa_trajectory, plot_latent_pca, plot_latent_tsne
+from composition.visualize import plot_log_trajectories, plot_kappa_trajectory, plot_latent_pca
 
 LIFT_VALUES = [-1.0, -0.5, -0.25, 0.25, 0.5, 1.0]  # Sorted for logical interpolation
 NUM_ROWS = 4

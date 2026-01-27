@@ -152,7 +152,7 @@ def main():
 
     rng, sample_rng = jax.random.split(rng)
 
-    samples_grid, final_latents = DDPM_ancestral_sampler(
+    samples_grid, final_latents, _ = DDPM_ancestral_sampler(
         rng=sample_rng,
         ldm_model=ldm_model,
         ldm_params=params,

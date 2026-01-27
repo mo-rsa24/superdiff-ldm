@@ -107,7 +107,39 @@ python compose.py \
 * **Success:** You should see a smooth gradient across the columns. The lung fields should remain structurally consistent (same rib cage, same heart) while the *texture* of the disease fades in and out.
 * **Failure:** If the image jumps abruptly from "Healthy" to "Sick" without intermediate states, the composition is unstable.
 
+### Latent Manifold Exploration
+Based on the refactoring we just performed, here is the robust run command.
 
+This configuration demonstrates the **decoupling** you requested:
+
+1. **`--num_samples 1000`**: It will generate a large dataset (1000 points) to create a high-quality UMAP manifold visualization.
+2. **`--batch_size 4`**: It will process these 1000 samples in small chunks of 4 to fit easily on your GPU.
+3. **`--num_visual_samples 4`**: It will only save the actual image grid for the first 4 samples, saving disk space.
+
+#### Recommended Run Command (SuperDiff Faithful)
+
+```bash
+python compose.py \
+    --run_dir_normal "runs_ldm/ldm-normal-composition-preencode-latents-ancestral-8b4bb7d-20260120-111058" \
+    --run_dir_tb "runs_ldm/ldm-tb-composition-preencode-latents-ancestral-8b4bb7d-20260120-123239" \
+    --output_path "superdiff_faithful_analysis.png" \
+    --sampler Ancestral \
+    --steps 200 \
+    --seed 42 \
+    --lift 0.0 \
+    --num_samples 1000 \
+    --batch_size 4 \
+    --num_visual_samples 4 \
+    --sample_images True
+
+```
+
+#### Explanation of Outputs You Will Get
+
+1. **`superdiff_faithful_analysis.png`**: A 4x4 grid of images (Normal, TB, Composition).
+2. **`superdiff_faithful_analysis_umap.png`**: A scatter plot with **3000 points** (1000 Normal + 1000 TB + 1000 Composition), showing exactly where the composition sits on the manifold.
+3. **`superdiff_faithful_analysis_dynamics.png`**: A "Wishbone" plot showing the centroid trajectories of the first batch, illustrating *how* the models diverged over the 200 steps.
+4. **`superdiff_faithful_analysis_kappa.png`**: A plot of the mixing weight  over time.
 ---
 
 ## 3. The Original: SuperDiff Stochastic (Euler)
@@ -187,3 +219,68 @@ python compose.py \
 * **Goal:** Green points (Composition) sitting in the empty space between Blue (Normal) and Orange (TB).
 * **Failure:** Green points completely covering the Orange cluster (means it just ignored the Normal model).
 
+# Compose Batch
+
+Here are two scripts tailored to your specific hardware constraints and goals.
+
+### 1. `run_full_4090.sh` (High Quality Analysis)
+
+**Target:** Nvidia RTX 4090 (24GB VRAM)
+**Goal:** Generate enough data (500 samples) to populate the UMAP/PCA density plots densely while keeping the GPU batch size safe.
+
+* **`--num_samples 500`**: This provides enough points for the "Density Landscapes" and "Manifold Validity" plots to be statistically significant without taking days to run.
+* **`--batch_size 8`**: A 4090 can typically handle batches of 8 or 16 for standard LDMs. 8 is a safe "set it and forget it" number that won't OOM (Out of Memory).
+* **`--steps 200`**: Sufficient for high-quality images without the cost of 500 or 1000 steps.
+
+```bash
+#!/bin/bash
+
+# Update these paths to your actual model directories
+NORMAL_RUN="runs_ldm/ldm-normal-composition-preencode-latents-ancestral-8b4bb7d-20260120-111058"
+TB_RUN="runs_ldm/ldm-tb-composition-preencode-latents-ancestral-8b4bb7d-20260120-123239"
+
+python compose_batch.py \
+    --run_dir_normal "$NORMAL_RUN" \
+    --run_dir_tb "$TB_RUN" \
+    --output_path "superdiff_full_experiment.png" \
+    --sampler Ancestral \
+    --steps 200 \
+    --seed 42 \
+    --lift 0.25 \
+    --num_samples 500 \
+    --batch_size 8 \
+    --num_visual_samples 8 \
+    --sample_images True
+
+```
+
+### 2. `run_debug.sh` (Sanity Check)
+
+**Target:** Quick verification
+**Goal:** Verify the code runs from start to finish, creates folders, and generates plots without crashing.
+
+* **`--steps 5`**: The images will look like noise, but the code will execute the entire sampler loop quickly.
+* **`--num_samples 4`**: The absolute minimum to ensure batching logic works (1 batch of 2, 2 iterations).
+* **`--batch_size 2`**: Smallest logical unit.
+
+```bash
+#!/bin/bash
+
+# Update these paths to your actual model directories
+NORMAL_RUN="runs_ldm/ldm-normal-composition-preencode-latents-ancestral-8b4bb7d-20260120-111058"
+TB_RUN="runs_ldm/ldm-tb-composition-preencode-latents-ancestral-8b4bb7d-20260120-123239"
+
+python compose_batch.py \
+    --run_dir_normal "$NORMAL_RUN" \
+    --run_dir_tb "$TB_RUN" \
+    --output_path "superdiff_debug.png" \
+    --sampler Ancestral \
+    --steps 5 \
+    --seed 99 \
+    --lift 0.0 \
+    --num_samples 4 \
+    --batch_size 2 \
+    --num_visual_samples 2 \
+    --sample_images True
+
+```
