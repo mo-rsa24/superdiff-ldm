@@ -1188,7 +1188,7 @@ Based on the analysis, we can draw the following conclusions:
 
 2. MANIFOLD HYPOTHESIS:
 
-   {"The proximity of SUPERDIFF samples to the A-B interpolation line suggests composition \n   stays approximately on-manifold, reducing the likelihood of off-manifold artifacts." if torch.norm(centroid_sd - centroid_midpoint) < 0.3 * torch.norm(centroid_a - centroid_b) else "The deviation of SUPERDIFF samples from the A-B interpolation line suggests potential \n   off-manifold trajectories, which could explain hybridization artifacts."}
+   {"The proximity of SUPERDIFF samples to the A-B interpolation line suggests composition   stays approximately on-manifold, reducing the likelihood of off-manifold artifacts." if torch.norm(centroid_sd - centroid_midpoint) < 0.3 * torch.norm(centroid_a - centroid_b) else "The deviation of SUPERDIFF samples from the A-B interpolation line suggests potential   off-manifold trajectories, which could explain hybridization artifacts."}
 
 3. SEMANTIC INTERPRETATION:
 

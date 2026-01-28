@@ -23,6 +23,11 @@ from notebooks.spatial_grounding_experiments import (
     SpatialGroundingExperimentSuite
 )
 from notebooks.enhanced_visualizations import generate_enhanced_visualizations
+from notebooks.manifold_geometry_analysis import (
+    analyze_composition_geometry,
+    analyze_trajectory_curvature
+)
+import torch
 
 
 def main():
@@ -133,43 +138,129 @@ def main():
             suite.spatial_suite.config
         )
 
-    # Step 3: Final summary
+    # Step 3: Advanced manifold geometry analysis
+    if not args.skip_enhanced_viz:  # Use same flag as enhanced viz
+        print("\n" + "="*80)
+        print("STEP 3: ADVANCED MANIFOLD GEOMETRY ANALYSIS")
+        print("="*80)
+
+        # Collect latents for semantic prompts
+        print("\n--- Semantic Prompts ---")
+        semantic_mono = torch.cat([l.cpu().flatten(1) for l in
+                                   suite.semantic_suite.results['monolithic']['latents']], dim=0)
+        semantic_a = torch.cat([l.cpu().flatten(1) for l in
+                               suite.semantic_suite.results['prompt_a']['latents']], dim=0)
+        semantic_b = torch.cat([l.cpu().flatten(1) for l in
+                               suite.semantic_suite.results['prompt_b']['latents']], dim=0)
+        semantic_sd = torch.cat([l.cpu().flatten(1) for l in
+                                suite.semantic_suite.results['superdiff']['latents']], dim=0)
+
+        analyze_composition_geometry(
+            semantic_mono, semantic_a, semantic_b, semantic_sd,
+            output_dir=str(Path(config.output_dir) / "semantic" / "manifold")
+        )
+
+        # Trajectory curvature for semantic
+        semantic_trajectories = {
+            'monolithic': suite.semantic_suite.results['monolithic']['trajectories'],
+            'prompt_a': suite.semantic_suite.results['prompt_a']['trajectories'],
+            'prompt_b': suite.semantic_suite.results['prompt_b']['trajectories'],
+            'superdiff': suite.semantic_suite.results['superdiff']['trajectories']
+        }
+        analyze_trajectory_curvature(
+            semantic_trajectories,
+            output_dir=str(Path(config.output_dir) / "semantic" / "manifold")
+        )
+
+        # Collect latents for spatial prompts
+        print("\n--- Spatial Prompts ---")
+        spatial_mono = torch.cat([l.cpu().flatten(1) for l in
+                                 suite.spatial_suite.results['monolithic']['latents']], dim=0)
+        spatial_a = torch.cat([l.cpu().flatten(1) for l in
+                              suite.spatial_suite.results['prompt_a']['latents']], dim=0)
+        spatial_b = torch.cat([l.cpu().flatten(1) for l in
+                              suite.spatial_suite.results['prompt_b']['latents']], dim=0)
+        spatial_sd = torch.cat([l.cpu().flatten(1) for l in
+                               suite.spatial_suite.results['superdiff']['latents']], dim=0)
+
+        analyze_composition_geometry(
+            spatial_mono, spatial_a, spatial_b, spatial_sd,
+            output_dir=str(Path(config.output_dir) / "spatial" / "manifold")
+        )
+
+        # Trajectory curvature for spatial
+        spatial_trajectories = {
+            'monolithic': suite.spatial_suite.results['monolithic']['trajectories'],
+            'prompt_a': suite.spatial_suite.results['prompt_a']['trajectories'],
+            'prompt_b': suite.spatial_suite.results['prompt_b']['trajectories'],
+            'superdiff': suite.spatial_suite.results['superdiff']['trajectories']
+        }
+        analyze_trajectory_curvature(
+            spatial_trajectories,
+            output_dir=str(Path(config.output_dir) / "spatial" / "manifold")
+        )
+
+    # Step 4: Final summary
     print("\n" + "="*80)
-    print("ANALYSIS COMPLETE!")
+    print("COMPLETE ANALYSIS FINISHED!")
     print("="*80)
 
     output_path = Path(config.output_dir)
 
     print(f"\nResults saved to: {output_path.absolute()}")
     print("\n" + "="*80)
-    print("KEY FILES TO REVIEW")
+    print("KEY FILES TO REVIEW (IN ORDER)")
     print("="*80)
 
-    print("\n1. CRITICAL VISUAL INSPECTION:")
+    print("\n1. CRITICAL VISUAL INSPECTION (Most Important!):")
     print(f"   {output_path / 'semantic_vs_spatial_comparison.png'}")
     print("   → Compare Row 2 (semantic SUPERDIFF) vs Row 4 (spatial SUPERDIFF)")
     print("   → Does spatial grounding produce co-presence or still hybrid?")
+    print("   → This SINGLE IMAGE answers Hypothesis 0 (spatial inductive bias)")
 
     print("\n2. COMPREHENSIVE INTERPRETATION:")
     print(f"   {output_path / 'comparative_report.txt'}")
     print("   → Full analysis with automatic interpretation")
+    print("   → Includes all distance metrics and kappa dynamics")
 
-    print("\n3. UNIFIED LATENT SPACE:")
+    print("\n3. UNIFIED LATENT SPACE (Linear Interpolation Test):")
     print(f"   {output_path / 'semantic/enhanced/unified_latent_space_2d.png'}")
     print(f"   {output_path / 'semantic/enhanced/unified_latent_space_3d_interactive.html'}")
     print("   → All conditions in single plot")
-    print("   → Check: Is SUPERDIFF on A-B line?")
+    print("   → Check: Is SUPERDIFF centroid on A-B line near midpoint?")
+    print("   → Tests Hypothesis 1 (intrinsic hybridization)")
 
-    print("\n4. TRAJECTORY DYNAMICS:")
+    print("\n4. TRAJECTORY DYNAMICS (Manifold Adherence Test):")
     print(f"   {output_path / 'semantic/enhanced/trajectory_evolution_3d_run0_sample0.png'}")
     print(f"   {output_path / 'semantic/enhanced/trajectory_evolution_3d_interactive_run0_sample0.html'}")
     print("   → Path evolution through latent space")
-    print("   → Check: Smooth (on-manifold) or sharp turns (off-manifold)?")
+    print("   → Check: Smooth paths (on-manifold) or sharp turns (off-manifold)?")
+    print("   → Tests Hypothesis 2 (geometric artifacts)")
 
-    print("\n5. TEMPORAL ANALYSIS:")
+    print("\n5. TEMPORAL ANALYSIS (Phase Transitions):")
     print(f"   {output_path / 'semantic/enhanced/temporal_phase_diagram.png'}")
     print("   → When does divergence occur? (early/mid/late)")
-    print("   → Critical timesteps for composition")
+    print("   → Critical timesteps for composition mechanism")
+
+    print("\n6. ADVANCED MANIFOLD GEOMETRY (Quantitative Validation):")
+    print(f"   {output_path / 'semantic/manifold/manifold_geometry_analysis.png'}")
+    print(f"   {output_path / 'semantic/manifold/manifold_geometry_results.txt'}")
+    print("   → Intrinsic dimensionality (MLE, correlation dimension)")
+    print("   → Geodesic vs. Euclidean distances")
+    print("   → Local tangent space alignment")
+    print("   → Provides quantitative evidence for on/off-manifold behavior")
+
+    print("\n7. TRAJECTORY CURVATURE (Off-Manifold Diagnostics):")
+    print(f"   {output_path / 'semantic/manifold/trajectory_curvature_analysis.png'}")
+    print("   → Menger curvature along trajectories")
+    print("   → High curvature = potential off-manifold shortcuts")
+    print("   → Cumulative bending analysis")
+
+    print("\n8. SPATIAL PROMPTS (All above analyses for spatial condition):")
+    print(f"   {output_path / 'spatial/enhanced/'}")
+    print(f"   {output_path / 'spatial/manifold/'}")
+    print("   → Compare spatial results to semantic results")
+    print("   → Does spatial grounding change geometric properties?")
 
     print("\n" + "="*80)
     print("INTERPRETATION DECISION TREE")
