@@ -16,8 +16,14 @@ def get_sd_models(model_id: str = "runwayml/stable-diffusion-v1-5", dtype=torch.
 def get_image(vae, latents, nrow, ncol):
     # Ensure latents are same dtype as VAE
     latents = latents.to(dtype=vae.dtype)
+
+    # Ensure latents have batch dimension
+    if latents.ndim == 3:
+        latents = latents.unsqueeze(0)
+
     image = vae.decode(latents / vae.config.scaling_factor, return_dict=False)[0]
-    image = (image / 2 + 0.5).clamp(0, 1).squeeze()
+    image = (image / 2 + 0.5).clamp(0, 1)
+    # Don't squeeze! Keep batch dimension for permute
     image = (image.permute(0, 2, 3, 1) * 255).to(torch.uint8)
 
     rows = []
