@@ -173,15 +173,16 @@ class SpatialGroundingExperimentSuite:
         from notebooks.utils import get_image
 
         fig, axes = plt.subplots(4, min(8, self.config.num_runs),
-                                figsize=(2.5*min(8, self.config.num_runs), 10))
+                                figsize=(2.5*min(8, self.config.num_runs), 12))
 
         n_display = min(8, self.config.num_runs)
 
+        # Create detailed labels with actual prompts
         row_labels = [
-            'Semantic Monolithic\n"cat and dog"',
-            'Semantic SUPERDIFF\n"cat" ∧ "dog"',
-            'Spatial Monolithic\n"cat left, dog right"',
-            'Spatial SUPERDIFF\n"cat left" ∧ "dog right"'
+            f'Semantic\nMonolithic\n"{self.config.semantic_composed}"',
+            f'Semantic\nSUPERDIFF\n"{self.config.semantic_a}" ∧\n"{self.config.semantic_b}"',
+            f'Spatial\nMonolithic\n"{self.config.spatial_composed}"',
+            f'Spatial\nSUPERDIFF\n"{self.config.spatial_a}" ∧\n"{self.config.spatial_b}"'
         ]
 
         for run_idx in range(n_display):
@@ -191,8 +192,9 @@ class SpatialGroundingExperimentSuite:
             axes[0, run_idx].imshow(img)
             axes[0, run_idx].axis('off')
             if run_idx == 0:
-                axes[0, run_idx].set_ylabel(row_labels[0], fontsize=9,
-                                           rotation=0, ha='right', va='center')
+                axes[0, run_idx].set_ylabel(row_labels[0], fontsize=8,
+                                           rotation=0, ha='right', va='center',
+                                           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
 
             # Row 1: Semantic SUPERDIFF
             latents = self.semantic_suite.results['superdiff']['latents'][run_idx][0:1]
@@ -200,8 +202,9 @@ class SpatialGroundingExperimentSuite:
             axes[1, run_idx].imshow(img)
             axes[1, run_idx].axis('off')
             if run_idx == 0:
-                axes[1, run_idx].set_ylabel(row_labels[1], fontsize=9,
-                                           rotation=0, ha='right', va='center')
+                axes[1, run_idx].set_ylabel(row_labels[1], fontsize=8,
+                                           rotation=0, ha='right', va='center',
+                                           bbox=dict(boxstyle='round', facecolor='lightcoral', alpha=0.3))
 
             # Row 2: Spatial monolithic
             latents = self.spatial_suite.results['monolithic']['latents'][run_idx][0:1]
@@ -209,8 +212,9 @@ class SpatialGroundingExperimentSuite:
             axes[2, run_idx].imshow(img)
             axes[2, run_idx].axis('off')
             if run_idx == 0:
-                axes[2, run_idx].set_ylabel(row_labels[2], fontsize=9,
-                                           rotation=0, ha='right', va='center')
+                axes[2, run_idx].set_ylabel(row_labels[2], fontsize=8,
+                                           rotation=0, ha='right', va='center',
+                                           bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.3))
 
             # Row 3: Spatial SUPERDIFF
             latents = self.spatial_suite.results['superdiff']['latents'][run_idx][0:1]
@@ -218,12 +222,18 @@ class SpatialGroundingExperimentSuite:
             axes[3, run_idx].imshow(img)
             axes[3, run_idx].axis('off')
             if run_idx == 0:
-                axes[3, run_idx].set_ylabel(row_labels[3], fontsize=9,
-                                           rotation=0, ha='right', va='center')
+                axes[3, run_idx].set_ylabel(row_labels[3], fontsize=8,
+                                           rotation=0, ha='right', va='center',
+                                           bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.3))
 
             # Column titles
             if run_idx < n_display:
-                axes[0, run_idx].set_title(f'Run {run_idx+1}', fontsize=9)
+                axes[0, run_idx].set_title(f'Run {run_idx+1}', fontsize=10, fontweight='bold')
+
+        # Add overall title
+        fig.suptitle('Semantic vs Spatial SUPERDIFF Comparison\n' +
+                    'Critical Test: Does spatial grounding eliminate hybridization?',
+                    fontsize=14, fontweight='bold', y=0.995)
 
         plt.tight_layout()
         plt.savefig(self.output_dir / 'semantic_vs_spatial_comparison.png',

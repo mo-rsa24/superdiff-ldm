@@ -41,14 +41,22 @@ class ManifoldGeometryAnalyzer:
         subspace than individual prompts.
 
         Args:
-            k: Number of nearest neighbors to consider
+            k: Number of nearest neighbors to consider (will be capped at n_samples - 1)
             method: 'mle' for maximum likelihood or 'correlation' for correlation dimension
 
         Returns:
-            Estimated intrinsic dimension
+            Estimated intrinsic dimension (or np.nan if too few samples)
 
         Reference: "Intrinsic Dimensionality Estimation" (Levina & Bickel, 2005)
         """
+        # Ensure k is valid for the number of samples
+        n_samples = self.samples.shape[0]
+        k = min(k, n_samples - 1)
+
+        if k < 2:
+            # Cannot estimate intrinsic dimension with too few neighbors
+            return np.nan
+
         if method == 'mle':
             nbrs = NearestNeighbors(n_neighbors=k+1).fit(self.samples)
             distances, indices = nbrs.kneighbors(self.samples)

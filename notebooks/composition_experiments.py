@@ -372,19 +372,23 @@ class CompositionExperimentSuite:
         print("Generating sample images...")
 
         fig, axes = plt.subplots(4, self.config.num_runs,
-                                figsize=(3*self.config.num_runs, 12))
+                                figsize=(3*self.config.num_runs, 13))
 
         conditions = ['monolithic', 'prompt_a', 'prompt_b', 'superdiff']
         titles = [
-            f'Monolithic: "{self.config.prompt_composed}"',
-            f'Individual A: "{self.config.prompt_a}"',
-            f'Individual B: "{self.config.prompt_b}"',
-            f'SUPERDIFF: A ∧ B'
+            f'monolithic \n"{self.config.prompt_composed}"',
+            f'individual A\n"{self.config.prompt_a}"',
+            f'individual B\n"{self.config.prompt_b}"',
+            f'Superdiff (A ∧ B)\n"{self.config.prompt_a}" ∧\n"{self.config.prompt_b}"'
         ]
 
-        for cond_idx, (condition, title) in enumerate(zip(conditions, titles)):
-            axes[cond_idx, 0].set_ylabel(title, fontsize=10, rotation=0,
-                                         ha='right', va='center')
+        # Color coding for different condition types
+        label_colors = ['wheat', 'lightblue', 'lightgreen', 'lightcoral']
+
+        for cond_idx, (condition, title, color) in enumerate(zip(conditions, titles, label_colors)):
+            axes[cond_idx, 0].set_ylabel(title, fontsize=9, rotation=0,
+                                         ha='right', va='center',
+                                         bbox=dict(boxstyle='round', facecolor=color, alpha=0.4))
 
             for run_idx in range(min(self.config.num_runs, axes.shape[1])):
                 latents = self.results[condition]['latents'][run_idx][0:1]  # First sample
@@ -393,7 +397,11 @@ class CompositionExperimentSuite:
                 axes[cond_idx, run_idx].imshow(img)
                 axes[cond_idx, run_idx].axis('off')
                 if cond_idx == 0:
-                    axes[cond_idx, run_idx].set_title(f'Run {run_idx+1}', fontsize=9)
+                    axes[cond_idx, run_idx].set_title(f'Run {run_idx+1}', fontsize=10, fontweight='bold')
+
+        # Add overall title
+        fig.suptitle('SUPERDIFF Composition Analysis: Sample Images Comparison',
+                    fontsize=14, fontweight='bold', y=0.995)
 
         plt.tight_layout()
         plt.savefig(self.output_dir / 'sample_images_comparison.png', dpi=150, bbox_inches='tight')
@@ -416,10 +424,10 @@ class CompositionExperimentSuite:
         ax = axes[0, 0]
         for run_idx in range(self.config.num_runs):
             for condition, color, label in [
-                ('monolithic', 'green', 'Monolithic'),
-                ('prompt_a', 'blue', 'Prompt A'),
-                ('prompt_b', 'orange', 'Prompt B'),
-                ('superdiff', 'red', 'SUPERDIFF')
+                ('monolithic', 'green', f'Monolithic: "{self.config.prompt_composed}"'),
+                ('prompt_a', 'blue', f'Prompt A: "{self.config.prompt_a}"'),
+                ('prompt_b', 'orange', f'Prompt B: "{self.config.prompt_b}"'),
+                ('superdiff', 'red', f'SUPERDIFF: A ∧ B')
             ]:
                 traj = self.results[condition]['trajectories'][run_idx]
                 flat = flatten_trajectory(traj)
@@ -429,10 +437,10 @@ class CompositionExperimentSuite:
                 ax.plot(norms.numpy(), color=color, alpha=alpha,
                        label=label if run_idx == 0 else None)
 
-        ax.set_xlabel('Diffusion Step')
-        ax.set_ylabel('L2 Norm of Latent')
-        ax.set_title('Trajectory Norms: Denoising Progression')
-        ax.legend()
+        ax.set_xlabel('Diffusion Step', fontsize=11)
+        ax.set_ylabel('L2 Norm of Latent', fontsize=11)
+        ax.set_title('Trajectory Norms: Denoising Progression', fontsize=12, fontweight='bold')
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
         # Plot 2: Pairwise distances between conditions over time
@@ -455,18 +463,18 @@ class CompositionExperimentSuite:
         ax.plot(dist_sd_b.numpy(), label='SUPERDIFF vs B', color='orange', linewidth=2)
         ax.plot(dist_a_b.numpy(), label='A vs B', color='gray', linestyle='--', linewidth=2)
 
-        ax.set_xlabel('Diffusion Step')
-        ax.set_ylabel('L2 Distance')
-        ax.set_title('Trajectory Distances Over Time')
-        ax.legend()
+        ax.set_xlabel('Diffusion Step', fontsize=11)
+        ax.set_ylabel('L2 Distance', fontsize=11)
+        ax.set_title('Trajectory Distances Over Time\n(Run 1 shown)', fontsize=12, fontweight='bold')
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
 
         # Plot 3: Velocity magnitudes
         ax = axes[1, 0]
         for run_idx in range(min(3, self.config.num_runs)):  # Show first 3 runs
             for condition, color, label in [
-                ('monolithic', 'green', 'Monolithic'),
-                ('superdiff', 'red', 'SUPERDIFF')
+                ('monolithic', 'green', f'Monolithic: "{self.config.prompt_composed}"'),
+                ('superdiff', 'red', 'SUPERDIFF: A ∧ B')
             ]:
                 traj = self.results[condition]['trajectories'][run_idx]
                 # velocities: (num_steps, batch_size, C, H, W)
@@ -478,10 +486,10 @@ class CompositionExperimentSuite:
                 ax.plot(vel_mag.numpy(), color=color, alpha=alpha,
                        label=f'{label} (run {run_idx+1})' if run_idx < 2 else None)
 
-        ax.set_xlabel('Diffusion Step')
-        ax.set_ylabel('Velocity Magnitude')
-        ax.set_title('Vector Field Magnitudes')
-        ax.legend()
+        ax.set_xlabel('Diffusion Step', fontsize=11)
+        ax.set_ylabel('Velocity Magnitude', fontsize=11)
+        ax.set_title('Vector Field Magnitudes\n(First 3 runs shown)', fontsize=12, fontweight='bold')
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
         # Plot 4: Trajectory curvature (angle between consecutive velocity vectors)
@@ -496,8 +504,8 @@ class CompositionExperimentSuite:
             return cos_sim.mean(dim=1)  # Average over batch
 
         for condition, color, label in [
-            ('monolithic', 'green', 'Monolithic'),
-            ('superdiff', 'red', 'SUPERDIFF')
+            ('monolithic', 'green', f'Monolithic: "{self.config.prompt_composed}"'),
+            ('superdiff', 'red', 'SUPERDIFF: A ∧ B')
         ]:
             curvatures = []
             for run_idx in range(self.config.num_runs):
@@ -514,15 +522,19 @@ class CompositionExperimentSuite:
             ax.fill_between(steps, mean_curv - std_curv, mean_curv + std_curv,
                            color=color, alpha=0.2)
 
-        ax.set_xlabel('Diffusion Step')
-        ax.set_ylabel('Cosine Similarity (consecutive velocities)')
-        ax.set_title('Trajectory Smoothness (higher = smoother)')
-        ax.legend()
+        ax.set_xlabel('Diffusion Step', fontsize=11)
+        ax.set_ylabel('Cosine Similarity (consecutive velocities)', fontsize=11)
+        ax.set_title('Trajectory Smoothness (higher = smoother)', fontsize=12, fontweight='bold')
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
         ax.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5)
 
+        # Add overall figure title
+        fig.suptitle(f'Trajectory Geometry Analysis\nPrompts: "{self.config.prompt_a}" and "{self.config.prompt_b}"',
+                    fontsize=13, fontweight='bold', y=0.995)
+
         plt.tight_layout()
-        plt.savefig(self.output_dir / 'trajectory_geometry.png', dpi=150)
+        plt.savefig(self.output_dir / 'trajectory_geometry.png', dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  Saved: trajectory_geometry.png")
 
@@ -563,9 +575,10 @@ class CompositionExperimentSuite:
         bars = ax.bar(range(len(distances)), list(distances.values()),
                      color=['red', 'blue', 'orange', 'purple', 'gray', 'green'])
         ax.set_xticks(range(len(distances)))
-        ax.set_xticklabels(list(distances.keys()), rotation=45, ha='right')
-        ax.set_ylabel('L2 Distance')
-        ax.set_title('Centroid Distances in Latent Space')
+        ax.set_xticklabels(list(distances.keys()), rotation=45, ha='right', fontsize=10)
+        ax.set_ylabel('L2 Distance', fontsize=11)
+        ax.set_title('Centroid Distances in Latent Space\n(SD=SUPERDIFF, Mono=Monolithic, A/B=Individual Prompts)',
+                    fontsize=11, fontweight='bold')
         ax.grid(True, alpha=0.3, axis='y')
 
         # Add value labels on bars
@@ -578,18 +591,18 @@ class CompositionExperimentSuite:
         ax = axes[0, 1]
 
         variances = {
-            'Monolithic': latents_mono.var(dim=0).mean().item(),
-            'Prompt A': latents_a.var(dim=0).mean().item(),
-            'Prompt B': latents_b.var(dim=0).mean().item(),
-            'SUPERDIFF': latents_sd.var(dim=0).mean().item(),
+            f'Monolithic\n"{self.config.prompt_composed}"': latents_mono.var(dim=0).mean().item(),
+            f'Prompt A\n"{self.config.prompt_a}"': latents_a.var(dim=0).mean().item(),
+            f'Prompt B\n"{self.config.prompt_b}"': latents_b.var(dim=0).mean().item(),
+            'SUPERDIFF\nA ∧ B': latents_sd.var(dim=0).mean().item(),
         }
 
         bars = ax.bar(range(len(variances)), list(variances.values()),
                      color=['green', 'blue', 'orange', 'red'])
         ax.set_xticks(range(len(variances)))
-        ax.set_xticklabels(list(variances.keys()), rotation=45, ha='right')
-        ax.set_ylabel('Mean Variance')
-        ax.set_title('Latent Space Variance Across Conditions')
+        ax.set_xticklabels(list(variances.keys()), rotation=0, ha='center', fontsize=8)
+        ax.set_ylabel('Mean Variance', fontsize=11)
+        ax.set_title('Latent Space Variance Across Conditions', fontsize=11, fontweight='bold')
         ax.grid(True, alpha=0.3, axis='y')
 
         for bar in bars:
@@ -605,11 +618,18 @@ class CompositionExperimentSuite:
         pca = PCA(n_components=10)
         pca.fit(all_latents.numpy())
 
-        ax.plot(range(1, 11), pca.explained_variance_ratio_, marker='o', linewidth=2)
-        ax.set_xlabel('Principal Component')
-        ax.set_ylabel('Explained Variance Ratio')
-        ax.set_title('PCA: Variance Explained by Top Components')
+        ax.plot(range(1, 11), pca.explained_variance_ratio_, marker='o', linewidth=2, color='royalblue')
+        ax.set_xlabel('Principal Component', fontsize=11)
+        ax.set_ylabel('Explained Variance Ratio', fontsize=11)
+        ax.set_title('PCA: Variance Explained by Top Components', fontsize=11, fontweight='bold')
         ax.grid(True, alpha=0.3)
+
+        # Add cumulative variance text
+        cumvar_2d = pca.explained_variance_ratio_[:2].sum()
+        cumvar_3d = pca.explained_variance_ratio_[:3].sum()
+        ax.text(0.95, 0.95, f'PC1+PC2: {cumvar_2d:.1%}\nPC1+PC2+PC3: {cumvar_3d:.1%}',
+               transform=ax.transAxes, ha='right', va='top',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
 
         # Plot 4: Distribution overlap (1D projection onto PC1)
         ax = axes[1, 1]
@@ -619,19 +639,23 @@ class CompositionExperimentSuite:
         proj_b = pca.transform(latents_b.numpy())[:, 0]
         proj_sd = pca.transform(latents_sd.numpy())[:, 0]
 
-        ax.hist(proj_mono, bins=30, alpha=0.5, label='Monolithic', color='green', density=True)
-        ax.hist(proj_a, bins=30, alpha=0.5, label='Prompt A', color='blue', density=True)
-        ax.hist(proj_b, bins=30, alpha=0.5, label='Prompt B', color='orange', density=True)
-        ax.hist(proj_sd, bins=30, alpha=0.5, label='SUPERDIFF', color='red', density=True)
+        ax.hist(proj_mono, bins=30, alpha=0.5, label=f'Monolithic: "{self.config.prompt_composed}"', color='green', density=True)
+        ax.hist(proj_a, bins=30, alpha=0.5, label=f'Prompt A: "{self.config.prompt_a}"', color='blue', density=True)
+        ax.hist(proj_b, bins=30, alpha=0.5, label=f'Prompt B: "{self.config.prompt_b}"', color='orange', density=True)
+        ax.hist(proj_sd, bins=30, alpha=0.5, label='SUPERDIFF: A ∧ B', color='red', density=True)
 
-        ax.set_xlabel('PC1 Projection')
-        ax.set_ylabel('Density')
-        ax.set_title('Distribution Overlap on First Principal Component')
-        ax.legend()
+        ax.set_xlabel('PC1 Projection', fontsize=11)
+        ax.set_ylabel('Density', fontsize=11)
+        ax.set_title('Distribution Overlap on First Principal Component', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3, axis='y')
 
+        # Add overall figure title
+        fig.suptitle(f'Centroid Statistics and Distribution Analysis\nPrompts: "{self.config.prompt_a}" and "{self.config.prompt_b}"',
+                    fontsize=13, fontweight='bold', y=0.995)
+
         plt.tight_layout()
-        plt.savefig(self.output_dir / 'centroid_statistics.png', dpi=150)
+        plt.savefig(self.output_dir / 'centroid_statistics.png', dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  Saved: centroid_statistics.png")
 
@@ -679,13 +703,14 @@ class CompositionExperimentSuite:
                        color='blue', alpha=0.2)
 
         ax.axhline(y=0.5, color='red', linestyle='--', label='κ = 0.5 (equal weight)')
-        ax.axhline(y=0.0, color='orange', linestyle='--', label='κ = 0 (only bg)')
-        ax.axhline(y=1.0, color='green', linestyle='--', label='κ = 1 (only obj)')
+        ax.axhline(y=0.0, color='orange', linestyle='--', label=f'κ = 0 (only B: "{self.config.prompt_b}")')
+        ax.axhline(y=1.0, color='green', linestyle='--', label=f'κ = 1 (only A: "{self.config.prompt_a}")')
 
-        ax.set_xlabel('Diffusion Step')
-        ax.set_ylabel('κ (Kappa)')
-        ax.set_title('Kappa Evolution: Balance Between A and B')
-        ax.legend()
+        ax.set_xlabel('Diffusion Step', fontsize=11)
+        ax.set_ylabel('κ (Kappa)', fontsize=11)
+        ax.set_title(f'Kappa Evolution: Balance Between A and B\nSUPERDIFF: "{self.config.prompt_a}" ∧ "{self.config.prompt_b}"',
+                    fontsize=11, fontweight='bold')
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
         # Plot 2: Kappa distribution across time
@@ -694,14 +719,14 @@ class CompositionExperimentSuite:
         # Flatten kappas for histogram
         kappa_flat = kappas.flatten().numpy()
         ax.hist(kappa_flat, bins=50, color='royalblue', alpha=0.7, edgecolor='black')
-        ax.axvline(x=0.5, color='red', linestyle='--', linewidth=2, label='κ = 0.5')
+        ax.axvline(x=0.5, color='red', linestyle='--', linewidth=2, label='κ = 0.5 (balanced)')
         ax.axvline(x=kappa_flat.mean(), color='darkblue', linestyle='-', linewidth=2,
                   label=f'Mean κ = {kappa_flat.mean():.3f}')
 
-        ax.set_xlabel('κ Value')
-        ax.set_ylabel('Frequency')
-        ax.set_title('Distribution of Kappa Values')
-        ax.legend()
+        ax.set_xlabel('κ Value', fontsize=11)
+        ax.set_ylabel('Frequency', fontsize=11)
+        ax.set_title('Distribution of Kappa Values\nAcross All Runs and Timesteps', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3, axis='y')
 
         # Plot 3: Kappa variance over time
@@ -709,9 +734,9 @@ class CompositionExperimentSuite:
 
         kappa_var = kappas.var(dim=2).mean(dim=0)  # Variance across batch, mean across runs
         ax.plot(kappa_var.numpy(), color='purple', linewidth=2)
-        ax.set_xlabel('Diffusion Step')
-        ax.set_ylabel('Variance of κ')
-        ax.set_title('Kappa Variance: Consistency Across Batch')
+        ax.set_xlabel('Diffusion Step', fontsize=11)
+        ax.set_ylabel('Variance of κ', fontsize=11)
+        ax.set_title('Kappa Variance: Consistency Across Batch', fontsize=11, fontweight='bold')
         ax.grid(True, alpha=0.3)
 
         # Plot 4: Relationship between kappa and log-likelihood difference
@@ -725,19 +750,23 @@ class CompositionExperimentSuite:
         kappa_run0 = kappas[0].mean(dim=1).numpy()
 
         ax.scatter(ll_diff, kappa_run0, alpha=0.5, s=20, color='royalblue')
-        ax.set_xlabel('log p(A) - log p(B)')
-        ax.set_ylabel('κ')
-        ax.set_title('Kappa vs Log-Likelihood Difference (Run 1)')
+        ax.set_xlabel(f'log p(A) - log p(B)\n(A="{self.config.prompt_a}", B="{self.config.prompt_b}")', fontsize=10)
+        ax.set_ylabel('κ', fontsize=11)
+        ax.set_title('Kappa vs Log-Likelihood Difference\n(Run 1 shown)', fontsize=11, fontweight='bold')
         ax.grid(True, alpha=0.3)
 
         # Add correlation coefficient
         corr = np.corrcoef(ll_diff, kappa_run0)[0, 1]
         ax.text(0.05, 0.95, f'Correlation: {corr:.3f}',
                transform=ax.transAxes, verticalalignment='top',
-               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
+
+        # Add overall figure title
+        fig.suptitle(f'Kappa Dynamics Analysis: SUPERDIFF "{self.config.prompt_a}" ∧ "{self.config.prompt_b}"',
+                    fontsize=13, fontweight='bold', y=0.995)
 
         plt.tight_layout()
-        plt.savefig(self.output_dir / 'kappa_dynamics.png', dpi=150)
+        plt.savefig(self.output_dir / 'kappa_dynamics.png', dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  Saved: kappa_dynamics.png")
 
@@ -754,10 +783,10 @@ class CompositionExperimentSuite:
             colors = []
 
             for condition, label, color in [
-                ('monolithic', 'Monolithic', 'green'),
-                ('prompt_a', 'Prompt A', 'blue'),
-                ('prompt_b', 'Prompt B', 'orange'),
-                ('superdiff', 'SUPERDIFF', 'red')
+                ('monolithic', f'Monolithic: "{self.config.prompt_composed}"', 'green'),
+                ('prompt_a', f'Prompt A: "{self.config.prompt_a}"', 'blue'),
+                ('prompt_b', f'Prompt B: "{self.config.prompt_b}"', 'orange'),
+                ('superdiff', 'SUPERDIFF: A ∧ B', 'red')
             ]:
                 latents = [l.cpu().flatten(1) for l in self.results[condition]['latents']]
                 latents = torch.cat(latents, dim=0).numpy()
@@ -775,24 +804,28 @@ class CompositionExperimentSuite:
         pca = PCA(n_components=2)
         data_pca = pca.fit_transform(data)
 
-        for label, color in [('Monolithic', 'green'), ('Prompt A', 'blue'),
-                             ('Prompt B', 'orange'), ('SUPERDIFF', 'red')]:
+        for label, color in [(f'Monolithic: "{self.config.prompt_composed}"', 'green'),
+                            (f'Prompt A: "{self.config.prompt_a}"', 'blue'),
+                            (f'Prompt B: "{self.config.prompt_b}"', 'orange'),
+                            ('SUPERDIFF: A ∧ B', 'red')]:
             mask = np.array(labels) == label
             ax.scatter(data_pca[mask, 0], data_pca[mask, 1],
                       label=label, color=color, alpha=0.6, s=30)
 
         # Add centroids
-        for label, color, marker in [('Monolithic', 'green', 's'), ('Prompt A', 'blue', '^'),
-                                     ('Prompt B', 'orange', 'v'), ('SUPERDIFF', 'red', '*')]:
+        for label, color, marker in [(f'Monolithic: "{self.config.prompt_composed}"', 'green', 's'),
+                                     (f'Prompt A: "{self.config.prompt_a}"', 'blue', '^'),
+                                     (f'Prompt B: "{self.config.prompt_b}"', 'orange', 'v'),
+                                     ('SUPERDIFF: A ∧ B', 'red', '*')]:
             mask = np.array(labels) == label
             centroid = data_pca[mask].mean(axis=0)
             ax.scatter(centroid[0], centroid[1], color=color, marker=marker,
                       s=300, edgecolors='black', linewidths=2, zorder=5)
 
-        ax.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%} variance)')
-        ax.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%} variance)')
-        ax.set_title('PCA: Latent Space Structure')
-        ax.legend()
+        ax.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%} variance)', fontsize=11)
+        ax.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%} variance)', fontsize=11)
+        ax.set_title('PCA: Latent Space Structure\n(Centroids marked with large symbols)', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
         # t-SNE projection
@@ -800,28 +833,36 @@ class CompositionExperimentSuite:
         tsne = TSNE(n_components=2, random_state=42, perplexity=30)
         data_tsne = tsne.fit_transform(data)
 
-        for label, color in [('Monolithic', 'green'), ('Prompt A', 'blue'),
-                            ('Prompt B', 'orange'), ('SUPERDIFF', 'red')]:
+        for label, color in [(f'Monolithic: "{self.config.prompt_composed}"', 'green'),
+                            (f'Prompt A: "{self.config.prompt_a}"', 'blue'),
+                            (f'Prompt B: "{self.config.prompt_b}"', 'orange'),
+                            ('SUPERDIFF: A ∧ B', 'red')]:
             mask = np.array(labels) == label
             ax.scatter(data_tsne[mask, 0], data_tsne[mask, 1],
                       label=label, color=color, alpha=0.6, s=30)
 
         # Add centroids
-        for label, color, marker in [('Monolithic', 'green', 's'), ('Prompt A', 'blue', '^'),
-                                     ('Prompt B', 'orange', 'v'), ('SUPERDIFF', 'red', '*')]:
+        for label, color, marker in [(f'Monolithic: "{self.config.prompt_composed}"', 'green', 's'),
+                                     (f'Prompt A: "{self.config.prompt_a}"', 'blue', '^'),
+                                     (f'Prompt B: "{self.config.prompt_b}"', 'orange', 'v'),
+                                     ('SUPERDIFF: A ∧ B', 'red', '*')]:
             mask = np.array(labels) == label
             centroid = data_tsne[mask].mean(axis=0)
             ax.scatter(centroid[0], centroid[1], color=color, marker=marker,
                       s=300, edgecolors='black', linewidths=2, zorder=5)
 
-        ax.set_xlabel('t-SNE Dimension 1')
-        ax.set_ylabel('t-SNE Dimension 2')
-        ax.set_title('t-SNE: Latent Space Clustering')
-        ax.legend()
+        ax.set_xlabel('t-SNE Dimension 1', fontsize=11)
+        ax.set_ylabel('t-SNE Dimension 2', fontsize=11)
+        ax.set_title('t-SNE: Latent Space Clustering\n(Centroids marked with large symbols)', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
+        # Add overall figure title
+        fig.suptitle(f'PCA and t-SNE Projections: "{self.config.prompt_a}" and "{self.config.prompt_b}"',
+                    fontsize=13, fontweight='bold', y=0.995)
+
         plt.tight_layout()
-        plt.savefig(self.output_dir / 'pca_tsne_projections.png', dpi=150)
+        plt.savefig(self.output_dir / 'pca_tsne_projections.png', dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  Saved: pca_tsne_projections.png")
 
@@ -852,15 +893,15 @@ class CompositionExperimentSuite:
         nn_b = compute_nn_distances(latents_b)
         nn_sd = compute_nn_distances(latents_sd)
 
-        ax.hist(nn_mono, bins=30, alpha=0.5, label='Monolithic', color='green', density=True)
-        ax.hist(nn_a, bins=30, alpha=0.5, label='Prompt A', color='blue', density=True)
-        ax.hist(nn_b, bins=30, alpha=0.5, label='Prompt B', color='orange', density=True)
-        ax.hist(nn_sd, bins=30, alpha=0.5, label='SUPERDIFF', color='red', density=True)
+        ax.hist(nn_mono, bins=30, alpha=0.5, label=f'Monolithic: "{self.config.prompt_composed}"', color='green', density=True)
+        ax.hist(nn_a, bins=30, alpha=0.5, label=f'Prompt A: "{self.config.prompt_a}"', color='blue', density=True)
+        ax.hist(nn_b, bins=30, alpha=0.5, label=f'Prompt B: "{self.config.prompt_b}"', color='orange', density=True)
+        ax.hist(nn_sd, bins=30, alpha=0.5, label='SUPERDIFF: A ∧ B', color='red', density=True)
 
-        ax.set_xlabel('Mean k-NN Distance')
-        ax.set_ylabel('Density')
-        ax.set_title('Manifold Density: Nearest Neighbor Distances')
-        ax.legend()
+        ax.set_xlabel('Mean k-NN Distance', fontsize=11)
+        ax.set_ylabel('Density', fontsize=11)
+        ax.set_title('Manifold Density: Nearest Neighbor Distances\n(k=5)', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3, axis='y')
 
         # Plot 2: Distance to centroid of other conditions
@@ -878,9 +919,9 @@ class CompositionExperimentSuite:
                      positions=[1, 2, 3],
                      showmeans=True)
         ax.set_xticks([1, 2, 3])
-        ax.set_xticklabels(['To Monolithic', 'To A', 'To B'])
-        ax.set_ylabel('Distance')
-        ax.set_title('SUPERDIFF Distance to Other Centroids')
+        ax.set_xticklabels(['To Monolithic\ncentroid', 'To A\ncentroid', 'To B\ncentroid'], fontsize=10)
+        ax.set_ylabel('Distance', fontsize=11)
+        ax.set_title('SUPERDIFF Distance to Other Centroids\n(Distribution of samples)', fontsize=11, fontweight='bold')
         ax.grid(True, alpha=0.3, axis='y')
 
         # Plot 3: Interpolation analysis
@@ -904,12 +945,12 @@ class CompositionExperimentSuite:
             dists = np.linalg.norm(interpolated - mono_sample, axis=1)
             dist_mono_to_interp.append(dists.min())
 
-        ax.hist(dist_to_interp, bins=30, alpha=0.6, label='SUPERDIFF', color='red', density=True)
-        ax.hist(dist_mono_to_interp, bins=30, alpha=0.6, label='Monolithic', color='green', density=True)
-        ax.set_xlabel('Distance to A-B Interpolation Line')
-        ax.set_ylabel('Density')
-        ax.set_title('Distance to Linear Interpolation Between A and B')
-        ax.legend()
+        ax.hist(dist_to_interp, bins=30, alpha=0.6, label='SUPERDIFF: A ∧ B', color='red', density=True)
+        ax.hist(dist_mono_to_interp, bins=30, alpha=0.6, label=f'Monolithic: "{self.config.prompt_composed}"', color='green', density=True)
+        ax.set_xlabel('Distance to A-B Interpolation Line', fontsize=11)
+        ax.set_ylabel('Density', fontsize=11)
+        ax.set_title('Distance to Linear Interpolation Between A and B\n(Tests linear interpolation hypothesis)', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3, axis='y')
 
         # Plot 4: Convex hull membership
@@ -929,8 +970,8 @@ class CompositionExperimentSuite:
         proj_b = all_projected[n_mono+n_a:n_mono+n_a+n_b]
         proj_sd = all_projected[n_mono+n_a+n_b:]
 
-        ax.scatter(proj_a[:, 0], proj_a[:, 1], color='blue', alpha=0.5, s=30, label='A')
-        ax.scatter(proj_b[:, 0], proj_b[:, 1], color='orange', alpha=0.5, s=30, label='B')
+        ax.scatter(proj_a[:, 0], proj_a[:, 1], color='blue', alpha=0.5, s=30, label=f'A: "{self.config.prompt_a}"')
+        ax.scatter(proj_b[:, 0], proj_b[:, 1], color='orange', alpha=0.5, s=30, label=f'B: "{self.config.prompt_b}"')
         ax.scatter(proj_mono[:, 0], proj_mono[:, 1], color='green', alpha=0.5, s=30, label='Monolithic')
         ax.scatter(proj_sd[:, 0], proj_sd[:, 1], color='red', alpha=0.8, s=50,
                   marker='*', label='SUPERDIFF', edgecolors='black', linewidths=0.5)
@@ -942,14 +983,18 @@ class CompositionExperimentSuite:
                [centroid_a_2d[1], centroid_b_2d[1]],
                'k--', linewidth=2, label='A-B centroid line')
 
-        ax.set_xlabel('PC1')
-        ax.set_ylabel('PC2')
-        ax.set_title('2D Projection: Relative Positions')
-        ax.legend()
+        ax.set_xlabel('PC1', fontsize=11)
+        ax.set_ylabel('PC2', fontsize=11)
+        ax.set_title('2D Projection: Relative Positions\n(Assesses geometric relationship)', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
+        # Add overall figure title
+        fig.suptitle(f'Manifold Distances Analysis: "{self.config.prompt_a}" and "{self.config.prompt_b}"',
+                    fontsize=13, fontweight='bold', y=0.995)
+
         plt.tight_layout()
-        plt.savefig(self.output_dir / 'manifold_distances.png', dpi=150)
+        plt.savefig(self.output_dir / 'manifold_distances.png', dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  Saved: manifold_distances.png")
 
@@ -990,15 +1035,15 @@ class CompositionExperimentSuite:
         cos_a_b = cosine_similarity_time(vel_a, vel_b)
 
         steps = np.arange(len(cos_sd_mono))
-        ax.plot(steps, cos_sd_mono.numpy(), label='SD vs Mono', color='purple', linewidth=2)
-        ax.plot(steps, cos_sd_a.numpy(), label='SD vs A', color='blue', linewidth=2)
-        ax.plot(steps, cos_sd_b.numpy(), label='SD vs B', color='orange', linewidth=2)
+        ax.plot(steps, cos_sd_mono.numpy(), label='SUPERDIFF vs Monolithic', color='purple', linewidth=2)
+        ax.plot(steps, cos_sd_a.numpy(), label='SUPERDIFF vs A', color='blue', linewidth=2)
+        ax.plot(steps, cos_sd_b.numpy(), label='SUPERDIFF vs B', color='orange', linewidth=2)
         ax.plot(steps, cos_a_b.numpy(), label='A vs B', color='gray', linestyle='--', linewidth=2)
 
-        ax.set_xlabel('Diffusion Step')
-        ax.set_ylabel('Cosine Similarity')
-        ax.set_title('Velocity Field Alignment Over Time')
-        ax.legend()
+        ax.set_xlabel('Diffusion Step', fontsize=11)
+        ax.set_ylabel('Cosine Similarity', fontsize=11)
+        ax.set_title('Velocity Field Alignment Over Time\n(Run 1 shown)', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
         ax.axhline(y=0, color='black', linestyle='--', alpha=0.3)
 
@@ -1010,18 +1055,18 @@ class CompositionExperimentSuite:
         mag_b = torch.norm(vel_b, dim=2).mean(dim=1)
         mag_sd = torch.norm(vel_sd, dim=2).mean(dim=1)
 
-        ax.plot(steps, mag_sd.numpy() / mag_mono.numpy(), label='SD / Mono',
+        ax.plot(steps, mag_sd.numpy() / mag_mono.numpy(), label='SUPERDIFF / Monolithic',
                color='purple', linewidth=2)
-        ax.plot(steps, mag_sd.numpy() / mag_a.numpy(), label='SD / A',
+        ax.plot(steps, mag_sd.numpy() / mag_a.numpy(), label='SUPERDIFF / A',
                color='blue', linewidth=2)
-        ax.plot(steps, mag_sd.numpy() / mag_b.numpy(), label='SD / B',
+        ax.plot(steps, mag_sd.numpy() / mag_b.numpy(), label='SUPERDIFF / B',
                color='orange', linewidth=2)
 
         ax.axhline(y=1.0, color='red', linestyle='--', linewidth=2, alpha=0.5, label='Ratio = 1')
-        ax.set_xlabel('Diffusion Step')
-        ax.set_ylabel('Magnitude Ratio')
-        ax.set_title('Velocity Magnitude Ratios')
-        ax.legend()
+        ax.set_xlabel('Diffusion Step', fontsize=11)
+        ax.set_ylabel('Magnitude Ratio', fontsize=11)
+        ax.set_title('Velocity Magnitude Ratios\n(Relative strength of vector fields)', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
 
         # Plot 3: Angular divergence (angle between velocity fields)
@@ -1036,14 +1081,14 @@ class CompositionExperimentSuite:
         angle_sd_a = angular_divergence(vel_sd, vel_a)
         angle_sd_b = angular_divergence(vel_sd, vel_b)
 
-        ax.plot(steps, angle_sd_mono.numpy(), label='SD vs Mono', color='purple', linewidth=2)
-        ax.plot(steps, angle_sd_a.numpy(), label='SD vs A', color='blue', linewidth=2)
-        ax.plot(steps, angle_sd_b.numpy(), label='SD vs B', color='orange', linewidth=2)
+        ax.plot(steps, angle_sd_mono.numpy(), label='SUPERDIFF vs Monolithic', color='purple', linewidth=2)
+        ax.plot(steps, angle_sd_a.numpy(), label='SUPERDIFF vs A', color='blue', linewidth=2)
+        ax.plot(steps, angle_sd_b.numpy(), label='SUPERDIFF vs B', color='orange', linewidth=2)
 
-        ax.set_xlabel('Diffusion Step')
-        ax.set_ylabel('Angle (degrees)')
-        ax.set_title('Angular Divergence Between Velocity Fields')
-        ax.legend()
+        ax.set_xlabel('Diffusion Step', fontsize=11)
+        ax.set_ylabel('Angle (degrees)', fontsize=11)
+        ax.set_title('Angular Divergence Between Velocity Fields\n(90° = orthogonal)', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
         ax.axhline(y=90, color='red', linestyle='--', alpha=0.5, label='Orthogonal')
 
@@ -1070,19 +1115,23 @@ class CompositionExperimentSuite:
                 alphas.append(0.5)
 
         ax.plot(steps, alphas, color='royalblue', linewidth=2, label='Estimated α')
-        ax.axhline(y=0.5, color='red', linestyle='--', linewidth=2, label='α = 0.5 (equal)')
-        ax.axhline(y=0.0, color='orange', linestyle='--', alpha=0.5, label='α = 0 (only B)')
-        ax.axhline(y=1.0, color='green', linestyle='--', alpha=0.5, label='α = 1 (only A)')
+        ax.axhline(y=0.5, color='red', linestyle='--', linewidth=2, label=f'α = 0.5 (equal weight)')
+        ax.axhline(y=0.0, color='orange', linestyle='--', alpha=0.5, label=f'α = 0 (only B: "{self.config.prompt_b}")')
+        ax.axhline(y=1.0, color='green', linestyle='--', alpha=0.5, label=f'α = 1 (only A: "{self.config.prompt_a}")')
 
-        ax.set_xlabel('Diffusion Step')
-        ax.set_ylabel('α (weight on A)')
-        ax.set_title('Linear Decomposition: v_SD ≈ α·v_A + (1-α)·v_B')
-        ax.legend()
+        ax.set_xlabel('Diffusion Step', fontsize=11)
+        ax.set_ylabel('α (weight on A)', fontsize=11)
+        ax.set_title('Linear Decomposition: v_SD ≈ α·v_A + (1-α)·v_B\n(Tests velocity field composition)', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
         ax.set_ylim([-0.5, 1.5])
 
+        # Add overall figure title
+        fig.suptitle(f'Velocity Field Alignment Analysis\nSUPERDIFF: "{self.config.prompt_a}" ∧ "{self.config.prompt_b}"',
+                    fontsize=13, fontweight='bold', y=0.995)
+
         plt.tight_layout()
-        plt.savefig(self.output_dir / 'velocity_field_alignment.png', dpi=150)
+        plt.savefig(self.output_dir / 'velocity_field_alignment.png', dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  Saved: velocity_field_alignment.png")
 
