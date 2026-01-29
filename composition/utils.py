@@ -31,9 +31,9 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=4, help="Number of samples to process per GPU step")
     parser.add_argument("--num_visual_samples", type=int, default=4, help="Number of images to decode and save to disk")
     parser.add_argument("--lift", type=float, default=0.0, help="Lift parameter for SuperDiff stability")
-    parser.add_argument("--score", type=bool, default=False, help="Parameter that determines if we should divide by -sigma")
-    parser.add_argument("--sweep", type=bool, default=False, help="Parameter that determines if we should generates sampling with varying lift parameter")
-    parser.add_argument("--sample_images", type=bool, default=False, help="Parameter that determines if we sample generates")
+    parser.add_argument("--score", action='store_true', help="Parameter that determines if we should divide by -sigma")
+    parser.add_argument("--sweep", action='store_true', help="Parameter that determines if we should generates sampling with varying lift parameter")
+    parser.add_argument("--sample_images", action='store_true', help="Parameter that determines if we sample generates")
     parser.add_argument("--sampler", choices=['Euler', 'Ancestral', 'Faithful', 'PoE'], default='Ancestral', help='Sampler to use for sampling from the posterior')
     return parser.parse_args()
 
