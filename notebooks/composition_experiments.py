@@ -258,8 +258,8 @@ class CompositionExperimentSuite:
         for run_idx in range(self.config.num_runs):
             print(f"\n--- Run {run_idx + 1}/{self.config.num_runs} ---")
 
-            # Use same initial noise for fair comparison
-            torch.manual_seed(run_idx)
+            # Use different seed per run to explore stochastic variation
+            # All conditions within a run share the SAME initial noise for fair comparison
             initial_latents = get_latents(
                 self.scheduler,
                 z_channels=self.config.z_channels,
@@ -268,7 +268,8 @@ class CompositionExperimentSuite:
                 num_inference_steps=self.config.num_inference_steps,
                 batch_size=self.config.batch_size,
                 latent_width=self.config.latent_width,
-                latent_height=self.config.latent_height
+                latent_height=self.config.latent_height,
+                seed=run_idx  # Different seed per run
             )
 
             # Experiment 1: Monolithic prompt

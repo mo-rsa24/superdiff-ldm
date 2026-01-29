@@ -35,8 +35,13 @@ def get_vel(unet, t, sigma, latents, embeddings, eps=None, get_div=False, device
 
     return vel, div
 
-def get_latents(scheduler, z_channels: int =4, device = torch.device("cuda"), dtype = torch.float16,  num_inference_steps: int = 500, batch_size: int = 6, latent_width: int = 64, latent_height: int = 64):
-    generator = torch.cuda.manual_seed(1)
+def get_latents(scheduler, z_channels: int =4, device = torch.device("cuda"), dtype = torch.float16,  num_inference_steps: int = 500, batch_size: int = 6, latent_width: int = 64, latent_height: int = 64, seed: int = None):
+    # Use provided seed, or respect global seed if not provided
+    if seed is not None:
+        generator = torch.Generator(device=device).manual_seed(seed)
+    else:
+        generator = None  # Use global random state (set by torch.manual_seed)
+
     latents = torch.randn(
         (batch_size, z_channels, latent_height, latent_width),
         generator=generator,
