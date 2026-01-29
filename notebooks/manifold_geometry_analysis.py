@@ -219,7 +219,15 @@ class ManifoldGeometryAnalyzer:
         total_distance = 0.0
 
         # Fit PCA on all samples to get manifold structure
-        pca = PCA(n_components=min(50, self.samples.shape[1]))
+        # n_components must be <= min(n_samples, n_features)
+        n_samples, n_features = self.samples.shape
+        n_components = min(50, n_samples, n_features)
+
+        if n_components < 2:
+            # Cannot do PCA with less than 2 components, fall back to Euclidean
+            return np.linalg.norm(end - start), np.array([start, end])
+
+        pca = PCA(n_components=n_components)
         pca.fit(self.samples)
 
         for _ in range(n_steps):
