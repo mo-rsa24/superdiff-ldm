@@ -163,6 +163,11 @@ def plot_dynamics_suite(traj_n, traj_t, traj_comp, manager, ae_model=None, ae_pa
             manager.get_path("dynamics", "manifold_overlay.png")
         )
 
+    # G. Difference Vector Dynamics (Disease-Sensitive Projection)
+    plot_difference_vector_dynamics(
+        traj_n, traj_t, traj_comp, manager.get_path("dynamics", "diff_vec")
+    )
+
 
 # ==============================================================================
 # 2. TEMPORAL DYNAMICS (How does it evolve?)
@@ -472,6 +477,9 @@ def plot_geometry_suite(latents_n, latents_t, latents_c, manager):
     plot_latent_umap(latents_n, latents_t, latents_c, manager.get_path("geometry", "umap_2d.png"))
     plot_latent_umap_3d(latents_n, latents_t, latents_c, manager.get_path("geometry", "umap_3d.png"))
 
+    # E. Difference Vector Static (Disease-Sensitive Projection)
+    plot_difference_vector_static(latents_n, latents_t, latents_c, manager.get_path("geometry", "diff_vec"))
+
 
 def plot_latent_pca(latents_a, latents_b, latents_superdiff, output_path):
     """
@@ -624,7 +632,188 @@ def plot_latent_umap_3d(latents_a, latents_b, latents_superdiff, output_path):
 
 
 # ==============================================================================
-# 4. LOG DIAGNOSTICS
+# 4. DIFFERENCE VECTOR ANALYSIS (Disease-Sensitive Projections)
+#    Focus: Δz = E[z_TB] - E[z_Normal], project onto disease axis + orthogonal
+# ==============================================================================
+
+def plot_difference_vector_dynamics(traj_n, traj_t, traj_comp, output_path_base):
+    """
+    Projects diffusion trajectories onto the disease direction
+    Δz = E[z_TB] - E[z_Normal] and its orthogonal complement.
+
+    Outputs three plots:
+      - Disease axis projection over diffusion time
+      - Orthogonal drift over diffusion time
+      - Disease signal ratio (|disease| / total displacement)
+    """
+    print(f">> Generating Difference Vector Dynamics -> {output_path_base}")
+
+    # 1. Flatten trajectories: (steps, batch, H, W, C) -> (steps, batch, features)
+    def flatten_traj(t):
+        arr = np.array(t)
+        return arr.reshape(arr.shape[0], arr.shape[1], -1)
+
+    flat_n = flatten_traj(traj_n)
+    flat_t = flatten_traj(traj_t)
+    flat_c = flatten_traj(traj_comp)
+
+    # 2. Compute disease direction from final-step centroids (cleanest estimates)
+    mu_n_final = np.mean(flat_n[-1], axis=0)
+    mu_t_final = np.mean(flat_t[-1], axis=0)
+    delta_z = mu_t_final - mu_n_final
+    delta_z_norm = np.linalg.norm(delta_z)
+
+    if delta_z_norm < 1e-10:
+        print("   WARNING: Disease direction has near-zero norm. Skipping.")
+        return
+
+    delta_z_hat = delta_z / delta_z_norm
+
+    # 3. Per-step centroids
+    cent_n = np.mean(flat_n, axis=1)  # (S, F)
+    cent_t = np.mean(flat_t, axis=1)
+    cent_c = np.mean(flat_c, axis=1)
+
+    # 4. Project centroids (centered on Normal path at each step)
+    def project_onto_disease(centroids):
+        centered = centroids - cent_n
+        disease_proj = centered @ delta_z_hat                      # (S,)
+        ortho = centered - np.outer(disease_proj, delta_z_hat)     # (S, F)
+        ortho_norm = np.linalg.norm(ortho, axis=1)                 # (S,)
+        return disease_proj, ortho_norm
+
+    dis_n, ort_n = project_onto_disease(cent_n)
+    dis_t, ort_t = project_onto_disease(cent_t)
+    dis_c, ort_c = project_onto_disease(cent_c)
+
+    n_steps = len(dis_c)
+    time_axis = np.linspace(1.0, 0.0, n_steps)
+
+    # --- Plot A: Disease Axis Projection ---
+    setup_plot(
+        r"Disease Axis Projection: $\langle x_t - \mu_{Normal}, \hat{\Delta z} \rangle$",
+        "Diffusion Time (t)", "Projection onto Disease Direction"
+    )
+    plt.plot(time_axis, dis_n, c=COLORS['normal'], ls=STYLES['normal'], lw=2, label='Normal')
+    plt.plot(time_axis, dis_t, c=COLORS['tb'], ls=STYLES['tb'], lw=2, label='TB')
+    plt.plot(time_axis, dis_c, c=COLORS['comp'], lw=3, label='Composition')
+    plt.axhline(0, color='gray', ls=':', alpha=0.4)
+    plt.axhline(dis_t[-1], color=COLORS['tb'], ls=':', alpha=0.3, label=f'TB final ({dis_t[-1]:.1f})')
+    plt.gca().invert_xaxis()
+    plt.legend()
+    plt.savefig(f"{output_path_base}_disease_axis.png", dpi=300)
+    plt.close()
+
+    # --- Plot B: Orthogonal Complement ---
+    setup_plot(
+        "Orthogonal Complement: Non-Disease Drift from Normal",
+        "Diffusion Time (t)", r"$\| x_t^{\perp} \|$ (Drift orthogonal to disease)"
+    )
+    plt.plot(time_axis, ort_n, c=COLORS['normal'], ls=STYLES['normal'], lw=2, label='Normal')
+    plt.plot(time_axis, ort_t, c=COLORS['tb'], ls=STYLES['tb'], lw=2, label='TB')
+    plt.plot(time_axis, ort_c, c=COLORS['comp'], lw=3, label='Composition')
+    plt.gca().invert_xaxis()
+    plt.legend()
+    plt.savefig(f"{output_path_base}_ortho_drift.png", dpi=300)
+    plt.close()
+
+    # --- Plot C: Disease Signal Ratio ---
+    total_c = np.sqrt(dis_c**2 + ort_c**2)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = np.where(total_c > 1e-8, np.abs(dis_c) / total_c, 0.0)
+
+    setup_plot(
+        "Disease Signal Ratio: |disease| / total displacement",
+        "Diffusion Time (t)", "Disease Fraction (1.0 = pure disease direction)"
+    )
+    plt.plot(time_axis, ratio, c=COLORS['comp'], lw=3, label='Composition')
+    plt.axhline(1.0, color='gray', ls=':', alpha=0.3, label='Pure disease')
+    plt.axhline(0.0, color='gray', ls=':', alpha=0.3)
+    plt.ylim(-0.05, 1.05)
+    plt.gca().invert_xaxis()
+    plt.legend()
+    plt.savefig(f"{output_path_base}_disease_ratio.png", dpi=300)
+    plt.close()
+
+    print(f"   Disease direction norm: {delta_z_norm:.4f}")
+    print(f"   Composition final disease proj: {dis_c[-1]:.4f} (TB ref: {dis_t[-1]:.4f})")
+    print(f"   Composition final ortho drift: {ort_c[-1]:.4f} (TB ref: {ort_t[-1]:.4f})")
+    print(f"   Final disease ratio: {ratio[-1]:.4f}")
+
+
+def plot_difference_vector_static(latents_n, latents_t, latents_c, output_path_base):
+    """
+    Static difference vector analysis on final latent samples.
+    Projects all samples onto the disease direction and orthogonal complement.
+
+    Outputs:
+      - Histogram of per-sample disease axis projections
+      - 2D scatter: disease projection vs orthogonal norm
+    """
+    print(f">> Generating Static Difference Vector Analysis -> {output_path_base}")
+
+    def flatten(l): return np.array(l).reshape(l.shape[0], -1)
+
+    flat_n = flatten(latents_n)
+    flat_t = flatten(latents_t)
+    flat_c = flatten(latents_c)
+
+    # Disease direction from population means
+    mu_n = np.mean(flat_n, axis=0)
+    mu_t = np.mean(flat_t, axis=0)
+    delta_z = mu_t - mu_n
+    delta_z_norm = np.linalg.norm(delta_z)
+
+    if delta_z_norm < 1e-10:
+        print("   WARNING: Disease direction has near-zero norm. Skipping.")
+        return
+
+    delta_z_hat = delta_z / delta_z_norm
+
+    # Project each sample (centered on Normal mean)
+    def project_samples(flat):
+        centered = flat - mu_n
+        disease = centered @ delta_z_hat                      # (N,)
+        ortho = centered - np.outer(disease, delta_z_hat)     # (N, F)
+        ortho_norm = np.linalg.norm(ortho, axis=1)            # (N,)
+        return disease, ortho_norm
+
+    d_n, o_n = project_samples(flat_n)
+    d_t, o_t = project_samples(flat_t)
+    d_c, o_c = project_samples(flat_c)
+
+    # --- Plot A: Disease axis histogram ---
+    setup_plot("Disease Axis Projection (Final Samples)",
+               "Projection onto Disease Direction", "Density")
+    plt.hist(d_n, bins=20, alpha=0.5, color=COLORS['normal'], label='Normal', density=True)
+    plt.hist(d_t, bins=20, alpha=0.5, color=COLORS['tb'], label='TB', density=True)
+    plt.hist(d_c, bins=20, alpha=0.5, color=COLORS['comp'], label='Composition', density=True)
+    plt.axvline(0, color='gray', ls=':', alpha=0.5)
+    plt.legend()
+    plt.savefig(f"{output_path_base}_histogram.png", dpi=300)
+    plt.close()
+
+    # --- Plot B: 2D scatter (disease vs orthogonal) ---
+    setup_plot("Disease vs Non-Disease Components",
+               "Disease Direction Projection", "Orthogonal Norm")
+    plt.scatter(d_n, o_n, c=COLORS['normal'], alpha=0.5, s=40, label='Normal')
+    plt.scatter(d_t, o_t, c=COLORS['tb'], alpha=0.5, s=40, label='TB')
+    plt.scatter(d_c, o_c, c=COLORS['comp'], alpha=0.7, s=60,
+                marker='X', edgecolor='white', label='Composition')
+    plt.axvline(0, color='gray', ls=':', alpha=0.3)
+    plt.legend()
+    plt.savefig(f"{output_path_base}_scatter.png", dpi=300)
+    plt.close()
+
+    # Summary
+    print(f"   Disease direction norm: {delta_z_norm:.4f}")
+    print(f"   Normal  -> disease: {np.mean(d_n):.3f} +/- {np.std(d_n):.3f}")
+    print(f"   TB      -> disease: {np.mean(d_t):.3f} +/- {np.std(d_t):.3f}")
+    print(f"   Comp    -> disease: {np.mean(d_c):.3f} +/- {np.std(d_c):.3f}")
+
+
+# ==============================================================================
+# 5. LOG DIAGNOSTICS
 # ==============================================================================
 
 def plot_log_trajectories(log_q_a_hist, log_q_b_hist, steps=None, output_path="log_trajectories.png"):
