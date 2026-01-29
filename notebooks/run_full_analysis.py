@@ -52,6 +52,9 @@ def main():
     parser.add_argument('--quick', action='store_true')
     parser.add_argument('--skip-enhanced-viz', action='store_true',
                        help='Skip enhanced visualizations (faster)')
+    parser.add_argument('--unified', action='store_true',
+                       help='Generate unified 6-condition comparison '
+                            '(all semantic + spatial conditions in one view)')
     parser.add_argument('--output-dir', type=str, default=None)
 
     args = parser.parse_args()
@@ -200,7 +203,33 @@ def main():
             output_dir=str(Path(config.output_dir) / "spatial" / "manifold")
         )
 
-    # Step 4: Final summary
+    # Step 4: Unified 6-condition comparison
+    if args.unified:
+        print("\n" + "="*80)
+        print("STEP 4: UNIFIED 6-CONDITION COMPARISON")
+        print("="*80)
+
+        from notebooks.unified_comparison import (
+            build_unified_conditions,
+            generate_unified_comparison
+        )
+
+        conditions = build_unified_conditions(
+            suite.semantic_suite,
+            suite.spatial_suite,
+            config
+        )
+
+        unified_output_dir = str(Path(config.output_dir) / "unified")
+
+        generate_unified_comparison(
+            conditions=conditions,
+            vae=suite.semantic_suite.vae,
+            output_dir=unified_output_dir,
+            num_runs=config.num_runs
+        )
+
+    # Step 5: Final summary
     print("\n" + "="*80)
     print("COMPLETE ANALYSIS FINISHED!")
     print("="*80)
@@ -261,6 +290,17 @@ def main():
     print(f"   {output_path / 'spatial/manifold/'}")
     print("   → Compare spatial results to semantic results")
     print("   → Does spatial grounding change geometric properties?")
+
+    if args.unified:
+        print("\n9. UNIFIED 6-CONDITION COMPARISON:")
+        print(f"   {output_path / 'unified/sample_images_comparison.png'}")
+        print("   → 6 rows (one per condition) x N runs of decoded images")
+        print(f"   {output_path / 'unified/pca_tsne_projections.png'}")
+        print("   → PCA and t-SNE with all 6 conditions + centroids")
+        print(f"   {output_path / 'unified/unified_latent_space_3d_interactive.html'}")
+        print("   → Interactive 3D PCA with all 6 conditions")
+        print(f"   {output_path / 'unified/trajectory_evolution_3d_interactive_averaged.html'}")
+        print("   → Averaged trajectories for all 6 conditions in 3D")
 
     print("\n" + "="*80)
     print("INTERPRETATION DECISION TREE")
