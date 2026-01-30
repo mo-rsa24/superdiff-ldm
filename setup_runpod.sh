@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -e #
 
 echo "=========================================="
 echo "Setting up superdiff-ldm environment on RunPod..."
