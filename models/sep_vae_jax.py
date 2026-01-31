@@ -275,28 +275,33 @@ class SepVAE(nn.Module):
     Complete SepVAE model with frozen backbone, three heads, and shared decoder.
 
     This is the main model that combines:
-    - SepVAEEncoder: ResNet-50 backbone + 3 MLP heads
+    - SepVAEEncoder: ResNet-50 backbone + 3 Conv heads → 64×64×8
     - Head nulling logic
     - SepVAEDecoder: Progressive upsampling decoder
 
+    Spatial latents: 64×64×8 for LDM training
+    - Common: 4 channels
+    - Cardiomegaly: 2 channels
+    - Pleural Effusion: 2 channels
+
     Attributes:
-        latent_dim_common: Common latent dimensionality (default: 128)
-        latent_dim_disease: Disease-specific latent dimensionality (default: 64)
+        z_channels_common: Common latent channels (default: 4)
+        z_channels_disease: Disease-specific latent channels (default: 2)
         frozen_backbone: Whether to freeze backbone (default: True)
     """
-    latent_dim_common: int = 128
-    latent_dim_disease: int = 64
+    z_channels_common: int = 4
+    z_channels_disease: int = 2
     frozen_backbone: bool = True
 
     def setup(self):
         """Initialize encoder and decoder."""
         self.encoder = SepVAEEncoder(
-            latent_dim_common=self.latent_dim_common,
-            latent_dim_disease=self.latent_dim_disease,
+            z_channels_common=self.z_channels_common,
+            z_channels_disease=self.z_channels_disease,
             frozen_backbone=self.frozen_backbone
         )
         self.decoder = SepVAEDecoder(
-            latent_dim_total=self.latent_dim_common + 2 * self.latent_dim_disease
+            z_channels=self.z_channels_common + 2 * self.z_channels_disease
         )
 
     def __call__(self, x, labels, *, key, train: bool = True):
@@ -312,39 +317,56 @@ class SepVAE(nn.Module):
         Returns:
             x_rec: Reconstructed images (B, 512, 512, 1) in [0, 1] range
             latents_dict: Dict with encoder outputs (mu, logvar) for each head
+                         Each is spatial: (B, 64, 64, channels)
             inactive_mus: Dict with masked inactive means for nulling loss
         """
-        # Encode (get mu and logvar for all three heads)
+        # Encode (get spatial mu and logvar for all three heads)
         latents_dict = self.encoder(x, train=train)
 
-        # Sample latents with head nulling
+        # Sample spatial latents with head nulling
         key_sample, key_dec = jax.random.split(key)
         z_concat, inactive_mus = apply_head_nulling(latents_dict, labels, key_sample)
+        # z_concat: (B, 64, 64, 8)
 
-        # Decode (convert [-1,1] input to [0,1] for decoder)
-        x_normalized = (x + 1.0) / 2.0  # [-1, 1] → [0, 1]
+        # Decode
         x_rec = self.decoder(z_concat, train=train)
 
         return x_rec, latents_dict, inactive_mus
 
     def encode(self, x):
         """
-        Encode images to latent distributions (no sampling).
+        Encode images to spatial latent distributions (no sampling).
 
         Args:
             x: Input images (B, 512, 512, 1)
 
         Returns:
             latents_dict: Dict with (mu, logvar) for each head
+                         Each is spatial: (B, 64, 64, channels)
         """
         return self.encoder(x, train=False)
 
-    def decode(self, z):
+    def extract_backbone_features(self, x):
         """
-        Decode latents to images.
+        Extract raw spatial features from the frozen CheSS backbone.
 
         Args:
-            z: Concatenated latents (B, 256)
+            x: Input images (B, 512, 512, 1)
+
+        Returns:
+            Spatial features (B, 64, 64, 2048) before ConvHeads
+        """
+        h = self.encoder.backbone(x, return_spatial=True)
+        if self.frozen_backbone:
+            h = jax.lax.stop_gradient(h)
+        return h
+
+    def decode(self, z):
+        """
+        Decode spatial latents to images.
+
+        Args:
+            z: Spatial latents (B, 64, 64, 8)
 
         Returns:
             Reconstructed images (B, 512, 512, 1) in [0, 1]
@@ -355,12 +377,12 @@ class SepVAE(nn.Module):
 # Testing utilities
 def test_sepvae():
     """Test SepVAE model with dummy inputs."""
-    print("Testing SepVAE model...")
+    print("Testing SepVAE model (Spatial Latents)...")
 
     # Create model
     model = SepVAE(
-        latent_dim_common=128,
-        latent_dim_disease=64,
+        z_channels_common=4,
+        z_channels_disease=2,
         frozen_backbone=True
     )
 
@@ -376,7 +398,7 @@ def test_sepvae():
     print("Initializing model...")
     variables = model.init({'params': key_init, 'dropout': key_init}, x, labels, key=key_forward, train=True)
 
-    print(f"Model parameters: {sum(p.size for p in jax.tree_util.tree_leaves(variables['params']))}")
+    print(f"Model parameters: {sum(p.size for p in jax.tree_util.tree_leaves(variables['params'])):,}")
 
     # Forward pass
     print("Running forward pass...")
@@ -388,13 +410,17 @@ def test_sepvae():
     print(f"Output shape: {x_rec.shape}")
     print(f"Output range: [{x_rec.min():.3f}, {x_rec.max():.3f}]")
 
-    print("\nLatent dimensions:")
+    print("\nSpatial Latent dimensions (64×64×channels):")
     for head_name, (mu, logvar) in latents_dict.items():
         print(f"  {head_name}: μ{mu.shape}, log_σ{logvar.shape}")
 
+    print("\nTotal latent space: 64×64×8 (ready for LDM)")
+
     print("\nInactive means (should be zero for active heads):")
     for head_name, inactive_mu in inactive_mus.items():
-        print(f"  {head_name}: {inactive_mu.sum(axis=1)}")  # Sum over latent dim
+        # Sum over spatial and channel dims
+        inactive_sum = jnp.sum(inactive_mu, axis=(1, 2, 3))
+        print(f"  {head_name}: {inactive_sum}")
 
     print("\n✓ SepVAE test passed!")
 

@@ -40,34 +40,35 @@ def convert_conv_weights(torch_weight: np.ndarray) -> np.ndarray:
     return np.transpose(torch_weight, (2, 3, 1, 0))
 
 
-def convert_bn_params(torch_bn_dict: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+def convert_bn_params(torch_bn_dict: Dict[str, np.ndarray]) -> tuple:
     """
     Convert PyTorch BatchNorm2d parameters to JAX format.
 
     PyTorch BatchNorm has:
-        - weight (scale)
-        - bias
-        - running_mean
-        - running_var
+        - weight (scale)       → Flax params collection
+        - bias                 → Flax params collection
+        - running_mean         → Flax batch_stats collection
+        - running_var          → Flax batch_stats collection
 
-    Flax BatchNorm expects:
-        - scale
-        - bias
-        - mean
-        - var
+    Flax nn.BatchNorm stores these in TWO separate collections:
+        params:      {scale, bias}
+        batch_stats: {mean, var}
 
     Args:
         torch_bn_dict: Dict with PyTorch BatchNorm parameters
 
     Returns:
-        Dict with JAX-compatible BatchNorm parameters
+        (params_dict, batch_stats_dict) tuple
     """
-    return {
+    params = {
         'scale': torch_bn_dict['weight'],
         'bias': torch_bn_dict['bias'],
+    }
+    batch_stats = {
         'mean': torch_bn_dict['running_mean'],
         'var': torch_bn_dict['running_var'],
     }
+    return params, batch_stats
 
 
 def convert_chess_resnet50(checkpoint_path: str, verbose: bool = True) -> Dict[str, Any]:
@@ -114,18 +115,19 @@ def convert_chess_resnet50(checkpoint_path: str, verbose: bool = True) -> Dict[s
         print(f"Total keys in checkpoint: {len(state_dict)}")
 
     # Extract encoder_q weights (remove 'module.encoder_q.' prefix)
+    # Following original CheSS loading: retain encoder_q but exclude the fc projection head
     encoder_q_weights = {}
-    for key, value in state_dict.items():
-        if key.startswith('module.encoder_q.'):
-            # Strip 'module.encoder_q.' prefix
-            new_key = key.replace('module.encoder_q.', '')
-            encoder_q_weights[new_key] = value.cpu().numpy()
+    for key in list(state_dict.keys()):
+        if key.startswith('module.encoder_q.') and not key.startswith('module.encoder_q.fc'):
+            new_key = key[len('module.encoder_q.'):]
+            encoder_q_weights[new_key] = state_dict[key].cpu().numpy()
 
     if verbose:
         print(f"Extracted {len(encoder_q_weights)} encoder_q parameters")
 
-    # Convert to JAX format
+    # Convert to JAX format — separate params and batch_stats trees
     jax_params = {}
+    jax_batch_stats = {}
 
     # ===== Initial conv + bn =====
     if verbose:
@@ -135,12 +137,14 @@ def convert_chess_resnet50(checkpoint_path: str, verbose: bool = True) -> Dict[s
         'kernel': convert_conv_weights(encoder_q_weights['conv1.weight'])
     }
 
-    jax_params['bn1'] = convert_bn_params({
+    bn1_params, bn1_stats = convert_bn_params({
         'weight': encoder_q_weights['bn1.weight'],
         'bias': encoder_q_weights['bn1.bias'],
         'running_mean': encoder_q_weights['bn1.running_mean'],
         'running_var': encoder_q_weights['bn1.running_var'],
     })
+    jax_params['bn1'] = bn1_params
+    jax_batch_stats['bn1'] = bn1_stats
 
     # ===== ResNet layers 1-4 =====
     # layer1: 3 blocks, layer2: 4 blocks, layer3: 6 blocks, layer4: 3 blocks
@@ -160,6 +164,7 @@ def convert_chess_resnet50(checkpoint_path: str, verbose: bool = True) -> Dict[s
             jax_block_name = f'{layer_name}_block{block_idx}'
 
             jax_params[jax_block_name] = {}
+            jax_batch_stats[jax_block_name] = {}
 
             # Convert 3 convs in bottleneck (conv1, conv2, conv3)
             for conv_idx in range(1, 4):
@@ -171,12 +176,14 @@ def convert_chess_resnet50(checkpoint_path: str, verbose: bool = True) -> Dict[s
                         'kernel': convert_conv_weights(encoder_q_weights[conv_key])
                     }
 
-                    jax_params[jax_block_name][f'bn{conv_idx}'] = convert_bn_params({
+                    bn_p, bn_s = convert_bn_params({
                         'weight': encoder_q_weights[f'{bn_key_prefix}.weight'],
                         'bias': encoder_q_weights[f'{bn_key_prefix}.bias'],
                         'running_mean': encoder_q_weights[f'{bn_key_prefix}.running_mean'],
                         'running_var': encoder_q_weights[f'{bn_key_prefix}.running_var'],
                     })
+                    jax_params[jax_block_name][f'bn{conv_idx}'] = bn_p
+                    jax_batch_stats[jax_block_name][f'bn{conv_idx}'] = bn_s
 
             # Convert downsample (skip connection) if it exists
             downsample_conv_key = f'{torch_block_prefix}.downsample.0.weight'
@@ -187,32 +194,37 @@ def convert_chess_resnet50(checkpoint_path: str, verbose: bool = True) -> Dict[s
                     'kernel': convert_conv_weights(encoder_q_weights[downsample_conv_key])
                 }
 
-                jax_params[jax_block_name]['downsample_bn'] = convert_bn_params({
+                ds_bn_p, ds_bn_s = convert_bn_params({
                     'weight': encoder_q_weights[f'{downsample_bn_prefix}.weight'],
                     'bias': encoder_q_weights[f'{downsample_bn_prefix}.bias'],
                     'running_mean': encoder_q_weights[f'{downsample_bn_prefix}.running_mean'],
                     'running_var': encoder_q_weights[f'{downsample_bn_prefix}.running_var'],
                 })
+                jax_params[jax_block_name]['downsample_bn'] = ds_bn_p
+                jax_batch_stats[jax_block_name]['downsample_bn'] = ds_bn_s
 
     if verbose:
         print(f"\n✓ Conversion complete! Converted {len(jax_params)} top-level modules")
+        print(f"  params keys: {len(jax_params)}, batch_stats keys: {len(jax_batch_stats)}")
 
-    return jax_params
+    return jax_params, jax_batch_stats
 
 
-def save_converted_weights(jax_params: Dict[str, Any], output_path: str):
+def save_converted_weights(chess_weights: tuple, output_path: str):
     """
-    Save converted JAX parameters to disk.
+    Save converted JAX parameters and batch_stats to disk.
 
     Args:
-        jax_params: Converted parameter dictionary
+        chess_weights: Tuple of (params, batch_stats) from convert_chess_resnet50
         output_path: Path to save .npy file
     """
-    np.save(output_path, jax_params, allow_pickle=True)
+    jax_params, jax_batch_stats = chess_weights
+    np.save(output_path, {'params': jax_params, 'batch_stats': jax_batch_stats},
+            allow_pickle=True)
     print(f"Saved converted weights to: {output_path}")
 
 
-def load_converted_weights(input_path: str) -> Dict[str, Any]:
+def load_converted_weights(input_path: str) -> tuple:
     """
     Load previously converted JAX parameters.
 
@@ -220,14 +232,47 @@ def load_converted_weights(input_path: str) -> Dict[str, Any]:
         input_path: Path to .npy file
 
     Returns:
-        Parameter dictionary
+        (params, batch_stats) tuple
     """
-    jax_params = np.load(input_path, allow_pickle=True).item()
-    print(f"Loaded converted weights from: {input_path}")
-    return jax_params
+    data = np.load(input_path, allow_pickle=True).item()
+    # Handle both old format (flat dict) and new format (params + batch_stats)
+    if 'params' in data and 'batch_stats' in data:
+        print(f"Loaded converted weights from: {input_path}")
+        return data['params'], data['batch_stats']
+    else:
+        # Legacy format: everything in one dict, need to split
+        print(f"Loaded legacy format from: {input_path}, splitting params/batch_stats")
+        return _split_legacy_params(data)
 
 
-def verify_conversion(jax_params: Dict[str, Any], checkpoint_path: str, tolerance: float = 1e-4):
+def _split_legacy_params(flat_params: Dict[str, Any]) -> tuple:
+    """Split old-format params (with BN mean/var in params) into (params, batch_stats)."""
+    params = {}
+    batch_stats = {}
+    for key, value in flat_params.items():
+        if isinstance(value, dict):
+            if 'mean' in value and 'var' in value and 'scale' in value:
+                # This is a BN layer in old format
+                params[key] = {'scale': value['scale'], 'bias': value['bias']}
+                batch_stats[key] = {'mean': value['mean'], 'var': value['var']}
+            elif any(isinstance(v, dict) and 'mean' in v for v in value.values()):
+                # Nested block with BN layers inside
+                params[key] = {}
+                batch_stats[key] = {}
+                for sub_key, sub_value in value.items():
+                    if isinstance(sub_value, dict) and 'mean' in sub_value and 'scale' in sub_value:
+                        params[key][sub_key] = {'scale': sub_value['scale'], 'bias': sub_value['bias']}
+                        batch_stats[key][sub_key] = {'mean': sub_value['mean'], 'var': sub_value['var']}
+                    else:
+                        params[key][sub_key] = sub_value
+            else:
+                params[key] = value
+        else:
+            params[key] = value
+    return params, batch_stats
+
+
+def verify_conversion(chess_weights: tuple, checkpoint_path: str, tolerance: float = 1e-4):
     """
     Verify weight conversion by comparing PyTorch and JAX outputs on dummy input.
 
@@ -235,7 +280,7 @@ def verify_conversion(jax_params: Dict[str, Any], checkpoint_path: str, toleranc
     input, and checks that outputs match within tolerance.
 
     Args:
-        jax_params: Converted JAX parameters
+        chess_weights: Tuple of (params, batch_stats) from convert_chess_resnet50
         checkpoint_path: Path to original PyTorch checkpoint
         tolerance: Maximum allowed difference in outputs
 
@@ -254,6 +299,8 @@ def verify_conversion(jax_params: Dict[str, Any], checkpoint_path: str, toleranc
 
     from models.resnet_jax import ResNet50CheSS
 
+    jax_params, jax_batch_stats = chess_weights
+
     print("\n" + "="*60)
     print("VERIFYING WEIGHT CONVERSION")
     print("="*60)
@@ -266,17 +313,7 @@ def verify_conversion(jax_params: Dict[str, Any], checkpoint_path: str, toleranc
     print("\n1. Running JAX forward pass...")
     jax_model = ResNet50CheSS()
 
-    # Need to create proper variable dict with batch_stats
-    batch_stats = {}
-    for key, value in jax_params.items():
-        if isinstance(value, dict) and 'mean' in value and 'var' in value:
-            # This is a BatchNorm layer
-            batch_stats[key] = {
-                'mean': value['mean'],
-                'var': value['var']
-            }
-
-    variables = {'params': jax_params, 'batch_stats': batch_stats}
+    variables = {'params': jax_params, 'batch_stats': jax_batch_stats}
     y_jax = jax_model.apply(variables, jnp.array(x_np))
     y_jax_np = np.array(y_jax)
 
@@ -374,11 +411,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Convert weights
-    jax_params = convert_chess_resnet50(args.checkpoint, verbose=True)
+    chess_weights = convert_chess_resnet50(args.checkpoint, verbose=True)
 
     # Save converted weights
-    save_converted_weights(jax_params, args.output)
+    save_converted_weights(chess_weights, args.output)
 
     # Verify if requested
     if args.verify:
-        verify_conversion(jax_params, args.checkpoint)
+        verify_conversion(chess_weights, args.checkpoint)

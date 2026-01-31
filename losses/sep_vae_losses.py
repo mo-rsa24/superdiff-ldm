@@ -50,15 +50,18 @@ def kl_divergence_standard(mu: jnp.ndarray, logvar: jnp.ndarray) -> jnp.ndarray:
         KL = 0.5 * sum(μ² + σ² - 1 - log(σ²))
 
     Args:
-        mu: Mean of posterior (B, latent_dim)
-        logvar: Log-variance of posterior (B, latent_dim)
+        mu: Mean of posterior (B, ..., latent_dim)
+            Can be flat (B, D) or spatial (B, H, W, C)
+        logvar: Log-variance of posterior (B, ..., latent_dim)
 
     Returns:
         Per-sample KL divergence (B,)
     """
+    # Sum over all dimensions except batch
+    sum_axes = tuple(range(1, mu.ndim))
     return 0.5 * jnp.sum(
         jnp.square(mu) + jnp.exp(logvar) - 1.0 - logvar,
-        axis=-1
+        axis=sum_axes
     )
 
 
@@ -79,8 +82,9 @@ def kl_divergence_conditional(
     This soft pressure pulls inactive heads toward zero.
 
     Args:
-        mu: Mean of posterior (B, latent_dim)
-        logvar: Log-variance of posterior (B, latent_dim)
+        mu: Mean of posterior (B, ..., latent_dim)
+            Can be flat (B, D) or spatial (B, H, W, C)
+        logvar: Log-variance of posterior (B, ..., latent_dim)
         labels: Disease labels (B,) in {0, 1, 2}
         disease_id: Which disease this head represents (1=effusion, 2=cardio)
         sigma_inactive: Std dev of tight prior for inactive heads (default: 0.1)
@@ -89,7 +93,9 @@ def kl_divergence_conditional(
         Per-sample KL divergence (B,)
     """
     # Determine which samples are active for this disease head
-    is_active = (labels == disease_id).astype(jnp.float32)[:, None]  # (B, 1)
+    # Broadcast to match mu/logvar shape
+    is_active_shape = (labels.shape[0],) + (1,) * (mu.ndim - 1)  # (B, 1, 1, 1) for spatial
+    is_active = (labels == disease_id).astype(jnp.float32).reshape(is_active_shape)
 
     # Prior variance: 1.0 if active, sigma_inactive² if inactive
     prior_logvar = jnp.where(is_active > 0.5, 0.0, jnp.log(sigma_inactive ** 2))
@@ -98,12 +104,13 @@ def kl_divergence_conditional(
     # KL(q(z|x) || N(0, prior_var·I))
     # Formula: KL = 0.5 * sum((μ²/σ_p² + σ²/σ_p² - 1 - log(σ²/σ_p²))
     #            = 0.5 * sum(μ²/σ_p² + exp(log_σ²)/σ_p² - 1 - (log_σ² - log_σ_p²))
+    sum_axes = tuple(range(1, mu.ndim))
     kl = 0.5 * jnp.sum(
         jnp.square(mu) / prior_var +
         jnp.exp(logvar) / prior_var -
         1.0 -
         (logvar - prior_logvar),
-        axis=-1
+        axis=sum_axes
     )
 
     return kl
@@ -168,14 +175,20 @@ def nulling_loss(inactive_mus: Dict[str, jnp.ndarray]) -> jnp.ndarray:
         L_null = mean(||μ_cardio_inactive||²) + mean(||μ_effusion_inactive||²)
 
     Args:
-        inactive_mus: Dict with 'cardiomegaly', 'effusion' arrays (B, latent_dim)
+        inactive_mus: Dict with 'cardiomegaly', 'effusion' arrays
+                     Can be flat (B, D) or spatial (B, H, W, C)
                      Already masked to zero for active samples
 
     Returns:
         Scalar nulling loss
     """
-    loss_cardio = jnp.mean(jnp.sum(jnp.square(inactive_mus['cardiomegaly']), axis=-1))
-    loss_effusion = jnp.mean(jnp.sum(jnp.square(inactive_mus['effusion']), axis=-1))
+    # Sum over all dims except batch, then average over batch
+    mu_cardio = inactive_mus['cardiomegaly']
+    mu_effusion = inactive_mus['effusion']
+
+    sum_axes = tuple(range(1, mu_cardio.ndim))
+    loss_cardio = jnp.mean(jnp.sum(jnp.square(mu_cardio), axis=sum_axes))
+    loss_effusion = jnp.mean(jnp.sum(jnp.square(mu_effusion), axis=sum_axes))
 
     return loss_cardio + loss_effusion
 
@@ -247,6 +260,7 @@ def mi_discriminator_loss(
     Args:
         discriminator_fn: Function that takes (z_c, z_d, train) and returns logits
         latents_dict: Dict with (mu, logvar) for each head
+                     Can be flat (B, D) or spatial (B, H, W, C)
         labels: Disease labels (B,) to select active disease head
         key: JAX PRNG key for shuffling
 
@@ -259,6 +273,12 @@ def mi_discriminator_loss(
     mu_effusion, _ = latents_dict['effusion']
 
     B = mu_c.shape[0]
+
+    # If spatial, apply global average pooling to get flat representations
+    if mu_c.ndim == 4:  # (B, H, W, C)
+        mu_c = jnp.mean(mu_c, axis=(1, 2))  # (B, C)
+        mu_cardio = jnp.mean(mu_cardio, axis=(1, 2))
+        mu_effusion = jnp.mean(mu_effusion, axis=(1, 2))
 
     # Select active disease head based on labels
     # For cardio samples (label=2): use cardio latents
@@ -324,7 +344,8 @@ def sepvae_loss(
     mi_params,
     batch: Dict[str, jnp.ndarray],
     key: jax.random.PRNGKey,
-    cfg: SepVAELossConfig
+    cfg: SepVAELossConfig,
+    batch_stats: Dict = None
 ) -> Tuple[jnp.ndarray, Tuple[Dict[str, jnp.ndarray], jnp.ndarray]]:
     """
     Complete SepVAE loss function.
@@ -343,6 +364,7 @@ def sepvae_loss(
         batch: Dict with 'x_norm', 'x_disease1', 'x_disease2', 'disease_labels'
         key: JAX PRNG key
         cfg: SepVAELossConfig with loss weights
+        batch_stats: BatchNorm running statistics for frozen backbone
 
     Returns:
         total_loss: Scalar
@@ -357,10 +379,15 @@ def sepvae_loss(
     # Stack into single batch: (3*B, 512, 512, 1)
     x = jnp.concatenate([x_norm, x_disease1, x_disease2], axis=0)
 
+    # Build variables dict (params + optional batch_stats for frozen BN)
+    variables = {'params': params}
+    if batch_stats is not None:
+        variables['batch_stats'] = batch_stats
+
     # Forward pass
     key1, key2 = jax.random.split(key)
     x_rec, latents_dict, inactive_mus = model.apply(
-        {'params': params}, x, labels, key=key1, train=True
+        variables, x, labels, key=key1, train=True
     )
 
     # 1. Reconstruction loss

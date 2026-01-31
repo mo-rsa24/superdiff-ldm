@@ -31,6 +31,7 @@ from datasets.VinBigData import VinBigDataTripletDataset, jax_collate_fn
 from models.sep_vae_jax import SepVAE
 from losses.sep_vae_losses import MIDiscriminator, SepVAELossConfig, sepvae_loss
 from utils.weight_converter import convert_chess_resnet50, load_converted_weights
+from utils.sepvae_analysis import visualize_backbone_features
 
 # Optional W&B
 try:
@@ -53,11 +54,11 @@ def parse_args():
     p.add_argument("--img_size", type=int, default=512,
                    help="Image size (default: 512)")
 
-    # Model architecture
-    p.add_argument("--latent_dim_common", type=int, default=128,
-                   help="Common latent dimensionality")
-    p.add_argument("--latent_dim_disease", type=int, default=64,
-                   help="Disease-specific latent dimensionality")
+    # Model architecture (spatial latents: 64×64×channels)
+    p.add_argument("--z_channels_common", type=int, default=4,
+                   help="Common latent channels (default: 4 for 64×64×4)")
+    p.add_argument("--z_channels_disease", type=int, default=2,
+                   help="Disease-specific latent channels (default: 2 for 64×64×2 each)")
     p.add_argument("--frozen_backbone", action="store_true", default=True,
                    help="Freeze CheSS backbone")
 
@@ -111,6 +112,12 @@ def parse_args():
                    help="Log every N steps")
     p.add_argument("--save_every", type=int, default=1,
                    help="Save checkpoint every N epochs")
+
+    # Verbose diagnostics
+    p.add_argument("--verbose_backbone", action="store_true",
+                   help="Visualize frozen backbone features before training (PCA, class diffs, top-K channels)")
+    p.add_argument("--verbose_n_samples", type=int, default=12,
+                   help="Number of samples for backbone visualization (default: 12)")
 
     # W&B
     p.add_argument("--wandb", action="store_true",
@@ -192,14 +199,15 @@ def main():
 
     if args.chess_converted and os.path.exists(args.chess_converted):
         print(f"Loading pre-converted weights from: {args.chess_converted}")
-        chess_params = load_converted_weights(args.chess_converted)
+        chess_params, chess_batch_stats = load_converted_weights(args.chess_converted)
     else:
         print(f"Converting CheSS weights from: {args.chess_checkpoint}")
-        chess_params = convert_chess_resnet50(args.chess_checkpoint, verbose=True)
+        chess_params, chess_batch_stats = convert_chess_resnet50(args.chess_checkpoint, verbose=True)
 
         # Save converted weights for future use
+        from utils.weight_converter import save_converted_weights
         converted_path = output_dir / "chess_jax_params.npy"
-        np.save(converted_path, chess_params, allow_pickle=True)
+        save_converted_weights((chess_params, chess_batch_stats), str(converted_path))
         print(f"✓ Saved converted weights to: {converted_path}")
 
     # ===== Initialize models =====
@@ -209,8 +217,8 @@ def main():
 
     # SepVAE model
     sepvae = SepVAE(
-        latent_dim_common=args.latent_dim_common,
-        latent_dim_disease=args.latent_dim_disease,
+        z_channels_common=args.z_channels_common,
+        z_channels_disease=args.z_channels_disease,
         frozen_backbone=args.frozen_backbone
     )
 
@@ -220,8 +228,8 @@ def main():
     # Dummy inputs for initialization
     dummy_x = jnp.ones((1, args.img_size, args.img_size, 1))
     dummy_labels = jnp.array([0])
-    dummy_z_c = jnp.ones((1, args.latent_dim_common))
-    dummy_z_d = jnp.ones((1, args.latent_dim_disease))
+    dummy_z_c = jnp.ones((1, 64, 64, args.z_channels_common))  # Spatial
+    dummy_z_d = jnp.ones((1, 64, 64, args.z_channels_disease))  # Spatial
 
     # Initialize SepVAE
     rng, init_rng = jax.random.split(rng)
@@ -230,15 +238,28 @@ def main():
         dummy_x, dummy_labels, key=init_rng, train=True
     )
     vae_params = vae_vars['params']
+    vae_batch_stats = vae_vars.get('batch_stats', {})
 
-    # Inject CheSS weights into backbone
+    # Inject CheSS weights into backbone (both params and batch_stats)
     print("\nInjecting CheSS weights into backbone...")
     vae_params = vae_params.copy()
     vae_params['encoder']['backbone'] = chess_params
-    vae_params = jax.tree_util.tree_map(jnp.array, vae_params)  # Ensure all are JAX arrays
+
+    # Inject BatchNorm running statistics from CheSS
+    if vae_batch_stats:
+        vae_batch_stats = vae_batch_stats.copy()
+        vae_batch_stats['encoder']['backbone'] = chess_batch_stats
+    else:
+        vae_batch_stats = {'encoder': {'backbone': chess_batch_stats}}
+
+    # Ensure all are JAX arrays
+    vae_params = jax.tree_util.tree_map(jnp.array, vae_params)
+    vae_batch_stats = jax.tree_util.tree_map(jnp.array, vae_batch_stats)
 
     vae_param_count = sum(p.size for p in jax.tree_util.tree_leaves(vae_params))
     print(f"✓ SepVAE parameters: {vae_param_count:,}")
+    bs_count = sum(p.size for p in jax.tree_util.tree_leaves(vae_batch_stats))
+    print(f"✓ SepVAE batch_stats: {bs_count:,} (frozen BN running stats)")
 
     # Initialize MI discriminator
     rng, init_rng = jax.random.split(rng)
@@ -289,13 +310,14 @@ def main():
     print(f"  MI penalty: {loss_cfg.weight_mi}")
 
     # ===== Define training steps =====
+    # vae_batch_stats is frozen (never updated), captured in closure by jit
     @jax.jit
     def vae_step(vae_state, disc_state, batch, key):
         """Update VAE parameters."""
         def loss_fn(params):
             total_loss, (logs, _) = sepvae_loss(
                 sepvae, mi_disc, params, disc_state.params,
-                batch, key, loss_cfg
+                batch, key, loss_cfg, batch_stats=vae_batch_stats
             )
             return total_loss, logs
 
@@ -310,7 +332,7 @@ def main():
         def loss_fn(mi_params):
             _, (_, disc_loss) = sepvae_loss(
                 sepvae, mi_disc, vae_state.params, mi_params,
-                batch, key, loss_cfg
+                batch, key, loss_cfg, batch_stats=vae_batch_stats
             )
             return disc_loss
 
@@ -318,6 +340,49 @@ def main():
         disc_state = disc_state.apply_gradients(grads=grads)
 
         return disc_state, disc_loss
+
+    # ===== Verbose backbone diagnostics (optional) =====
+    if args.verbose_backbone:
+        print("\n" + "="*60)
+        print("BACKBONE FEATURE DIAGNOSTICS")
+        print("="*60)
+
+        # Collect images from all three classes (normal, effusion, cardiomegaly)
+        # Each triplet batch has x_norm (label=0), x_disease1 (label=1), x_disease2 (label=2)
+        vis_images = []
+        vis_labels = []
+        n_collected = 0
+
+        for batch_torch in loader:
+            x_norm = batch_torch['x_norm'].permute(0, 2, 3, 1).numpy()
+            x_dis1 = batch_torch['x_disease1'].permute(0, 2, 3, 1).numpy()
+            x_dis2 = batch_torch['x_disease2'].permute(0, 2, 3, 1).numpy()
+            B = x_norm.shape[0]
+
+            # Stack all three: (3*B, H, W, C) with matching labels
+            vis_images.append(jnp.array(np.concatenate([x_norm, x_dis1, x_dis2], axis=0)))
+            vis_labels.append(np.array(batch_torch['disease_labels'].numpy()))
+            n_collected += 3 * B
+
+            if n_collected >= args.verbose_n_samples:
+                break
+
+        vis_images = jnp.concatenate(vis_images, axis=0)[:args.verbose_n_samples]
+        vis_labels = jnp.array(np.concatenate(vis_labels, axis=0)[:args.verbose_n_samples])
+
+        diag_dir = ensure_dir(output_dir / "backbone_diagnostics")
+        visualize_backbone_features(
+            sepvae, vae_state.params, vis_images, vis_labels,
+            save_dir=str(diag_dir), batch_stats=vae_batch_stats
+        )
+
+        if args.wandb and _WANDB:
+            import glob
+            for img_path in sorted(glob.glob(f"{diag_dir}/*.png")):
+                name = os.path.basename(img_path).replace('.png', '')
+                wandb.log({f"backbone/{name}": wandb.Image(img_path)})
+
+        print(f"Backbone diagnostics saved to: {diag_dir}")
 
     # ===== Training loop =====
     print("\n" + "="*60)
@@ -395,6 +460,7 @@ def main():
                 'epoch': epoch,
                 'global_step': global_step,
                 'vae_params': vae_state.params,
+                'vae_batch_stats': vae_batch_stats,
                 'disc_params': disc_state.params,
                 'vae_opt_state': vae_state.opt_state,
                 'disc_opt_state': disc_state.opt_state,
@@ -417,6 +483,7 @@ def main():
         'epoch': args.epochs,
         'global_step': global_step,
         'vae_params': vae_state.params,
+        'vae_batch_stats': vae_batch_stats,
         'disc_params': disc_state.params,
         'vae_opt_state': vae_state.opt_state,
         'disc_opt_state': disc_state.opt_state,
