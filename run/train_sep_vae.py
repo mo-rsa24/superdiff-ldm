@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import math
 import os
 from datetime import datetime
 from pathlib import Path
@@ -112,6 +113,10 @@ def parse_args():
                    help="Log every N steps")
     p.add_argument("--save_every", type=int, default=1,
                    help="Save checkpoint every N epochs")
+    p.add_argument("--sample_every", type=int, default=5,
+                   help="Generate reconstruction grid every N epochs (0 to disable)")
+    p.add_argument("--n_samples_per_class", type=int, default=4,
+                   help="Number of samples per class in reconstruction grid")
 
     # Verbose diagnostics
     p.add_argument("--verbose_backbone", action="store_true",
@@ -136,6 +141,55 @@ def ensure_dir(path):
     return path
 
 
+def make_sepvae_recon_grid(x_input, x_rec, labels, n_per_class=4):
+    """
+    Create a reconstruction grid organized by disease type.
+
+    Layout:
+        Row 0 (Original):       Normal ... | Effusion ... | Cardiomegaly ...
+        Row 1 (Reconstruction): Normal ... | Effusion ... | Cardiomegaly ...
+
+    Args:
+        x_input: Original images (3B, H, W, 1) in [-1, 1]
+        x_rec: Reconstructed images (3B, H, W, 1) in [0, 1]
+        labels: Disease labels (3B,)
+        n_per_class: Number of samples to show per class
+
+    Returns:
+        PIL.Image: The grid image
+    """
+    from torchvision.utils import make_grid
+    from PIL import Image
+
+    x_input_01 = (np.array(x_input) + 1.0) / 2.0  # [-1,1] -> [0,1]
+    x_rec_np = np.clip(np.array(x_rec), 0.0, 1.0)
+    labels_np = np.array(labels)
+
+    originals = []
+    reconstructions = []
+
+    for cls_id in [0, 1, 2]:
+        mask = labels_np == cls_id
+        idxs = np.where(mask)[0][:n_per_class]
+        for idx in idxs:
+            originals.append(x_input_01[idx])
+            reconstructions.append(x_rec_np[idx])
+
+    all_imgs = originals + reconstructions
+    nrow = len(originals)
+
+    # NHWC -> NCHW for torchvision
+    imgs_np = np.stack(all_imgs, axis=0)
+    imgs_np = np.transpose(imgs_np, (0, 3, 1, 2))
+    imgs_torch = torch.tensor(imgs_np).clamp(0, 1)
+
+    grid = make_grid(imgs_torch, nrow=nrow, padding=2)
+    grid_np = grid.permute(1, 2, 0).numpy()
+    grid_img = Image.fromarray((grid_np * 255).astype(np.uint8))
+
+    return grid_img
+
+
 def main():
     args = parse_args()
 
@@ -153,6 +207,7 @@ def main():
     exp_slug = f"{args.exp_name}-{timestamp}"
     output_dir = Path(args.output_root) / exp_slug
     ckpt_dir = ensure_dir(output_dir / "checkpoints")
+    samples_dir = ensure_dir(output_dir / "samples")
 
     print(f"\nOutput directory: {output_dir}")
 
@@ -341,6 +396,23 @@ def main():
 
         return disc_state, disc_loss
 
+    @jax.jit
+    def reconstruct_batch(vae_params, batch, key):
+        """Forward pass for reconstruction visualization (no gradients)."""
+        x_norm = batch['x_norm']
+        x_disease1 = batch['x_disease1']
+        x_disease2 = batch['x_disease2']
+        labels = batch['disease_labels']
+
+        x = jnp.concatenate([x_norm, x_disease1, x_disease2], axis=0)
+
+        variables = {'params': vae_params}
+        if vae_batch_stats:
+            variables['batch_stats'] = vae_batch_stats
+
+        x_rec, _, _ = sepvae.apply(variables, x, labels, key=key, train=False)
+        return x, x_rec
+
     # ===== Verbose backbone diagnostics (optional) =====
     if args.verbose_backbone:
         print("\n" + "="*60)
@@ -472,6 +544,28 @@ def main():
                 f.write(to_bytes(ckpt_data))
 
             print(f"✓ Saved checkpoint: {ckpt_path}")
+
+        # Generate reconstruction grid
+        if args.sample_every > 0 and epoch % args.sample_every == 0:
+            print(f"  Generating reconstruction grid...")
+            rng, sample_key = jax.random.split(rng)
+            x_orig, x_rec = reconstruct_batch(vae_state.params, batch, sample_key)
+
+            grid_img = make_sepvae_recon_grid(
+                x_orig, x_rec,
+                batch['disease_labels'],
+                n_per_class=args.n_samples_per_class
+            )
+
+            grid_path = samples_dir / f"recon_epoch{epoch:04d}.png"
+            grid_img.save(str(grid_path))
+            print(f"  ✓ Saved reconstruction grid: {grid_path}")
+
+            if args.wandb and _WANDB:
+                wandb.log(
+                    {"samples/recon_grid": wandb.Image(str(grid_path))},
+                    step=global_step
+                )
 
     print("\n" + "="*60)
     print("TRAINING COMPLETE!")
