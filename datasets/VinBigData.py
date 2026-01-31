@@ -3,14 +3,18 @@
 # Each image is a 512x512 grayscale DICOM, normalized to [-1, 1] for CheSS backbone compatibility.
 
 import os
+import logging
+import random
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 import pydicom
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 
 class VinBigDataTripletDataset(Dataset):
@@ -95,7 +99,7 @@ class VinBigDataTripletDataset(Dataset):
         """
         return min(len(self.normal_ids), len(self.cardio_ids), len(self.effusion_ids))
 
-    def _load_dicom(self, image_id: str) -> np.ndarray:
+    def _load_dicom(self, image_id: str) -> Optional[np.ndarray]:
         """
         Load a DICOM file and apply VOI LUT windowing.
 
@@ -103,16 +107,22 @@ class VinBigDataTripletDataset(Dataset):
             image_id: Image identifier (without extension)
 
         Returns:
-            np.ndarray: Windowed pixel array (H, W) in [0, 1] range
+            np.ndarray or None: Windowed pixel array (H, W) in [0, 1] range,
+                                or None if the file is corrupt/unreadable.
         """
         dicom_path = self.dicom_dir / f"{image_id}.dicom"
 
         if not dicom_path.exists():
-            raise FileNotFoundError(f"DICOM file not found: {dicom_path}")
+            logger.error(f"DICOM file not found: {dicom_path}")
+            return None
 
-        # Load DICOM
-        dcm = pydicom.dcmread(str(dicom_path))
-        pixel_array = dcm.pixel_array.astype(np.float32)
+        try:
+            # force=True ignores missing headers, but still might fail on data
+            dcm = pydicom.dcmread(str(dicom_path), force=True)
+            pixel_array = dcm.pixel_array.astype(np.float32)
+        except Exception as e:
+            logger.error(f"CORRUPT DICOM DETECTED: {dicom_path} | Error: {e}")
+            return None
 
         # Apply VOI LUT (Windowing)
         # Use metadata if available, otherwise use defaults
@@ -156,6 +166,27 @@ class VinBigDataTripletDataset(Dataset):
 
         return torch.from_numpy(x)
 
+    def _load_with_retry(self, pool: List[str], pool_name: str, max_retries: int = 2) -> torch.Tensor:
+        """
+        Load and preprocess an image from a pool, retrying with random
+        replacements if corrupt files are encountered.
+
+        Args:
+            pool: List of image_ids to sample from
+            pool_name: Name of the pool (for logging)
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            torch.Tensor: Preprocessed image (1, img_size, img_size)
+        """
+        for attempt in range(max_retries):
+            image_id = pool[random.randint(0, len(pool) - 1)]
+            pixel_array = self._load_dicom(image_id)
+            if pixel_array is not None:
+                return self._preprocess_image(pixel_array)
+            logger.warning(f"Retry {attempt + 1}/{max_retries} for {pool_name} pool (corrupt: {image_id})")
+        raise RuntimeError(f"Too many corrupt files in {pool_name} pool ({max_retries} consecutive failures)")
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """
         Return a triplet of images for head-nulling loss training.
@@ -171,15 +202,31 @@ class VinBigDataTripletDataset(Dataset):
                 'disease_labels': [0, 1, 2] tensor for head gating
             }
         """
-        # Use idx for Normal (anchor), random sample for diseases
-        norm_id = self.normal_ids[idx % len(self.normal_ids)]
-        effusion_id = self.effusion_ids[np.random.randint(0, len(self.effusion_ids))]
-        cardio_id = self.cardio_ids[np.random.randint(0, len(self.cardio_ids))]
+        max_retries = 10
 
-        # Load and preprocess
-        x_norm = self._preprocess_image(self._load_dicom(norm_id))
-        x_effusion = self._preprocess_image(self._load_dicom(effusion_id))
-        x_cardio = self._preprocess_image(self._load_dicom(cardio_id))
+        # --- Normal (anchor) ---
+        norm_id = self.normal_ids[idx % len(self.normal_ids)]
+        pixel_array = self._load_dicom(norm_id)
+        if pixel_array is not None:
+            x_norm = self._preprocess_image(pixel_array)
+        else:
+            x_norm = self._load_with_retry(self.normal_ids, "Normal", max_retries)
+
+        # --- Pleural Effusion ---
+        effusion_id = self.effusion_ids[random.randint(0, len(self.effusion_ids) - 1)]
+        pixel_array = self._load_dicom(effusion_id)
+        if pixel_array is not None:
+            x_effusion = self._preprocess_image(pixel_array)
+        else:
+            x_effusion = self._load_with_retry(self.effusion_ids, "Effusion", max_retries)
+
+        # --- Cardiomegaly ---
+        cardio_id = self.cardio_ids[random.randint(0, len(self.cardio_ids) - 1)]
+        pixel_array = self._load_dicom(cardio_id)
+        if pixel_array is not None:
+            x_cardio = self._preprocess_image(pixel_array)
+        else:
+            x_cardio = self._load_with_retry(self.cardio_ids, "Cardiomegaly", max_retries)
 
         # Disease labels for head-nulling loss gating
         # 0: Normal, 1: Disease1 (Effusion), 2: Disease2 (Cardiomegaly)
