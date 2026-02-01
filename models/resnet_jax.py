@@ -132,7 +132,7 @@ class ResNet50CheSS(nn.Module):
     """
 
     @nn.compact
-    def __call__(self, x, return_spatial=False):
+    def __call__(self, x, return_spatial=False, return_multiscale=False):
         """
         Forward pass through ResNet-50.
 
@@ -140,8 +140,14 @@ class ResNet50CheSS(nn.Module):
             x: Input images (B, 512, 512, 1)
             return_spatial: If True, return spatial features (B, 64, 64, 2048)
                           If False, return global pooled features (B, 2048)
+            return_multiscale: If True, return dict of multi-scale features:
+                              {'layer2': (B, 64, 64, 512),
+                               'layer3': (B, 32, 32, 1024),
+                               'layer4': (B, 16, 16, 2048)}
+                              Overrides return_spatial when True.
 
         Returns:
+            If return_multiscale=True: Dict of multi-scale features
             If return_spatial=True: Spatial features (B, 64, 64, 2048)
             If return_spatial=False: Feature vectors (B, 2048)
         """
@@ -178,7 +184,7 @@ class ResNet50CheSS(nn.Module):
             h = BottleneckBlock(
                 filters=64,
                 stride=1,
-                use_projection=(i == 0),  # First block needs projection
+                use_projection=(i == 0),
                 name=f'layer1_block{i}'
             )(h)
 
@@ -187,10 +193,11 @@ class ResNet50CheSS(nn.Module):
         for i in range(4):
             h = BottleneckBlock(
                 filters=128,
-                stride=(2 if i == 0 else 1),  # First block downsamples
+                stride=(2 if i == 0 else 1),
                 use_projection=(i == 0),
                 name=f'layer2_block{i}'
             )(h)
+        feat_layer2 = h  # (B, 64, 64, 512)
 
         # Layer 3: 6 blocks, filters=256, output_channels=1024
         # (B, 64, 64, 512) → (B, 32, 32, 1024)
@@ -201,46 +208,35 @@ class ResNet50CheSS(nn.Module):
                 use_projection=(i == 0),
                 name=f'layer3_block{i}'
             )(h)
+        feat_layer3 = h  # (B, 32, 32, 1024)
 
         # Layer 4: 3 blocks, filters=512, output_channels=2048
-        # Stop here for spatial features at 64×64
-        # We'll use layer3 output (B, 32, 32, 1024) and upsample to 64×64
-        # OR use layer2 output (B, 64, 64, 512) directly
+        # (B, 32, 32, 1024) → (B, 16, 16, 2048)
+        for i in range(3):
+            h = BottleneckBlock(
+                filters=512,
+                stride=(2 if i == 0 else 1),
+                use_projection=(i == 0),
+                name=f'layer4_block{i}'
+            )(h)
+        feat_layer4 = h  # (B, 16, 16, 2048)
 
-        if return_spatial:
-            # Return spatial features at 64×64 resolution
-            # Using layer2 output: (B, 64, 64, 512)
-            # We'll upsample layer3 to match: (B, 32, 32, 1024) → (B, 64, 64, 1024)
-
-            # Actually, let's use a hybrid: run layer4 but don't pool
-            for i in range(3):
-                h = BottleneckBlock(
-                    filters=512,
-                    stride=(2 if i == 0 else 1),
-                    use_projection=(i == 0),
-                    name=f'layer4_block{i}'
-                )(h)
-            # h is now (B, 16, 16, 2048)
-
-            # Upsample to 64×64 for LDM compatibility
-            # 16×16 → 32×32 → 64×64
-            h = jax.image.resize(h,
-                                (h.shape[0], 64, 64, h.shape[3]),
+        if return_multiscale:
+            return {
+                'layer2': feat_layer2,  # (B, 64, 64, 512)  - native resolution
+                'layer3': feat_layer3,  # (B, 32, 32, 1024) - native resolution
+                'layer4': feat_layer4,  # (B, 16, 16, 2048) - native resolution
+            }
+        elif return_spatial:
+            # Upsample layer4 to 64×64 for LDM compatibility
+            h = jax.image.resize(feat_layer4,
+                                (feat_layer4.shape[0], 64, 64, feat_layer4.shape[3]),
                                 method='bilinear')
             return h  # (B, 64, 64, 2048)
         else:
-            # Original behavior: global pooling
-            for i in range(3):
-                h = BottleneckBlock(
-                    filters=512,
-                    stride=(2 if i == 0 else 1),
-                    use_projection=(i == 0),
-                    name=f'layer4_block{i}'
-                )(h)
-
             # Global average pooling
             # (B, 16, 16, 2048) → (B, 2048)
-            h = jnp.mean(h, axis=(1, 2))
+            h = jnp.mean(feat_layer4, axis=(1, 2))
             return h
 
 

@@ -28,6 +28,9 @@ export IMG_SIZE="512"
 export Z_CHANNELS_COMMON="4"
 export Z_CHANNELS_DISEASE="2"
 export FROZEN_BACKBONE="1"
+export USE_FPN="0"
+export FPN_CHANNELS="512"
+export UNFREEZE_FROM=""
 
 # CheSS weights
 export CHESS_CHECKPOINT="/datasets/mmolefe/chess/pretrained_weights.pth.tar"
@@ -40,10 +43,17 @@ export WEIGHT_KL_DISEASE="1e-4"
 export WEIGHT_NULL="1e-3"
 export WEIGHT_MI="1e-3"
 export SIGMA_INACTIVE="0.1"
+export FREE_BITS="0.0"
+export WEIGHT_PERCEPTUAL="0.0"
+export WEIGHT_ADVERSARIAL="0.0"
+export DISC_START_EPOCH="10"
+export KL_WARMUP_EPOCHS="0"
 
 # Optimizer — batch_size=4, lr=1e-4 (base rate)
 export LR_VAE="1e-4"
 export LR_DISC="1e-4"
+export LR_BACKBONE="1e-5"
+export LR_PATCH_DISC="4e-4"
 export WEIGHT_DECAY="1e-4"
 export GRAD_CLIP="1.0"
 
@@ -95,6 +105,10 @@ while [[ $# -gt 0 ]]; do
     # --- Model ---
     --z_channels_common)  export Z_CHANNELS_COMMON="$2"; shift 2 ;;
     --z_channels_disease) export Z_CHANNELS_DISEASE="$2"; shift 2 ;;
+    --use_fpn)            export USE_FPN="1";               shift ;;
+    --no_fpn)             export USE_FPN="0";               shift ;;
+    --fpn_channels)       export FPN_CHANNELS="$2";         shift 2 ;;
+    --unfreeze_from)      export UNFREEZE_FROM="$2";        shift 2 ;;
     # --- CheSS ---
     --chess_checkpoint) export CHESS_CHECKPOINT="$2";    shift 2 ;;
     --chess_converted)  export CHESS_CONVERTED="$2";     shift 2 ;;
@@ -105,9 +119,16 @@ while [[ $# -gt 0 ]]; do
     --weight_null)     export WEIGHT_NULL="$2";          shift 2 ;;
     --weight_mi)       export WEIGHT_MI="$2";            shift 2 ;;
     --sigma_inactive)  export SIGMA_INACTIVE="$2";       shift 2 ;;
+    --free_bits)       export FREE_BITS="$2";            shift 2 ;;
+    --weight_perceptual) export WEIGHT_PERCEPTUAL="$2";  shift 2 ;;
+    --weight_adversarial) export WEIGHT_ADVERSARIAL="$2"; shift 2 ;;
+    --disc_start_epoch) export DISC_START_EPOCH="$2";    shift 2 ;;
+    --kl_warmup_epochs) export KL_WARMUP_EPOCHS="$2";   shift 2 ;;
     # --- Optimizer ---
     --lr_vae)          export LR_VAE="$2";               shift 2 ;;
     --lr_disc)         export LR_DISC="$2";              shift 2 ;;
+    --lr_backbone)     export LR_BACKBONE="$2";          shift 2 ;;
+    --lr_patch_disc)   export LR_PATCH_DISC="$2";        shift 2 ;;
     --weight_decay)    export WEIGHT_DECAY="$2";         shift 2 ;;
     --grad_clip)       export GRAD_CLIP="$2";            shift 2 ;;
     # --- Training ---
@@ -207,12 +228,17 @@ WANDB_NAME="$WANDB_NAME",WANDB_TAGS="$WANDB_TAGS",\
 WANDB_RUN_GROUP="$WANDB_RUN_GROUP",WANDB_PROJECT="$WANDB_PROJECT",\
 DICOM_DIR="$DICOM_DIR",CSV_PATH="$CSV_PATH",IMG_SIZE="$IMG_SIZE",\
 Z_CHANNELS_COMMON="$Z_CHANNELS_COMMON",Z_CHANNELS_DISEASE="$Z_CHANNELS_DISEASE",\
-FROZEN_BACKBONE="$FROZEN_BACKBONE",\
+FROZEN_BACKBONE="$FROZEN_BACKBONE",USE_FPN="$USE_FPN",\
+FPN_CHANNELS="$FPN_CHANNELS",UNFREEZE_FROM="$UNFREEZE_FROM",\
 CHESS_CHECKPOINT="$CHESS_CHECKPOINT",CHESS_CONVERTED="$CHESS_CONVERTED",\
 WEIGHT_REC="$WEIGHT_REC",WEIGHT_KL_COMMON="$WEIGHT_KL_COMMON",\
 WEIGHT_KL_DISEASE="$WEIGHT_KL_DISEASE",WEIGHT_NULL="$WEIGHT_NULL",\
 WEIGHT_MI="$WEIGHT_MI",SIGMA_INACTIVE="$SIGMA_INACTIVE",\
-LR_VAE="$LR_VAE",LR_DISC="$LR_DISC",WEIGHT_DECAY="$WEIGHT_DECAY",\
+FREE_BITS="$FREE_BITS",WEIGHT_PERCEPTUAL="$WEIGHT_PERCEPTUAL",\
+WEIGHT_ADVERSARIAL="$WEIGHT_ADVERSARIAL",DISC_START_EPOCH="$DISC_START_EPOCH",\
+KL_WARMUP_EPOCHS="$KL_WARMUP_EPOCHS",\
+LR_VAE="$LR_VAE",LR_DISC="$LR_DISC",LR_BACKBONE="$LR_BACKBONE",\
+LR_PATCH_DISC="$LR_PATCH_DISC",WEIGHT_DECAY="$WEIGHT_DECAY",\
 GRAD_CLIP="$GRAD_CLIP",BATCH_SIZE="$BATCH_SIZE",EPOCHS="$EPOCHS",\
 NUM_WORKERS="$NUM_WORKERS",SEED="$SEED",\
 OUTPUT_ROOT="$OUTPUT_ROOT",EXP_NAME="$EXP_NAME",\

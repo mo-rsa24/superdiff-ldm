@@ -79,6 +79,12 @@ def parse_args():
                    help="Common latent channels (default: 4)")
     p.add_argument("--z_channels_disease", type=int, default=2,
                    help="Disease-specific latent channels (default: 2)")
+    p.add_argument("--use_fpn", action="store_true", default=None,
+                   help="Enable FPN (auto-detected from checkpoint if not specified)")
+    p.add_argument("--fpn_channels", type=int, default=None,
+                   help="FPN output channels (auto-detected from checkpoint if not specified)")
+    p.add_argument("--unfreeze_from", type=str, default=None,
+                   help="Backbone unfreezing layer (auto-detected from checkpoint if not specified)")
 
     # W&B integration
     p.add_argument("--wandb", action="store_true",
@@ -129,7 +135,8 @@ def ensure_dir(path):
 # Checkpoint Loading
 # ============================================================================
 
-def load_checkpoint(ckpt_path, z_channels_common=4, z_channels_disease=2):
+def load_checkpoint(ckpt_path, z_channels_common=4, z_channels_disease=2,
+                    use_fpn=None, fpn_channels=None, unfreeze_from=None):
     """
     Load SepVAE checkpoint using msgpack_restore (no template needed).
 
@@ -137,10 +144,17 @@ def load_checkpoint(ckpt_path, z_channels_common=4, z_channels_disease=2):
     allocate the full model + optimizer states on GPU just for deserialization.
     msgpack_restore deserializes directly to numpy arrays.
 
+    Architecture parameters (use_fpn, fpn_channels, unfreeze_from) are
+    auto-detected from the checkpoint's saved training args when not
+    explicitly provided.
+
     Args:
         ckpt_path: Path to .pkl checkpoint
         z_channels_common: Common latent channels
         z_channels_disease: Disease-specific latent channels
+        use_fpn: Override FPN setting (None = auto-detect from checkpoint)
+        fpn_channels: Override FPN channels (None = auto-detect)
+        unfreeze_from: Override unfreezing (None = auto-detect)
 
     Returns:
         model: SepVAE model instance (uninitialized, used for .apply())
@@ -156,21 +170,34 @@ def load_checkpoint(ckpt_path, z_channels_common=4, z_channels_disease=2):
     vae_params = jax.tree_util.tree_map(jnp.array, raw['vae_params'])
     vae_batch_stats = jax.tree_util.tree_map(jnp.array, raw['vae_batch_stats'])
 
-    # Build model instance (no GPU allocation - just the module definition)
-    model = SepVAE(
-        z_channels_common=z_channels_common,
-        z_channels_disease=z_channels_disease,
-        frozen_backbone=True,
-    )
-
     ckpt_meta = {
         'epoch': int(raw['epoch']),
         'global_step': int(raw['global_step']),
         'args': raw.get('args', {}),
     }
 
+    # Auto-detect architecture from checkpoint args
+    ckpt_args = ckpt_meta.get('args', {})
+    _use_fpn = use_fpn if use_fpn is not None else bool(ckpt_args.get('use_fpn', False))
+    _fpn_channels = fpn_channels if fpn_channels is not None else int(ckpt_args.get('fpn_channels', 512))
+    _unfreeze_from = unfreeze_from if unfreeze_from is not None else ckpt_args.get('unfreeze_from', None)
+
+    # Build model instance (no GPU allocation - just the module definition)
+    model = SepVAE(
+        z_channels_common=z_channels_common,
+        z_channels_disease=z_channels_disease,
+        frozen_backbone=True,
+        use_fpn=_use_fpn,
+        fpn_channels=_fpn_channels,
+        unfreeze_from=_unfreeze_from,
+    )
+
     param_count = sum(p.size for p in jax.tree_util.tree_leaves(vae_params))
     print(f"  Loaded {param_count:,} parameters from epoch {ckpt_meta['epoch']}")
+    if _use_fpn:
+        print(f"  Architecture: FPN enabled ({_fpn_channels} channels)")
+    if _unfreeze_from:
+        print(f"  Architecture: Partial unfreezing from {_unfreeze_from}")
 
     return model, vae_params, vae_batch_stats, ckpt_meta
 
@@ -1039,6 +1066,9 @@ def main():
         args.checkpoint,
         z_channels_common=args.z_channels_common,
         z_channels_disease=args.z_channels_disease,
+        use_fpn=args.use_fpn,
+        fpn_channels=args.fpn_channels,
+        unfreeze_from=args.unfreeze_from,
     )
 
     if ckpt_meta.get('args'):

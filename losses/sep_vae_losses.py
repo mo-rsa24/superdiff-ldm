@@ -3,13 +3,15 @@ Loss functions for Multi-head SepVAE training.
 
 This module implements:
 1. Reconstruction loss (MSE)
-2. KL divergence losses (standard + conditional priors)
+2. KL divergence losses (standard + conditional priors + free-bits)
 3. Nulling loss (head routing penalty)
 4. Mutual Information (MI) discriminator for disentanglement
-5. Combined SepVAE loss with all components
+5. Backbone perceptual loss (multi-scale CheSS feature matching)
+6. PatchGAN adversarial loss (hinge-based)
+7. Combined SepVAE loss with all components
 
 Loss formula:
-    L_total = L_rec + β_c·L_KL^c + β_s·(L_KL^sp + L_KL^se) + λ·L_null + κ·L_MI
+    L_total = L_rec + β·L_KL + λ·L_null + κ·L_MI + γ·L_perceptual + α·L_GAN
 """
 
 import jax
@@ -17,6 +19,8 @@ import jax.numpy as jnp
 from flax import linen as nn
 from flax.struct import dataclass
 from typing import Dict, Tuple
+
+from losses.lpips_gan import NLayerDiscriminator, hinge_d_loss, hinge_g_loss
 
 
 # ============================================================================
@@ -116,10 +120,111 @@ def kl_divergence_conditional(
     return kl
 
 
+def kl_divergence_free_bits(
+    mu: jnp.ndarray,
+    logvar: jnp.ndarray,
+    free_bits: float = 1.0,
+) -> jnp.ndarray:
+    """
+    KL divergence with free-bits (per-channel minimum threshold).
+
+    Free-bits prevents posterior collapse by exempting the first `free_bits`
+    nats per channel from the KL penalty. This ensures each latent channel
+    can encode at least `free_bits` nats of information without penalty.
+
+    Algorithm:
+        1. Compute per-element KL: 0.5 * (mu^2 + exp(logvar) - 1 - logvar)
+        2. Average over spatial dims (H, W) per channel → (B, C)
+        3. Clamp per-channel KL to min of `free_bits`
+        4. Sum over channels → (B,)
+
+    Args:
+        mu: Mean of posterior (B, H, W, C) — spatial latents
+        logvar: Log-variance of posterior (B, H, W, C)
+        free_bits: Minimum KL per channel in nats (default: 1.0)
+
+    Returns:
+        Per-sample KL divergence (B,) with free-bits applied
+    """
+    # Per-element KL
+    kl_elem = 0.5 * (jnp.square(mu) + jnp.exp(logvar) - 1.0 - logvar)
+
+    if mu.ndim == 4:
+        # Spatial latents: average over H, W → per-channel KL (B, C)
+        kl_per_channel = jnp.mean(kl_elem, axis=(1, 2))
+    else:
+        # Flat latents: treat each dim as a "channel" (B, D)
+        kl_per_channel = kl_elem
+
+    # Apply free-bits: clamp per-channel KL to minimum
+    kl_clamped = jnp.maximum(kl_per_channel, free_bits)
+
+    if mu.ndim == 4:
+        # Scale back: multiply by spatial size so total KL is comparable
+        H, W = mu.shape[1], mu.shape[2]
+        return jnp.sum(kl_clamped, axis=-1) * H * W
+    else:
+        return jnp.sum(kl_clamped, axis=-1)
+
+
+def kl_divergence_conditional_free_bits(
+    mu: jnp.ndarray,
+    logvar: jnp.ndarray,
+    labels: jnp.ndarray,
+    disease_id: int,
+    sigma_inactive: float = 0.1,
+    free_bits: float = 1.0,
+) -> jnp.ndarray:
+    """
+    Conditional KL divergence with free-bits and label-dependent prior.
+
+    Combines conditional prior (tight prior for inactive heads) with
+    free-bits mechanism to prevent posterior collapse on active heads.
+
+    Args:
+        mu: Mean of posterior (B, H, W, C) or (B, D)
+        logvar: Log-variance of posterior
+        labels: Disease labels (B,)
+        disease_id: Which disease this head represents
+        sigma_inactive: Std dev of tight prior for inactive heads
+        free_bits: Minimum KL per channel in nats
+
+    Returns:
+        Per-sample KL divergence (B,)
+    """
+    is_active_shape = (labels.shape[0],) + (1,) * (mu.ndim - 1)
+    is_active = (labels == disease_id).astype(jnp.float32).reshape(is_active_shape)
+
+    prior_logvar = jnp.where(is_active > 0.5, 0.0, jnp.log(sigma_inactive ** 2))
+    prior_var = jnp.exp(prior_logvar)
+
+    # Per-element KL against conditional prior
+    kl_elem = 0.5 * (
+        jnp.square(mu) / prior_var +
+        jnp.exp(logvar) / prior_var -
+        1.0 -
+        (logvar - prior_logvar)
+    )
+
+    if mu.ndim == 4:
+        kl_per_channel = jnp.mean(kl_elem, axis=(1, 2))  # (B, C)
+    else:
+        kl_per_channel = kl_elem
+
+    kl_clamped = jnp.maximum(kl_per_channel, free_bits)
+
+    if mu.ndim == 4:
+        H, W = mu.shape[1], mu.shape[2]
+        return jnp.sum(kl_clamped, axis=-1) * H * W
+    else:
+        return jnp.sum(kl_clamped, axis=-1)
+
+
 def compute_kl_losses(
     latents_dict: Dict[str, Tuple[jnp.ndarray, jnp.ndarray]],
     labels: jnp.ndarray,
-    sigma_inactive: float = 0.1
+    sigma_inactive: float = 0.1,
+    free_bits: float = 0.0,
 ) -> Dict[str, jnp.ndarray]:
     """
     Compute all KL divergence losses.
@@ -129,6 +234,7 @@ def compute_kl_losses(
                      Each value is tuple (mu, logvar)
         labels: Disease labels (B,)
         sigma_inactive: Tight prior std dev for inactive heads
+        free_bits: Per-channel free-bits threshold (0.0 = disabled)
 
     Returns:
         Dict with 'common', 'cardiomegaly', 'effusion' losses (all scalars)
@@ -137,19 +243,26 @@ def compute_kl_losses(
     mu_cardio, logvar_cardio = latents_dict['cardiomegaly']
     mu_effusion, logvar_effusion = latents_dict['effusion']
 
-    # Common head: always uses standard prior N(0, I)
-    kl_common = jnp.mean(kl_divergence_standard(mu_c, logvar_c))
-
-    # Disease heads: conditional priors based on labels
-    # Cardiomegaly head is active when label=2
-    kl_cardio = jnp.mean(
-        kl_divergence_conditional(mu_cardio, logvar_cardio, labels, disease_id=2, sigma_inactive=sigma_inactive)
-    )
-
-    # Effusion head is active when label=1
-    kl_effusion = jnp.mean(
-        kl_divergence_conditional(mu_effusion, logvar_effusion, labels, disease_id=1, sigma_inactive=sigma_inactive)
-    )
+    if free_bits > 0.0:
+        # Free-bits KL: prevents posterior collapse
+        kl_common = jnp.mean(kl_divergence_free_bits(mu_c, logvar_c, free_bits=free_bits))
+        kl_cardio = jnp.mean(kl_divergence_conditional_free_bits(
+            mu_cardio, logvar_cardio, labels, disease_id=2,
+            sigma_inactive=sigma_inactive, free_bits=free_bits
+        ))
+        kl_effusion = jnp.mean(kl_divergence_conditional_free_bits(
+            mu_effusion, logvar_effusion, labels, disease_id=1,
+            sigma_inactive=sigma_inactive, free_bits=free_bits
+        ))
+    else:
+        # Original KL (backward compatible)
+        kl_common = jnp.mean(kl_divergence_standard(mu_c, logvar_c))
+        kl_cardio = jnp.mean(kl_divergence_conditional(
+            mu_cardio, logvar_cardio, labels, disease_id=2, sigma_inactive=sigma_inactive
+        ))
+        kl_effusion = jnp.mean(kl_divergence_conditional(
+            mu_effusion, logvar_effusion, labels, disease_id=1, sigma_inactive=sigma_inactive
+        ))
 
     return {
         'common': kl_common,
@@ -313,6 +426,105 @@ def mi_discriminator_loss(
 
 
 # ============================================================================
+# Backbone Perceptual Loss
+# ============================================================================
+
+def backbone_perceptual_loss(
+    x_orig: jnp.ndarray,
+    x_rec: jnp.ndarray,
+    backbone_apply_fn,
+    backbone_variables: Dict,
+) -> jnp.ndarray:
+    """
+    Perceptual loss using frozen CheSS backbone multi-scale features.
+
+    Uses the same ResNet-50 backbone as the encoder to compute feature-level
+    distance between original and reconstructed images. This leverages the
+    medical-domain features learned by CheSS contrastive pretraining.
+
+    Computes L1 distance at layers 2, 3, and 4, normalized per layer.
+
+    Args:
+        x_orig: Original images (B, 512, 512, 1) in [-1, 1] range
+        x_rec: Reconstructed images (B, 512, 512, 1) in [0, 1] range
+        backbone_apply_fn: Function to call backbone (returns multi-scale features)
+        backbone_variables: Backbone model variables (params + batch_stats)
+
+    Returns:
+        Scalar perceptual loss (mean over batch and layers)
+    """
+    # Convert x_rec from [0,1] to [-1,1] to match backbone's expected input
+    x_rec_scaled = x_rec * 2.0 - 1.0
+
+    # Extract multi-scale features
+    # Stop gradient on original features (target — should not change)
+    feats_orig = backbone_apply_fn(backbone_variables, x_orig, return_multiscale=True)
+    feats_orig = jax.tree_util.tree_map(jax.lax.stop_gradient, feats_orig)
+
+    # Allow gradient to flow through reconstruction features → decoder can learn
+    # Backbone weights are frozen (not in trainable params), but gradient flows
+    # through the fixed computation graph back to x_rec
+    feats_rec = backbone_apply_fn(backbone_variables, x_rec_scaled, return_multiscale=True)
+
+    # L1 distance at each scale, normalized by spatial size
+    loss = jnp.float32(0.0)
+    for layer_name in ['layer2', 'layer3', 'layer4']:
+        f_orig = feats_orig[layer_name]
+        f_rec = feats_rec[layer_name]
+        # Mean absolute difference per sample, then average over batch
+        loss += jnp.mean(jnp.abs(f_orig - f_rec))
+
+    return loss / 3.0  # Average over 3 layers
+
+
+# ============================================================================
+# PatchGAN Adversarial Loss
+# ============================================================================
+
+def patchgan_disc_loss(
+    disc_apply_fn,
+    disc_params: Dict,
+    x_real: jnp.ndarray,
+    x_fake: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    PatchGAN discriminator loss (hinge).
+
+    Args:
+        disc_apply_fn: Discriminator apply function
+        disc_params: Discriminator parameters
+        x_real: Real images (B, H, W, C)
+        x_fake: Fake/reconstructed images (B, H, W, C) — detached
+
+    Returns:
+        Scalar discriminator loss
+    """
+    logits_real = disc_apply_fn({'params': disc_params}, x_real)
+    logits_fake = disc_apply_fn({'params': disc_params}, jax.lax.stop_gradient(x_fake))
+    return hinge_d_loss(logits_real, logits_fake)
+
+
+def patchgan_gen_loss(
+    disc_apply_fn,
+    disc_params: Dict,
+    x_fake: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    PatchGAN generator loss (hinge).
+
+    Args:
+        disc_apply_fn: Discriminator apply function
+        disc_params: Discriminator parameters
+        x_fake: Fake/reconstructed images (B, H, W, C)
+
+    Returns:
+        Scalar generator loss
+    """
+    logits_fake = disc_apply_fn({'params': disc_params}, x_fake)
+    return hinge_g_loss(logits_fake)
+
+
+# ============================================================================
 # Combined SepVAE Loss
 # ============================================================================
 
@@ -327,14 +539,22 @@ class SepVAELossConfig:
         weight_kl_disease: Disease KL weight (default: 1e-4)
         weight_null: Nulling loss weight (default: 1e-3)
         weight_mi: MI penalty weight (default: 1e-3)
+        weight_perceptual: Backbone perceptual loss weight (default: 0.0 = disabled)
+        weight_adversarial: PatchGAN generator loss weight (default: 0.0 = disabled)
         sigma_inactive: Prior std dev for inactive heads (default: 1.0, i.e. standard prior)
+        free_bits: Per-channel free-bits for KL (default: 0.0 = disabled)
+        disc_start_epoch: Epoch at which discriminator loss kicks in (default: 10)
     """
     weight_rec: float = 1.0
     weight_kl_common: float = 1e-4
     weight_kl_disease: float = 1e-4
     weight_null: float = 1e-3
     weight_mi: float = 1e-3
+    weight_perceptual: float = 0.0
+    weight_adversarial: float = 0.0
     sigma_inactive: float = 1.0
+    free_bits: float = 0.0
+    disc_start_epoch: int = 10
 
 
 def sepvae_loss(
@@ -347,15 +567,23 @@ def sepvae_loss(
     cfg: SepVAELossConfig,
     batch_stats: Dict = None,
     kl_anneal: jnp.ndarray = None,
-) -> Tuple[jnp.ndarray, Tuple[Dict[str, jnp.ndarray], jnp.ndarray]]:
+    # New: adversarial & perceptual
+    patch_disc=None,
+    patch_disc_params: Dict = None,
+    backbone_apply_fn=None,
+    backbone_variables: Dict = None,
+    current_epoch: int = 0,
+) -> Tuple[jnp.ndarray, Tuple[Dict[str, jnp.ndarray], jnp.ndarray, jnp.ndarray]]:
     """
-    Complete SepVAE loss function.
+    Complete SepVAE loss function with perceptual and adversarial terms.
 
     This combines:
-    - Reconstruction loss
-    - KL divergence (common + disease heads), scaled by kl_anneal
+    - Reconstruction loss (MSE)
+    - KL divergence (common + disease heads, optional free-bits), scaled by kl_anneal
     - Nulling loss (inactive heads)
     - MI penalty (disentanglement)
+    - Backbone perceptual loss (optional, multi-scale CheSS feature matching)
+    - PatchGAN generator loss (optional, hinge-based)
 
     Args:
         model: SepVAE model
@@ -368,10 +596,15 @@ def sepvae_loss(
         batch_stats: BatchNorm running statistics for frozen backbone
         kl_anneal: KL annealing factor in [0, 1] (default: None = no annealing, i.e. 1.0).
                    Used for KL warmup: linearly ramp from 0 to 1 over initial epochs.
+        patch_disc: PatchGAN discriminator model (None = disabled)
+        patch_disc_params: PatchGAN discriminator parameters
+        backbone_apply_fn: Function to call backbone for perceptual loss (None = disabled)
+        backbone_variables: Backbone variables for perceptual loss
+        current_epoch: Current training epoch (for disc warmup)
 
     Returns:
         total_loss: Scalar
-        (logs, disc_loss): Tuple of (dict with individual losses, discriminator loss)
+        (logs, mi_disc_loss, patch_disc_loss): Tuple of logging dict and discriminator losses
     """
     # Unpack batch from VinBigData triplets
     x_norm = batch['x_norm']  # (B, 512, 512, 1)
@@ -398,8 +631,12 @@ def sepvae_loss(
     x_normalized = (x + 1.0) / 2.0  # Convert to [0, 1] for comparison
     l_rec = reconstruction_loss(x_normalized, x_rec)
 
-    # 2. KL losses
-    kl_losses = compute_kl_losses(latents_dict, labels, sigma_inactive=cfg.sigma_inactive)
+    # 2. KL losses (with optional free-bits)
+    kl_losses = compute_kl_losses(
+        latents_dict, labels,
+        sigma_inactive=cfg.sigma_inactive,
+        free_bits=cfg.free_bits,
+    )
     l_kl_raw = (
         cfg.weight_kl_common * kl_losses['common'] +
         cfg.weight_kl_disease * (kl_losses['cardiomegaly'] + kl_losses['effusion'])
@@ -416,16 +653,44 @@ def sepvae_loss(
     discriminator_fn = lambda z_c, z_d, train: mi_disc.apply(
         {'params': mi_params}, z_c, z_d, train=train
     )
-    disc_loss, mi_penalty = mi_discriminator_loss(
+    mi_disc_loss, mi_penalty = mi_discriminator_loss(
         discriminator_fn, latents_dict, labels, key2
     )
+
+    # 5. Backbone perceptual loss (optional)
+    if cfg.weight_perceptual > 0.0 and backbone_apply_fn is not None:
+        l_perceptual = backbone_perceptual_loss(
+            x, x_rec, backbone_apply_fn, backbone_variables
+        )
+    else:
+        l_perceptual = jnp.float32(0.0)
+
+    # 6. PatchGAN generator loss (optional, with warmup)
+    patch_disc_loss_val = jnp.float32(0.0)
+    l_gen = jnp.float32(0.0)
+    disc_factor = jnp.float32(0.0)
+    if cfg.weight_adversarial > 0.0 and patch_disc is not None and patch_disc_params is not None:
+        # Warmup: ramp from 0 to 1 over 5000 steps after disc_start_epoch
+        disc_factor = jnp.where(
+            current_epoch >= cfg.disc_start_epoch,
+            jnp.clip((current_epoch - cfg.disc_start_epoch) / 5.0, 0.0, 1.0),
+            0.0,
+        )
+        disc_apply_fn = patch_disc.apply
+        l_gen = patchgan_gen_loss(disc_apply_fn, patch_disc_params, x_rec)
+        # Discriminator loss (for separate optimizer)
+        patch_disc_loss_val = patchgan_disc_loss(
+            disc_apply_fn, patch_disc_params, x_normalized, x_rec
+        )
 
     # Total VAE loss
     total_loss = (
         cfg.weight_rec * l_rec +
         l_kl +
         cfg.weight_null * l_null +
-        cfg.weight_mi * mi_penalty
+        cfg.weight_mi * mi_penalty +
+        cfg.weight_perceptual * l_perceptual +
+        cfg.weight_adversarial * disc_factor * l_gen
     )
 
     # Logging dict
@@ -440,10 +705,14 @@ def sepvae_loss(
         'loss/kl_anneal': _kl_anneal,
         'loss/nulling': l_null,
         'loss/mi_penalty': mi_penalty,
-        'loss/mi_disc': disc_loss,
+        'loss/mi_disc': mi_disc_loss,
+        'loss/perceptual': l_perceptual,
+        'loss/gen_adversarial': l_gen,
+        'loss/disc_factor': disc_factor,
+        'loss/patch_disc': patch_disc_loss_val,
     }
 
-    return total_loss, (logs, disc_loss)
+    return total_loss, (logs, mi_disc_loss, patch_disc_loss_val)
 
 
 # ============================================================================

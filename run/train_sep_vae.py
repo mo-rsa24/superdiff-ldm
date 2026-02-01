@@ -30,7 +30,9 @@ from torch.utils.data import DataLoader
 # Local imports
 from datasets.VinBigData import VinBigDataTripletDataset, jax_collate_fn
 from models.sep_vae_jax import SepVAE
+from models.resnet_jax import ResNet50CheSS
 from losses.sep_vae_losses import MIDiscriminator, SepVAELossConfig, sepvae_loss
+from losses.lpips_gan import NLayerDiscriminator
 from utils.weight_converter import convert_chess_resnet50, load_converted_weights
 from utils.sepvae_analysis import visualize_backbone_features
 
@@ -62,6 +64,12 @@ def parse_args():
                    help="Disease-specific latent channels (default: 2 for 64×64×2 each)")
     p.add_argument("--frozen_backbone", action="store_true", default=True,
                    help="Freeze CheSS backbone")
+    p.add_argument("--use_fpn", action="store_true", default=False,
+                   help="Enable Feature Pyramid Network for multi-scale features")
+    p.add_argument("--fpn_channels", type=int, default=512,
+                   help="FPN output channels (default: 512)")
+    p.add_argument("--unfreeze_from", type=str, default=None, choices=[None, 'layer3', 'layer4'],
+                   help="Partially unfreeze backbone from this layer (default: None = fully frozen)")
 
     # CheSS weights
     p.add_argument("--chess_checkpoint", type=str,
@@ -85,12 +93,24 @@ def parse_args():
                    help="Prior std dev for inactive heads (1.0=standard, <1=tight prior)")
     p.add_argument("--kl_warmup_epochs", type=int, default=0,
                    help="Linearly anneal KL weight from 0 to 1 over this many epochs (0=no warmup)")
+    p.add_argument("--free_bits", type=float, default=0.0,
+                   help="Per-channel free-bits for KL (0=disabled, try 1.0)")
+    p.add_argument("--weight_perceptual", type=float, default=0.0,
+                   help="Backbone perceptual loss weight (0=disabled, try 0.1)")
+    p.add_argument("--weight_adversarial", type=float, default=0.0,
+                   help="PatchGAN generator loss weight (0=disabled, try 0.1)")
+    p.add_argument("--disc_start_epoch", type=int, default=10,
+                   help="Epoch at which PatchGAN discriminator loss activates")
 
     # Optimizer
     p.add_argument("--lr_vae", type=float, default=1e-4,
                    help="VAE learning rate")
     p.add_argument("--lr_disc", type=float, default=1e-4,
                    help="MI discriminator learning rate")
+    p.add_argument("--lr_backbone", type=float, default=1e-5,
+                   help="Learning rate for unfrozen backbone layers (10x lower than VAE)")
+    p.add_argument("--lr_patch_disc", type=float, default=4e-4,
+                   help="PatchGAN discriminator learning rate")
     p.add_argument("--weight_decay", type=float, default=1e-4,
                    help="Weight decay")
     p.add_argument("--grad_clip", type=float, default=1.0,
@@ -276,7 +296,10 @@ def main():
     sepvae = SepVAE(
         z_channels_common=args.z_channels_common,
         z_channels_disease=args.z_channels_disease,
-        frozen_backbone=args.frozen_backbone
+        frozen_backbone=args.frozen_backbone,
+        use_fpn=args.use_fpn,
+        fpn_channels=args.fpn_channels,
+        unfreeze_from=args.unfreeze_from,
     )
 
     # MI discriminator
@@ -326,16 +349,78 @@ def main():
     mi_param_count = sum(p.size for p in jax.tree_util.tree_leaves(mi_params))
     print(f"✓ MI discriminator parameters: {mi_param_count:,}")
 
+    # PatchGAN discriminator (optional)
+    patch_disc = None
+    patch_disc_params = None
+    if args.weight_adversarial > 0.0:
+        patch_disc = NLayerDiscriminator(in_channels=1, n_layers=3)
+        rng, init_rng = jax.random.split(rng)
+        dummy_img = jnp.ones((1, args.img_size, args.img_size, 1))
+        pd_vars = patch_disc.init(init_rng, dummy_img)
+        patch_disc_params = pd_vars['params']
+        pd_count = sum(p.size for p in jax.tree_util.tree_leaves(patch_disc_params))
+        print(f"✓ PatchGAN discriminator parameters: {pd_count:,}")
+    else:
+        print("  PatchGAN discriminator: disabled (weight_adversarial=0)")
+
+    # Standalone backbone for perceptual loss (shared weights, no extra params)
+    backbone_for_percep = None
+    backbone_variables_percep = None
+    if args.weight_perceptual > 0.0:
+        backbone_for_percep = ResNet50CheSS()
+        backbone_variables_percep = {
+            'params': chess_params,
+            'batch_stats': chess_batch_stats,
+        }
+        backbone_variables_percep = jax.tree_util.tree_map(jnp.array, backbone_variables_percep)
+        print(f"✓ Backbone perceptual loss: enabled (weight={args.weight_perceptual})")
+    else:
+        print("  Backbone perceptual loss: disabled (weight_perceptual=0)")
+
+    if args.use_fpn:
+        print(f"✓ FPN enabled: {args.fpn_channels} channels")
+    if args.unfreeze_from:
+        print(f"✓ Partial unfreezing from: {args.unfreeze_from}")
+    if args.free_bits > 0:
+        print(f"✓ Free-bits KL: {args.free_bits} nats per channel")
+
     # ===== Create optimizers =====
     print("\n" + "="*60)
     print("CREATING OPTIMIZERS")
     print("="*60)
 
-    # VAE optimizer
-    tx_vae = optax.chain(
-        optax.clip_by_global_norm(args.grad_clip),
-        optax.adamw(learning_rate=args.lr_vae, weight_decay=args.weight_decay)
-    )
+    # VAE optimizer — multi-rate if backbone is partially unfrozen
+    if args.unfreeze_from is not None:
+        # Multi-rate: lower lr for backbone layers, normal lr for rest
+        # Build label tree from the param structure
+        from flax import traverse_util
+        flat_params = traverse_util.flatten_dict(vae_params)
+        flat_labels = {}
+        for key_tuple in flat_params:
+            path_str = '/'.join(str(k) for k in key_tuple)
+            if 'encoder' in path_str and 'backbone' in path_str:
+                flat_labels[key_tuple] = 'backbone'
+            else:
+                flat_labels[key_tuple] = 'other'
+        param_labels = traverse_util.unflatten_dict(flat_labels)
+
+        tx_vae = optax.chain(
+            optax.clip_by_global_norm(args.grad_clip),
+            optax.multi_transform(
+                {
+                    'backbone': optax.adamw(learning_rate=args.lr_backbone, weight_decay=args.weight_decay),
+                    'other': optax.adamw(learning_rate=args.lr_vae, weight_decay=args.weight_decay),
+                },
+                param_labels,
+            )
+        )
+        print(f"✓ VAE optimizer: Multi-rate AdamW (backbone lr={args.lr_backbone}, rest lr={args.lr_vae})")
+    else:
+        tx_vae = optax.chain(
+            optax.clip_by_global_norm(args.grad_clip),
+            optax.adamw(learning_rate=args.lr_vae, weight_decay=args.weight_decay)
+        )
+        print(f"✓ VAE optimizer: AdamW (lr={args.lr_vae}, wd={args.weight_decay})")
 
     # MI discriminator optimizer
     tx_disc = optax.chain(
@@ -346,8 +431,17 @@ def main():
     vae_state = TrainState.create(apply_fn=None, params=vae_params, tx=tx_vae)
     disc_state = TrainState.create(apply_fn=None, params=mi_params, tx=tx_disc)
 
-    print(f"✓ VAE optimizer: AdamW (lr={args.lr_vae}, wd={args.weight_decay})")
-    print(f"✓ Discriminator optimizer: AdamW (lr={args.lr_disc}, wd={args.weight_decay})")
+    # PatchGAN discriminator optimizer (optional)
+    patch_disc_state = None
+    if patch_disc is not None:
+        tx_patch = optax.chain(
+            optax.clip_by_global_norm(args.grad_clip),
+            optax.adamw(learning_rate=args.lr_patch_disc, weight_decay=args.weight_decay)
+        )
+        patch_disc_state = TrainState.create(apply_fn=None, params=patch_disc_params, tx=tx_patch)
+        print(f"✓ PatchGAN optimizer: AdamW (lr={args.lr_patch_disc})")
+
+    print(f"✓ MI discriminator optimizer: AdamW (lr={args.lr_disc}, wd={args.weight_decay})")
 
     # ===== Loss configuration =====
     loss_cfg = SepVAELossConfig(
@@ -356,7 +450,11 @@ def main():
         weight_kl_disease=args.weight_kl_disease,
         weight_null=args.weight_null,
         weight_mi=args.weight_mi,
-        sigma_inactive=args.sigma_inactive
+        weight_perceptual=args.weight_perceptual,
+        weight_adversarial=args.weight_adversarial,
+        sigma_inactive=args.sigma_inactive,
+        free_bits=args.free_bits,
+        disc_start_epoch=args.disc_start_epoch,
     )
 
     print(f"\nLoss weights:")
@@ -365,20 +463,36 @@ def main():
     print(f"  KL (disease): {loss_cfg.weight_kl_disease}")
     print(f"  Nulling: {loss_cfg.weight_null}")
     print(f"  MI penalty: {loss_cfg.weight_mi}")
+    print(f"  Perceptual: {loss_cfg.weight_perceptual}")
+    print(f"  Adversarial: {loss_cfg.weight_adversarial}")
     print(f"  Sigma inactive: {loss_cfg.sigma_inactive}")
+    print(f"  Free-bits: {loss_cfg.free_bits}")
     if args.kl_warmup_epochs > 0:
         print(f"  KL warmup: linear anneal over {args.kl_warmup_epochs} epochs")
+    if args.weight_adversarial > 0:
+        print(f"  Disc start epoch: {args.disc_start_epoch}")
 
     # ===== Define training steps =====
     # vae_batch_stats is frozen (never updated), captured in closure by jit
+    # backbone_for_percep and backbone_variables_percep are also frozen
+
+    # Create backbone apply function for perceptual loss
+    _backbone_apply_fn = backbone_for_percep.apply if backbone_for_percep is not None else None
+
     @jax.jit
-    def vae_step(vae_state, disc_state, batch, key, kl_anneal):
-        """Update VAE parameters with optional KL annealing."""
+    def vae_step(vae_state, disc_state, batch, key, kl_anneal, current_epoch,
+                 pd_params=None):
+        """Update VAE parameters with all loss terms."""
         def loss_fn(params):
-            total_loss, (logs, _) = sepvae_loss(
+            total_loss, (logs, _, _) = sepvae_loss(
                 sepvae, mi_disc, params, disc_state.params,
                 batch, key, loss_cfg, batch_stats=vae_batch_stats,
                 kl_anneal=kl_anneal,
+                patch_disc=patch_disc,
+                patch_disc_params=pd_params,
+                backbone_apply_fn=_backbone_apply_fn,
+                backbone_variables=backbone_variables_percep,
+                current_epoch=current_epoch,
             )
             return total_loss, logs
 
@@ -388,19 +502,37 @@ def main():
         return vae_state, logs
 
     @jax.jit
-    def disc_step(vae_state, disc_state, batch, key):
+    def mi_disc_step(vae_state, disc_state, batch, key):
         """Update MI discriminator parameters."""
         def loss_fn(mi_params):
-            _, (_, disc_loss) = sepvae_loss(
+            _, (_, mi_disc_loss, _) = sepvae_loss(
                 sepvae, mi_disc, vae_state.params, mi_params,
                 batch, key, loss_cfg, batch_stats=vae_batch_stats
             )
-            return disc_loss
+            return mi_disc_loss
 
         disc_loss, grads = jax.value_and_grad(loss_fn)(disc_state.params)
         disc_state = disc_state.apply_gradients(grads=grads)
 
         return disc_state, disc_loss
+
+    @jax.jit
+    def patch_disc_step(vae_state, pd_state, batch, key, current_epoch):
+        """Update PatchGAN discriminator parameters."""
+        def loss_fn(pd_params):
+            _, (_, _, pd_loss) = sepvae_loss(
+                sepvae, mi_disc, vae_state.params, disc_state.params,
+                batch, key, loss_cfg, batch_stats=vae_batch_stats,
+                patch_disc=patch_disc,
+                patch_disc_params=pd_params,
+                current_epoch=current_epoch,
+            )
+            return pd_loss
+
+        pd_loss, grads = jax.value_and_grad(loss_fn)(pd_state.params)
+        pd_state = pd_state.apply_gradients(grads=grads)
+
+        return pd_state, pd_loss
 
     @jax.jit
     def reconstruct_batch(vae_params, batch, key):
@@ -493,14 +625,28 @@ def main():
             # Get random key for this step
             rng, step_key = jax.random.split(rng)
 
-            # Update VAE
-            vae_state, vae_logs = vae_step(vae_state, disc_state, batch, step_key, kl_anneal)
+            current_epoch_jnp = jnp.int32(epoch)
+
+            # Update VAE (with all loss terms)
+            pd_params = patch_disc_state.params if patch_disc_state is not None else None
+            vae_state, vae_logs = vae_step(
+                vae_state, disc_state, batch, step_key, kl_anneal,
+                current_epoch_jnp, pd_params=pd_params,
+            )
 
             # Update MI discriminator
-            disc_state, disc_loss = disc_step(vae_state, disc_state, batch, step_key)
+            disc_state, disc_loss = mi_disc_step(vae_state, disc_state, batch, step_key)
 
-            # Add discriminator loss to logs
+            # Update PatchGAN discriminator (if enabled)
+            pd_loss = jnp.float32(0.0)
+            if patch_disc_state is not None:
+                patch_disc_state, pd_loss = patch_disc_step(
+                    vae_state, patch_disc_state, batch, step_key, current_epoch_jnp,
+                )
+
+            # Add discriminator losses to logs
             vae_logs['loss/mi_disc_update'] = disc_loss
+            vae_logs['loss/patch_disc_update'] = pd_loss
 
             epoch_logs.append(vae_logs)
 
@@ -515,6 +661,10 @@ def main():
                     f"Null={vae_logs['loss/nulling']:.4f}, "
                     f"MI={vae_logs['loss/mi_penalty']:.4f}"
                 )
+                if args.weight_perceptual > 0:
+                    log_str += f", Percep={vae_logs['loss/perceptual']:.4f}"
+                if args.weight_adversarial > 0:
+                    log_str += f", GAN={vae_logs['loss/gen_adversarial']:.4f}"
                 print(log_str)
 
                 if args.wandb and _WANDB:
@@ -538,6 +688,11 @@ def main():
         print(f"  KL (weighted+annealed): {avg_logs['loss/kl_weighted']:.6f}")
         print(f"  Nulling: {avg_logs['loss/nulling']:.4f}")
         print(f"  MI Penalty: {avg_logs['loss/mi_penalty']:.4f}")
+        if args.weight_perceptual > 0:
+            print(f"  Perceptual: {avg_logs['loss/perceptual']:.4f}")
+        if args.weight_adversarial > 0:
+            print(f"  GAN gen: {avg_logs['loss/gen_adversarial']:.4f}, disc: {avg_logs['loss/patch_disc']:.4f}")
+            print(f"  Disc factor: {avg_logs['loss/disc_factor']:.3f}")
         if args.kl_warmup_epochs > 0:
             print(f"  KL anneal: {float(kl_anneal):.3f}")
 
@@ -553,6 +708,8 @@ def main():
                 'disc_params': disc_state.params,
                 'vae_opt_state': vae_state.opt_state,
                 'disc_opt_state': disc_state.opt_state,
+                'patch_disc_params': patch_disc_state.params if patch_disc_state else None,
+                'patch_disc_opt_state': patch_disc_state.opt_state if patch_disc_state else None,
                 'rng': rng,
                 'args': vars(args),
             }
@@ -598,6 +755,8 @@ def main():
         'disc_params': disc_state.params,
         'vae_opt_state': vae_state.opt_state,
         'disc_opt_state': disc_state.opt_state,
+        'patch_disc_params': patch_disc_state.params if patch_disc_state else None,
+        'patch_disc_opt_state': patch_disc_state.opt_state if patch_disc_state else None,
         'rng': rng,
         'args': vars(args),
     }

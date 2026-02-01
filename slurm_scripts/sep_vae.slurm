@@ -34,6 +34,9 @@ IMG_SIZE="${IMG_SIZE:-512}"
 Z_CHANNELS_COMMON="${Z_CHANNELS_COMMON:-4}"
 Z_CHANNELS_DISEASE="${Z_CHANNELS_DISEASE:-2}"
 FROZEN_BACKBONE="${FROZEN_BACKBONE:-1}"
+USE_FPN="${USE_FPN:-0}"
+FPN_CHANNELS="${FPN_CHANNELS:-512}"
+UNFREEZE_FROM="${UNFREEZE_FROM:-}"
 
 # CheSS weights
 CHESS_CHECKPOINT="${CHESS_CHECKPOINT:-/datasets/mmolefe/chess/pretrained_weights.pth.tar}"
@@ -46,10 +49,17 @@ WEIGHT_KL_DISEASE="${WEIGHT_KL_DISEASE:-1e-4}"
 WEIGHT_NULL="${WEIGHT_NULL:-1e-3}"
 WEIGHT_MI="${WEIGHT_MI:-1e-3}"
 SIGMA_INACTIVE="${SIGMA_INACTIVE:-0.1}"
+FREE_BITS="${FREE_BITS:-0.0}"
+WEIGHT_PERCEPTUAL="${WEIGHT_PERCEPTUAL:-0.0}"
+WEIGHT_ADVERSARIAL="${WEIGHT_ADVERSARIAL:-0.0}"
+DISC_START_EPOCH="${DISC_START_EPOCH:-10}"
+KL_WARMUP_EPOCHS="${KL_WARMUP_EPOCHS:-0}"
 
 # Optimizer
 LR_VAE="${LR_VAE:-1e-4}"
 LR_DISC="${LR_DISC:-1e-4}"
+LR_BACKBONE="${LR_BACKBONE:-1e-5}"
+LR_PATCH_DISC="${LR_PATCH_DISC:-4e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-1e-4}"
 GRAD_CLIP="${GRAD_CLIP:-1.0}"
 
@@ -113,8 +123,16 @@ ARGS=(
   --weight_null "$WEIGHT_NULL"
   --weight_mi "$WEIGHT_MI"
   --sigma_inactive "$SIGMA_INACTIVE"
+  --free_bits "$FREE_BITS"
+  --weight_perceptual "$WEIGHT_PERCEPTUAL"
+  --weight_adversarial "$WEIGHT_ADVERSARIAL"
+  --disc_start_epoch "$DISC_START_EPOCH"
+  --kl_warmup_epochs "$KL_WARMUP_EPOCHS"
+  --fpn_channels "$FPN_CHANNELS"
   --lr_vae "$LR_VAE"
   --lr_disc "$LR_DISC"
+  --lr_backbone "$LR_BACKBONE"
+  --lr_patch_disc "$LR_PATCH_DISC"
   --weight_decay "$WEIGHT_DECAY"
   --grad_clip "$GRAD_CLIP"
   --batch_size "$BATCH_SIZE"
@@ -130,6 +148,10 @@ ARGS=(
 
 # Frozen backbone (default on)
 [[ "$FROZEN_BACKBONE" == "1" ]] && ARGS+=( --frozen_backbone )
+
+# FPN and partial unfreezing
+[[ "$USE_FPN" == "1" ]] && ARGS+=( --use_fpn )
+[[ -n "$UNFREEZE_FROM" ]] && ARGS+=( --unfreeze_from "$UNFREEZE_FROM" )
 
 # Pre-converted CheSS weights (skip PyTorch conversion)
 [[ -n "$CHESS_CONVERTED" ]] && ARGS+=( --chess_converted "$CHESS_CONVERTED" )
@@ -160,6 +182,11 @@ kv "Loss: KL common"  "$WEIGHT_KL_COMMON"
 kv "Loss: KL disease"  "$WEIGHT_KL_DISEASE"
 kv "Loss: null"       "$WEIGHT_NULL"
 kv "Loss: MI"         "$WEIGHT_MI"
+kv "Loss: perceptual" "$WEIGHT_PERCEPTUAL"
+kv "Loss: adversarial" "$WEIGHT_ADVERSARIAL"
+kv "Free-bits"        "$FREE_BITS"
+kv "FPN"              "$USE_FPN (channels=$FPN_CHANNELS)"
+kv "Unfreeze from"    "${UNFREEZE_FROM:-none}"
 kv "Epochs"           "$EPOCHS"
 kv "Save every"       "$SAVE_EVERY"
 kv "W&B Enabled"      "$WANDB"
