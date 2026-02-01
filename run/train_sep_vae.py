@@ -81,8 +81,10 @@ def parse_args():
                    help="Nulling loss weight")
     p.add_argument("--weight_mi", type=float, default=1e-3,
                    help="MI penalty weight")
-    p.add_argument("--sigma_inactive", type=float, default=0.1,
-                   help="Tight prior std dev for inactive heads")
+    p.add_argument("--sigma_inactive", type=float, default=1.0,
+                   help="Prior std dev for inactive heads (1.0=standard, <1=tight prior)")
+    p.add_argument("--kl_warmup_epochs", type=int, default=0,
+                   help="Linearly anneal KL weight from 0 to 1 over this many epochs (0=no warmup)")
 
     # Optimizer
     p.add_argument("--lr_vae", type=float, default=1e-4,
@@ -363,16 +365,20 @@ def main():
     print(f"  KL (disease): {loss_cfg.weight_kl_disease}")
     print(f"  Nulling: {loss_cfg.weight_null}")
     print(f"  MI penalty: {loss_cfg.weight_mi}")
+    print(f"  Sigma inactive: {loss_cfg.sigma_inactive}")
+    if args.kl_warmup_epochs > 0:
+        print(f"  KL warmup: linear anneal over {args.kl_warmup_epochs} epochs")
 
     # ===== Define training steps =====
     # vae_batch_stats is frozen (never updated), captured in closure by jit
     @jax.jit
-    def vae_step(vae_state, disc_state, batch, key):
-        """Update VAE parameters."""
+    def vae_step(vae_state, disc_state, batch, key, kl_anneal):
+        """Update VAE parameters with optional KL annealing."""
         def loss_fn(params):
             total_loss, (logs, _) = sepvae_loss(
                 sepvae, mi_disc, params, disc_state.params,
-                batch, key, loss_cfg, batch_stats=vae_batch_stats
+                batch, key, loss_cfg, batch_stats=vae_batch_stats,
+                kl_anneal=kl_anneal,
             )
             return total_loss, logs
 
@@ -464,7 +470,14 @@ def main():
     global_step = 0
 
     for epoch in range(1, args.epochs + 1):
-        print(f"\nEpoch {epoch}/{args.epochs}")
+        # Compute KL annealing factor for this epoch
+        if args.kl_warmup_epochs > 0:
+            kl_anneal = jnp.float32(min(1.0, epoch / args.kl_warmup_epochs))
+        else:
+            kl_anneal = jnp.float32(1.0)
+
+        print(f"\nEpoch {epoch}/{args.epochs}" +
+              (f"  [KL anneal={float(kl_anneal):.3f}]" if args.kl_warmup_epochs > 0 else ""))
 
         epoch_logs = []
 
@@ -481,7 +494,7 @@ def main():
             rng, step_key = jax.random.split(rng)
 
             # Update VAE
-            vae_state, vae_logs = vae_step(vae_state, disc_state, batch, step_key)
+            vae_state, vae_logs = vae_step(vae_state, disc_state, batch, step_key, kl_anneal)
 
             # Update MI discriminator
             disc_state, disc_loss = disc_step(vae_state, disc_state, batch, step_key)
@@ -498,6 +511,7 @@ def main():
                     f"Loss={vae_logs['loss/total']:.4f}, "
                     f"Rec={vae_logs['loss/reconstruction']:.4f}, "
                     f"KL={vae_logs['loss/kl_total']:.4f}, "
+                    f"KLw={vae_logs['loss/kl_weighted']:.4f}, "
                     f"Null={vae_logs['loss/nulling']:.4f}, "
                     f"MI={vae_logs['loss/mi_penalty']:.4f}"
                 )
@@ -520,9 +534,12 @@ def main():
         print(f"\nEpoch {epoch} Summary:")
         print(f"  Total Loss: {avg_logs['loss/total']:.4f}")
         print(f"  Reconstruction: {avg_logs['loss/reconstruction']:.4f}")
-        print(f"  KL (total): {avg_logs['loss/kl_total']:.4f}")
+        print(f"  KL (raw total): {avg_logs['loss/kl_total']:.4f}")
+        print(f"  KL (weighted+annealed): {avg_logs['loss/kl_weighted']:.6f}")
         print(f"  Nulling: {avg_logs['loss/nulling']:.4f}")
         print(f"  MI Penalty: {avg_logs['loss/mi_penalty']:.4f}")
+        if args.kl_warmup_epochs > 0:
+            print(f"  KL anneal: {float(kl_anneal):.3f}")
 
         # Save checkpoint
         if epoch % args.save_every == 0:

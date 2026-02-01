@@ -327,14 +327,14 @@ class SepVAELossConfig:
         weight_kl_disease: Disease KL weight (default: 1e-4)
         weight_null: Nulling loss weight (default: 1e-3)
         weight_mi: MI penalty weight (default: 1e-3)
-        sigma_inactive: Tight prior std dev for inactive heads (default: 0.1)
+        sigma_inactive: Prior std dev for inactive heads (default: 1.0, i.e. standard prior)
     """
     weight_rec: float = 1.0
     weight_kl_common: float = 1e-4
     weight_kl_disease: float = 1e-4
     weight_null: float = 1e-3
     weight_mi: float = 1e-3
-    sigma_inactive: float = 0.1
+    sigma_inactive: float = 1.0
 
 
 def sepvae_loss(
@@ -345,14 +345,15 @@ def sepvae_loss(
     batch: Dict[str, jnp.ndarray],
     key: jax.random.PRNGKey,
     cfg: SepVAELossConfig,
-    batch_stats: Dict = None
+    batch_stats: Dict = None,
+    kl_anneal: jnp.ndarray = None,
 ) -> Tuple[jnp.ndarray, Tuple[Dict[str, jnp.ndarray], jnp.ndarray]]:
     """
     Complete SepVAE loss function.
 
     This combines:
     - Reconstruction loss
-    - KL divergence (common + disease heads)
+    - KL divergence (common + disease heads), scaled by kl_anneal
     - Nulling loss (inactive heads)
     - MI penalty (disentanglement)
 
@@ -365,6 +366,8 @@ def sepvae_loss(
         key: JAX PRNG key
         cfg: SepVAELossConfig with loss weights
         batch_stats: BatchNorm running statistics for frozen backbone
+        kl_anneal: KL annealing factor in [0, 1] (default: None = no annealing, i.e. 1.0).
+                   Used for KL warmup: linearly ramp from 0 to 1 over initial epochs.
 
     Returns:
         total_loss: Scalar
@@ -397,10 +400,14 @@ def sepvae_loss(
 
     # 2. KL losses
     kl_losses = compute_kl_losses(latents_dict, labels, sigma_inactive=cfg.sigma_inactive)
-    l_kl = (
+    l_kl_raw = (
         cfg.weight_kl_common * kl_losses['common'] +
         cfg.weight_kl_disease * (kl_losses['cardiomegaly'] + kl_losses['effusion'])
     )
+
+    # Apply KL annealing (warmup): scale weighted KL by anneal factor
+    _kl_anneal = kl_anneal if kl_anneal is not None else jnp.float32(1.0)
+    l_kl = l_kl_raw * _kl_anneal
 
     # 3. Nulling loss
     l_null = nulling_loss(inactive_mus)
@@ -429,6 +436,8 @@ def sepvae_loss(
         'loss/kl_cardiomegaly': kl_losses['cardiomegaly'],
         'loss/kl_effusion': kl_losses['effusion'],
         'loss/kl_total': kl_losses['common'] + kl_losses['cardiomegaly'] + kl_losses['effusion'],
+        'loss/kl_weighted': l_kl,
+        'loss/kl_anneal': _kl_anneal,
         'loss/nulling': l_null,
         'loss/mi_penalty': mi_penalty,
         'loss/mi_disc': disc_loss,

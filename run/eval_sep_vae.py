@@ -18,14 +18,15 @@ import argparse
 import os
 from pathlib import Path
 
+# Prevent JAX from pre-allocating all GPU memory
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 import torch
 from torch.utils.data import DataLoader
-from flax.training.train_state import TrainState
-from flax.serialization import from_bytes
+from flax.serialization import msgpack_restore
 
 import matplotlib
 matplotlib.use('Agg')
@@ -35,8 +36,6 @@ import seaborn as sns
 # Local imports
 from datasets.VinBigData import VinBigDataTripletDataset, jax_collate_fn
 from models.sep_vae_jax import SepVAE
-from losses.sep_vae_losses import MIDiscriminator
-from utils.weight_converter import convert_chess_resnet50, load_converted_weights
 
 # Optional W&B
 try:
@@ -70,7 +69,7 @@ def parse_args():
                    help="Path to train.csv")
     p.add_argument("--img_size", type=int, default=512,
                    help="Image size (default: 512)")
-    p.add_argument("--batch_size", type=int, default=8,
+    p.add_argument("--batch_size", type=int, default=2,
                    help="Batch size")
     p.add_argument("--num_workers", type=int, default=8,
                    help="DataLoader workers")
@@ -80,13 +79,6 @@ def parse_args():
                    help="Common latent channels (default: 4)")
     p.add_argument("--z_channels_disease", type=int, default=2,
                    help="Disease-specific latent channels (default: 2)")
-
-    # CheSS weights (needed to rebuild model for deserialization)
-    p.add_argument("--chess_checkpoint", type=str,
-                   default="/datasets/mmolefe/chess/pretrained_weights.pth.tar",
-                   help="Path to CheSS PyTorch checkpoint")
-    p.add_argument("--chess_converted", type=str, default=None,
-                   help="Path to converted JAX weights (.npy)")
 
     # W&B integration
     p.add_argument("--wandb", action="store_true",
@@ -121,7 +113,7 @@ def parse_args():
                    help="Max samples for manifold visualization")
 
     # Reconstruction options
-    p.add_argument("--n_samples_per_class", type=int, default=4,
+    p.add_argument("--n_samples_per_class", type=int, default=2,
                    help="Number of samples per class in reconstruction grid")
 
     return p.parse_args()
@@ -137,127 +129,44 @@ def ensure_dir(path):
 # Checkpoint Loading
 # ============================================================================
 
-def _build_deserialization_template(z_channels_common, z_channels_disease,
-                                    chess_checkpoint=None, chess_converted=None,
-                                    img_size=512):
+def load_checkpoint(ckpt_path, z_channels_common=4, z_channels_disease=2):
     """
-    Build a full pytree template matching the training checkpoint structure.
+    Load SepVAE checkpoint using msgpack_restore (no template needed).
 
-    flax.serialization.from_bytes requires a template with the exact same
-    pytree structure as was serialized with to_bytes.
-    """
-    rng = jax.random.PRNGKey(0)
-
-    # Initialize SepVAE
-    sepvae = SepVAE(
-        z_channels_common=z_channels_common,
-        z_channels_disease=z_channels_disease,
-        frozen_backbone=True
-    )
-
-    dummy_x = jnp.ones((1, img_size, img_size, 1))
-    dummy_labels = jnp.array([0])
-
-    vae_vars = sepvae.init(
-        {'params': rng, 'dropout': rng},
-        dummy_x, dummy_labels, key=rng, train=True
-    )
-    vae_params = vae_vars['params']
-    vae_batch_stats = vae_vars.get('batch_stats', {})
-
-    # Inject CheSS weights for correct parameter shapes
-    if chess_converted and os.path.exists(chess_converted):
-        chess_params, chess_bs = load_converted_weights(chess_converted)
-    elif chess_checkpoint and os.path.exists(chess_checkpoint):
-        chess_params, chess_bs = convert_chess_resnet50(chess_checkpoint, verbose=False)
-    else:
-        chess_params, chess_bs = None, None
-
-    if chess_params is not None:
-        vae_params = vae_params.copy()
-        vae_params['encoder']['backbone'] = chess_params
-        if vae_batch_stats:
-            vae_batch_stats = vae_batch_stats.copy()
-            vae_batch_stats['encoder']['backbone'] = chess_bs
-        else:
-            vae_batch_stats = {'encoder': {'backbone': chess_bs}}
-
-    vae_params = jax.tree_util.tree_map(jnp.array, vae_params)
-    vae_batch_stats = jax.tree_util.tree_map(jnp.array, vae_batch_stats)
-
-    # Initialize MI discriminator (needed for checkpoint structure)
-    mi_disc = MIDiscriminator(hidden_dim=512)
-    dummy_z_c = jnp.ones((1, 64, 64, z_channels_common))
-    dummy_z_d = jnp.ones((1, 64, 64, z_channels_disease))
-    mi_vars = mi_disc.init(rng, dummy_z_c, dummy_z_d, train=True)
-    mi_params = mi_vars['params']
-
-    # Create optimizer states (must match training script structure)
-    tx_vae = optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.adamw(learning_rate=1e-4, weight_decay=1e-4)
-    )
-    tx_disc = optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.adamw(learning_rate=1e-4, weight_decay=1e-4)
-    )
-
-    vae_state = TrainState.create(apply_fn=None, params=vae_params, tx=tx_vae)
-    disc_state = TrainState.create(apply_fn=None, params=mi_params, tx=tx_disc)
-
-    template = {
-        'epoch': 0,
-        'global_step': 0,
-        'vae_params': vae_state.params,
-        'vae_batch_stats': vae_batch_stats,
-        'disc_params': disc_state.params,
-        'vae_opt_state': vae_state.opt_state,
-        'disc_opt_state': disc_state.opt_state,
-        'rng': rng,
-        'args': {},
-    }
-
-    return template, sepvae
-
-
-def load_checkpoint(ckpt_path, z_channels_common=4, z_channels_disease=2,
-                    chess_checkpoint=None, chess_converted=None, img_size=512):
-    """
-    Load SepVAE checkpoint and reconstruct model + parameters.
+    This avoids the OOM issue of the template-based approach which had to
+    allocate the full model + optimizer states on GPU just for deserialization.
+    msgpack_restore deserializes directly to numpy arrays.
 
     Args:
         ckpt_path: Path to .pkl checkpoint
         z_channels_common: Common latent channels
         z_channels_disease: Disease-specific latent channels
-        chess_checkpoint: Path to CheSS PyTorch checkpoint
-        chess_converted: Path to pre-converted JAX weights
-        img_size: Image size used during training
 
     Returns:
-        model: SepVAE model instance
-        vae_params: Trained parameters
-        vae_batch_stats: BatchNorm statistics
+        model: SepVAE model instance (uninitialized, used for .apply())
+        vae_params: Trained parameters (as JAX arrays)
+        vae_batch_stats: BatchNorm statistics (as JAX arrays)
         ckpt_meta: Dict with epoch, global_step, training args
     """
-    print(f"Building deserialization template...")
-    template, model = _build_deserialization_template(
-        z_channels_common, z_channels_disease,
-        chess_checkpoint, chess_converted, img_size
-    )
-
     print(f"Loading checkpoint: {ckpt_path}")
     with open(ckpt_path, 'rb') as f:
-        ckpt_bytes = f.read()
+        raw = msgpack_restore(f.read())
 
-    ckpt_data = from_bytes(template, ckpt_bytes)
+    # Only convert the parameters we need to JAX arrays (skip optimizer states)
+    vae_params = jax.tree_util.tree_map(jnp.array, raw['vae_params'])
+    vae_batch_stats = jax.tree_util.tree_map(jnp.array, raw['vae_batch_stats'])
 
-    vae_params = jax.tree_util.tree_map(jnp.array, ckpt_data['vae_params'])
-    vae_batch_stats = jax.tree_util.tree_map(jnp.array, ckpt_data['vae_batch_stats'])
+    # Build model instance (no GPU allocation - just the module definition)
+    model = SepVAE(
+        z_channels_common=z_channels_common,
+        z_channels_disease=z_channels_disease,
+        frozen_backbone=True,
+    )
 
     ckpt_meta = {
-        'epoch': int(ckpt_data['epoch']),
-        'global_step': int(ckpt_data['global_step']),
-        'args': ckpt_data['args'],
+        'epoch': int(raw['epoch']),
+        'global_step': int(raw['global_step']),
+        'args': raw.get('args', {}),
     }
 
     param_count = sum(p.size for p in jax.tree_util.tree_leaves(vae_params))
@@ -1130,9 +1039,6 @@ def main():
         args.checkpoint,
         z_channels_common=args.z_channels_common,
         z_channels_disease=args.z_channels_disease,
-        chess_checkpoint=args.chess_checkpoint,
-        chess_converted=args.chess_converted,
-        img_size=args.img_size,
     )
 
     if ckpt_meta.get('args'):
