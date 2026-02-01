@@ -300,6 +300,7 @@ def main():
         use_fpn=args.use_fpn,
         fpn_channels=args.fpn_channels,
         unfreeze_from=args.unfreeze_from,
+        sigma_inactive=args.sigma_inactive,
     )
 
     # MI discriminator

@@ -237,26 +237,33 @@ class SepVAEEncoder(nn.Module):
 def apply_head_nulling(
     latents_dict: Dict[str, Tuple[jnp.ndarray, jnp.ndarray]],
     labels: jnp.ndarray,
-    key: jax.random.PRNGKey
+    key: jax.random.PRNGKey,
+    sigma_inactive: float = 0.1,
 ) -> Tuple[jnp.ndarray, Dict[str, jnp.ndarray]]:
     """
-    Apply disease-specific head nulling based on labels (spatial version).
+    Apply disease-specific soft head nulling based on labels (spatial version).
+
+    Soft nulling replaces inactive disease channels with samples from the
+    prior N(0, sigma_inactive²) instead of hard zeros. This:
+    - Produces a continuous latent distribution (no delta at zero)
+    - Is consistent with the conditional KL prior
+    - Handles label noise gracefully
+    - Makes downstream LDM training viable (smooth marginal q(z))
 
     Nulling logic:
-    - label=0 (Normal): Zero both disease heads
-    - label=1 (Pleural Effusion): Zero Cardiomegaly head
-    - label=2 (Cardiomegaly): Zero Pleural Effusion head
-
-    This prevents information leakage from inactive heads.
+    - label=0 (Normal): Both disease heads → sample from prior
+    - label=1 (Pleural Effusion): Cardiomegaly head → sample from prior
+    - label=2 (Cardiomegaly): Pleural Effusion head → sample from prior
 
     Args:
         latents_dict: Dict with keys 'common', 'cardiomegaly', 'effusion'
                      Each value is tuple (mu, logvar) with shape (B, 64, 64, channels)
         labels: Disease labels (B,) with values in {0, 1, 2}
         key: JAX PRNG key for sampling
+        sigma_inactive: Std dev for inactive channel prior (default: 0.1)
 
     Returns:
-        z_concat: Concatenated spatial latents (B, 64, 64, 8) with nulling applied
+        z_concat: Concatenated spatial latents (B, 64, 64, 8) with soft nulling
         inactive_mus: Dict of masked (inactive) means for nulling loss
     """
     B = labels.shape[0]
@@ -271,7 +278,7 @@ def apply_head_nulling(
     mu_cardio, logvar_cardio = latents_dict['cardiomegaly']  # (B, 64, 64, 2)
     mu_effusion, logvar_effusion = latents_dict['effusion']  # (B, 64, 64, 2)
 
-    key_cardio, key_effusion = jax.random.split(key)
+    key_cardio, key_effusion, key_noise_c, key_noise_e = jax.random.split(key, 4)
     eps_cardio = jax.random.normal(key_cardio, mu_cardio.shape)
     eps_effusion = jax.random.normal(key_effusion, mu_effusion.shape)
 
@@ -285,14 +292,18 @@ def apply_head_nulling(
     # Effusion head is active only when label=1
     mask_effusion = jnp.where(labels == 1, 1.0, 0.0)[:, None, None, None]  # (B, 1, 1, 1)
 
-    # Apply masks to sampled latents (broadcast across spatial dimensions)
-    z_cardio_masked = z_cardio * mask_cardio
-    z_effusion_masked = z_effusion * mask_effusion
+    # Soft nulling: inactive channels get samples from prior N(0, sigma_inactive²)
+    # instead of hard zeros. This maintains a continuous latent distribution.
+    noise_cardio = sigma_inactive * jax.random.normal(key_noise_c, z_cardio.shape)
+    noise_effusion = sigma_inactive * jax.random.normal(key_noise_e, z_effusion.shape)
+
+    z_cardio_masked = z_cardio * mask_cardio + noise_cardio * (1.0 - mask_cardio)
+    z_effusion_masked = z_effusion * mask_effusion + noise_effusion * (1.0 - mask_effusion)
 
     # Concatenate along channel dimension: [common(4), cardio(2), effusion(2)] = 8 channels
     z_concat = jnp.concatenate([z_c, z_cardio_masked, z_effusion_masked], axis=-1)  # (B, 64, 64, 8)
 
-    # Track inactive means for nulling loss
+    # Track inactive means for nulling loss (still penalize encoder mu toward 0)
     inactive_mus = {
         'cardiomegaly': mu_cardio * (1.0 - mask_cardio),
         'effusion': mu_effusion * (1.0 - mask_effusion),
@@ -315,12 +326,13 @@ class SepVAEDecoder(nn.Module):
     - GroupNorm + Swish activation
 
     Attributes:
-        ch_mults: Channel multipliers for each stage (default: 256→128→64→32)
+        ch_mults: Channel multipliers indexed low→high res (default: 32, 64, 128, 256)
+                  reversed() iteration gives 256ch@64×64, 128ch@128×128, 64ch@256×256, 32ch@512×512
         num_res_blocks: ResBlocks per stage (default: 2)
         dropout: Dropout rate (default: 0.0)
         z_channels: Total latent channels (4 + 2 + 2 = 8)
     """
-    ch_mults: Sequence[int] = (256, 128, 64, 32)  # 4 stages: 64→128→256→512
+    ch_mults: Sequence[int] = (32, 64, 128, 256)  # 4 stages: 64(256ch)→128(128ch)→256(64ch)→512(32ch)
     num_res_blocks: int = 2
     dropout: float = 0.0
     z_channels: int = 8  # 4 (common) + 2 (cardio) + 2 (effusion)
@@ -337,9 +349,9 @@ class SepVAEDecoder(nn.Module):
         Returns:
             Reconstructed images (B, 512, 512, 1) in [0, 1] range
         """
-        # Initial processing: project from z_channels to first channel mult
+        # Initial processing: lightweight projection from z_channels
         h = nn.Conv(self.ch_mults[0], kernel_size=(3, 3), padding='SAME', name='z_proj')(z)
-        # h is now (B, 64, 64, 256)
+        # h is now (B, 64, 64, 32); first ResBlock expands to ch_mults[-1]=256
 
         # Progressive upsampling: 64 → 128 → 256 → 512
         # 4 stages total
@@ -354,10 +366,10 @@ class SepVAEDecoder(nn.Module):
             if i > 0:
                 target_ch = self.ch_mults[i - 1]
                 h = Up(ch=target_ch)(h)
-            # After i=3: 64×64 → stays 64×64
-            # After i=2: 64×64 → 128×128
-            # After i=1: 128×128 → 256×256
-            # After i=0: 256×256 → 512×512
+            # i=3: 256ch @ 64×64  → Up(128) → 128×128
+            # i=2: 128ch @ 128×128 → Up(64) → 256×256
+            # i=1: 64ch  @ 256×256 → Up(32) → 512×512
+            # i=0: 32ch  @ 512×512 → no Up
 
         # Final layers: GroupNorm → Swish → Conv → Sigmoid
         h = nn.GroupNorm(num_groups=32)(h)
@@ -389,6 +401,7 @@ class SepVAE(nn.Module):
         use_fpn: Whether to use Feature Pyramid Network (default: False)
         fpn_channels: FPN output channels (default: 512)
         unfreeze_from: Layer to unfreeze from ('layer3', 'layer4', or None)
+        sigma_inactive: Std dev for soft nulling prior on inactive channels (default: 0.1)
     """
     z_channels_common: int = 4
     z_channels_disease: int = 2
@@ -396,6 +409,7 @@ class SepVAE(nn.Module):
     use_fpn: bool = False
     fpn_channels: int = 512
     unfreeze_from: str = None
+    sigma_inactive: float = 0.1
 
     def setup(self):
         """Initialize encoder and decoder."""
@@ -431,7 +445,9 @@ class SepVAE(nn.Module):
 
         # Sample spatial latents with head nulling
         key_sample, key_dec = jax.random.split(key)
-        z_concat, inactive_mus = apply_head_nulling(latents_dict, labels, key_sample)
+        z_concat, inactive_mus = apply_head_nulling(
+            latents_dict, labels, key_sample, sigma_inactive=self.sigma_inactive
+        )
 
         # Decode
         x_rec = self.decoder(z_concat, train=train)
