@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from flax.training.train_state import TrainState
-from flax.serialization import to_bytes, from_bytes
+from flax.serialization import to_bytes, from_bytes, msgpack_restore
 import torch
 from torch.utils.data import DataLoader
 
@@ -146,6 +146,10 @@ def parse_args():
     p.add_argument("--verbose_n_samples", type=int, default=12,
                    help="Number of samples for backbone visualization (default: 12)")
 
+    # Resume
+    p.add_argument("--resume", type=str, default=None,
+                   help="Path to checkpoint to resume training from")
+
     # W&B
     p.add_argument("--wandb", action="store_true",
                    help="Enable W&B logging")
@@ -153,6 +157,8 @@ def parse_args():
                    help="W&B project name")
     p.add_argument("--wandb_entity", type=str, default=None,
                    help="W&B entity (username/team)")
+    p.add_argument("--wandb_run_id", type=str, default=None,
+                   help="W&B run ID to resume logging into (e.g. 'ezobur5y')")
 
     return p.parse_args()
 
@@ -235,12 +241,19 @@ def main():
 
     # ===== Initialize W&B =====
     if args.wandb and _WANDB:
-        wandb.init(
+        wandb_kwargs = dict(
             project=args.wandb_project,
             entity=args.wandb_entity,
-            name=exp_slug,
-            config=vars(args)
+            config=vars(args),
         )
+        if args.wandb_run_id:
+            # Resume logging into an existing W&B run
+            wandb_kwargs['id'] = args.wandb_run_id
+            wandb_kwargs['resume'] = 'must'
+            print(f"✓ W&B resuming run: {args.wandb_run_id}")
+        else:
+            wandb_kwargs['name'] = exp_slug
+        wandb.init(**wandb_kwargs)
         print("✓ W&B initialized")
     elif args.wandb and not _WANDB:
         print("⚠ W&B requested but not installed, skipping")
@@ -444,6 +457,68 @@ def main():
 
     print(f"✓ MI discriminator optimizer: AdamW (lr={args.lr_disc}, wd={args.weight_decay})")
 
+    # ===== Resume from checkpoint (optional) =====
+    start_epoch = 1
+    global_step = 0
+
+    if args.resume:
+        print(f"\n{'='*60}")
+        print("RESUMING FROM CHECKPOINT")
+        print("="*60)
+        print(f"Loading: {args.resume}")
+
+        with open(args.resume, 'rb') as f:
+            ckpt = msgpack_restore(f.read())
+
+        # Verify architecture matches
+        ckpt_args = ckpt.get('args', {})
+        for key in ['z_channels_common', 'z_channels_disease', 'use_fpn',
+                     'fpn_channels', 'unfreeze_from']:
+            ckpt_val = ckpt_args.get(key)
+            curr_val = getattr(args, key)
+            if str(ckpt_val) != str(curr_val):
+                print(f"  ⚠ Architecture mismatch: {key}={ckpt_val} (ckpt) vs {curr_val} (current)")
+
+        # Restore VAE state (params + optimizer moments)
+        restored_vae_params = jax.tree_util.tree_map(jnp.array, ckpt['vae_params'])
+        restored_vae_opt = jax.tree_util.tree_map(jnp.array, ckpt['vae_opt_state'])
+        vae_state = vae_state.replace(
+            params=restored_vae_params,
+            opt_state=restored_vae_opt,
+            step=int(ckpt['global_step']),
+        )
+
+        # Restore batch_stats (frozen, but ensure consistency)
+        vae_batch_stats = jax.tree_util.tree_map(jnp.array, ckpt['vae_batch_stats'])
+
+        # Restore MI discriminator state
+        restored_disc_params = jax.tree_util.tree_map(jnp.array, ckpt['disc_params'])
+        restored_disc_opt = jax.tree_util.tree_map(jnp.array, ckpt['disc_opt_state'])
+        disc_state = disc_state.replace(
+            params=restored_disc_params,
+            opt_state=restored_disc_opt,
+        )
+
+        # Restore PatchGAN state (if available)
+        if patch_disc_state is not None and ckpt.get('patch_disc_params') is not None:
+            restored_pd_params = jax.tree_util.tree_map(jnp.array, ckpt['patch_disc_params'])
+            restored_pd_opt = jax.tree_util.tree_map(jnp.array, ckpt['patch_disc_opt_state'])
+            patch_disc_state = patch_disc_state.replace(
+                params=restored_pd_params,
+                opt_state=restored_pd_opt,
+            )
+            print("  ✓ Restored PatchGAN discriminator state")
+
+        # Restore RNG and training progress
+        rng = jnp.array(ckpt['rng'])
+        start_epoch = int(ckpt['epoch']) + 1
+        global_step = int(ckpt['global_step'])
+
+        print(f"  ✓ Restored VAE params + optimizer (Adam moments)")
+        print(f"  ✓ Restored MI discriminator state")
+        print(f"  ✓ Checkpoint was epoch {int(ckpt['epoch'])}, step {global_step}")
+        print(f"  ✓ Resuming from epoch {start_epoch}")
+
     # ===== Loss configuration =====
     loss_cfg = SepVAELossConfig(
         weight_rec=args.weight_rec,
@@ -597,12 +672,10 @@ def main():
 
     # ===== Training loop =====
     print("\n" + "="*60)
-    print("STARTING TRAINING")
+    print("STARTING TRAINING" + (f" (resuming from epoch {start_epoch})" if start_epoch > 1 else ""))
     print("="*60)
 
-    global_step = 0
-
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         # Compute KL annealing factor for this epoch
         if args.kl_warmup_epochs > 0:
             kl_anneal = jnp.float32(min(1.0, epoch / args.kl_warmup_epochs))
