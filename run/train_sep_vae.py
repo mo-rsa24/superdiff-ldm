@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from flax.training.train_state import TrainState
-from flax.serialization import to_bytes, from_bytes, msgpack_restore
+from flax.serialization import to_bytes, from_bytes, msgpack_restore, from_state_dict
 import torch
 from torch.utils.data import DataLoader
 
@@ -479,9 +479,9 @@ def main():
             if str(ckpt_val) != str(curr_val):
                 print(f"  ⚠ Architecture mismatch: {key}={ckpt_val} (ckpt) vs {curr_val} (current)")
 
-        # Restore VAE state (params + optimizer moments)
+        # Restore VAE state (params as arrays, opt_state with structure template)
         restored_vae_params = jax.tree_util.tree_map(jnp.array, ckpt['vae_params'])
-        restored_vae_opt = jax.tree_util.tree_map(jnp.array, ckpt['vae_opt_state'])
+        restored_vae_opt = from_state_dict(vae_state.opt_state, ckpt['vae_opt_state'])
         vae_state = vae_state.replace(
             params=restored_vae_params,
             opt_state=restored_vae_opt,
@@ -493,7 +493,7 @@ def main():
 
         # Restore MI discriminator state
         restored_disc_params = jax.tree_util.tree_map(jnp.array, ckpt['disc_params'])
-        restored_disc_opt = jax.tree_util.tree_map(jnp.array, ckpt['disc_opt_state'])
+        restored_disc_opt = from_state_dict(disc_state.opt_state, ckpt['disc_opt_state'])
         disc_state = disc_state.replace(
             params=restored_disc_params,
             opt_state=restored_disc_opt,
@@ -502,7 +502,7 @@ def main():
         # Restore PatchGAN state (if available)
         if patch_disc_state is not None and ckpt.get('patch_disc_params') is not None:
             restored_pd_params = jax.tree_util.tree_map(jnp.array, ckpt['patch_disc_params'])
-            restored_pd_opt = jax.tree_util.tree_map(jnp.array, ckpt['patch_disc_opt_state'])
+            restored_pd_opt = from_state_dict(patch_disc_state.opt_state, ckpt['patch_disc_opt_state'])
             patch_disc_state = patch_disc_state.replace(
                 params=restored_pd_params,
                 opt_state=restored_pd_opt,
