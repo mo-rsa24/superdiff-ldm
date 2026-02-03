@@ -183,7 +183,17 @@ def load_checkpoint(ckpt_path, z_channels_common=4, z_channels_disease=2,
     _unfreeze_from = unfreeze_from if unfreeze_from is not None else ckpt_args.get('unfreeze_from', None)
     _sigma_inactive = float(ckpt_args.get('sigma_inactive', 0.1))
 
+    # Auto-detect mixed precision dtype from checkpoint
+    _half_prec = ckpt_args.get('half_precision', 'none')
+    if _half_prec == 'bf16':
+        _dtype = jnp.bfloat16
+    elif _half_prec == 'fp16':
+        _dtype = jnp.float16
+    else:
+        _dtype = jnp.float32
+
     # Build model instance (no GPU allocation - just the module definition)
+    # use_remat=False for eval (no gradient checkpointing needed)
     model = SepVAE(
         z_channels_common=z_channels_common,
         z_channels_disease=z_channels_disease,
@@ -192,6 +202,8 @@ def load_checkpoint(ckpt_path, z_channels_common=4, z_channels_disease=2,
         fpn_channels=_fpn_channels,
         unfreeze_from=_unfreeze_from,
         sigma_inactive=_sigma_inactive,
+        dtype=_dtype,
+        use_remat=False,
     )
 
     param_count = sum(p.size for p in jax.tree_util.tree_leaves(vae_params))

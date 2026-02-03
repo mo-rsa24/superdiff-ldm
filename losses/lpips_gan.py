@@ -9,22 +9,25 @@ class NLayerDiscriminator(nn.Module):
     in_channels: int = 1
     n_layers: int = 3
     use_actnorm: bool = False
+    dtype: jnp.dtype = jnp.float32
 
     @nn.compact
     def __call__(self, x, train=True):
         ch = 64
-        h = nn.Conv(ch, (4,4), strides=(2,2), padding="SAME")(x)
+        h = x.astype(self.dtype)
+        h = nn.Conv(ch, (4,4), strides=(2,2), padding="SAME", dtype=self.dtype)(h)
         h = nn.leaky_relu(h, 0.2)
         for i in range(1, self.n_layers):
             mult = min(2**i, 8)
-            h = nn.Conv(ch*mult, (4,4), strides=(2,2), padding="SAME")(h)
-            h = nn.GroupNorm(num_groups=32)(h)
+            h = nn.Conv(ch*mult, (4,4), strides=(2,2), padding="SAME", dtype=self.dtype)(h)
+            h = nn.GroupNorm(num_groups=32, dtype=self.dtype)(h)
             h = nn.leaky_relu(h, 0.2)
-        h = nn.Conv(ch*8, (4,4), padding="SAME")(h)
-        h = nn.GroupNorm(num_groups=32)(h)
+        h = nn.Conv(ch*8, (4,4), padding="SAME", dtype=self.dtype)(h)
+        h = nn.GroupNorm(num_groups=32, dtype=self.dtype)(h)
         h = nn.leaky_relu(h, 0.2)
-        h = nn.Conv(1, (4,4), padding="SAME")(h)
-        return h  # (N,H',W',1) logits
+        h = nn.Conv(1, (4,4), padding="SAME", dtype=self.dtype)(h)
+        # Cast logits to float32 for stable loss computation
+        return h.astype(jnp.float32)  # (N,H',W',1) logits
 
 # --------- GAN losses ---------
 

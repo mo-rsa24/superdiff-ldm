@@ -30,19 +30,20 @@ class DiagonalGaussian:
 class ResBlock(nn.Module):
     ch: int
     dropout: float = 0.0
+    dtype: jnp.dtype = jnp.float32
 
     @nn.compact
     def __call__(self, x, train=True):
-        h = nn.GroupNorm(num_groups=32)(x)
+        h = nn.GroupNorm(num_groups=32, dtype=self.dtype)(x)
         h = nn.swish(h)
-        h = nn.Conv(self.ch, (3,3), padding="SAME")(h)
-        h = nn.GroupNorm(num_groups=32)(h)
+        h = nn.Conv(self.ch, (3,3), padding="SAME", dtype=self.dtype)(h)
+        h = nn.GroupNorm(num_groups=32, dtype=self.dtype)(h)
         h = nn.swish(h)
         if self.dropout > 0 and train:
             h = nn.Dropout(self.dropout)(h, deterministic=not train)
-        h = nn.Conv(self.ch, (3,3), padding="SAME")(h)
+        h = nn.Conv(self.ch, (3,3), padding="SAME", dtype=self.dtype)(h)
         if x.shape[-1] != self.ch:
-            x = nn.Conv(self.ch, (1,1))(x)
+            x = nn.Conv(self.ch, (1,1), dtype=self.dtype)(x)
         return x + h
 
 class Down(nn.Module):
@@ -53,11 +54,12 @@ class Down(nn.Module):
 
 class Up(nn.Module):
     ch: int
+    dtype: jnp.dtype = jnp.float32
     @nn.compact
     def __call__(self, x):
         B,H,W,C = x.shape
         x = jax.image.resize(x, (B, H*2, W*2, C), method="nearest")
-        return nn.Conv(self.ch, (3,3), padding="SAME")(x)
+        return nn.Conv(self.ch, (3,3), padding="SAME", dtype=self.dtype)(x)
 
 # --------------- Encoder/Decoder ---------------
 class SelfAttention2D(nn.Module):

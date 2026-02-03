@@ -434,6 +434,7 @@ def backbone_perceptual_loss(
     x_rec: jnp.ndarray,
     backbone_apply_fn,
     backbone_variables: Dict,
+    use_remat: bool = False,
 ) -> jnp.ndarray:
     """
     Perceptual loss using frozen CheSS backbone multi-scale features.
@@ -449,6 +450,7 @@ def backbone_perceptual_loss(
         x_rec: Reconstructed images (B, 512, 512, 1) in [0, 1] range
         backbone_apply_fn: Function to call backbone (returns multi-scale features)
         backbone_variables: Backbone model variables (params + batch_stats)
+        use_remat: If True, checkpoint backbone passes to save memory
 
     Returns:
         Scalar perceptual loss (mean over batch and layers)
@@ -456,15 +458,18 @@ def backbone_perceptual_loss(
     # Convert x_rec from [0,1] to [-1,1] to match backbone's expected input
     x_rec_scaled = x_rec * 2.0 - 1.0
 
+    # Optionally wrap backbone with gradient checkpointing
+    _apply_fn = jax.checkpoint(backbone_apply_fn) if use_remat else backbone_apply_fn
+
     # Extract multi-scale features
     # Stop gradient on original features (target — should not change)
-    feats_orig = backbone_apply_fn(backbone_variables, x_orig, return_multiscale=True)
+    feats_orig = _apply_fn(backbone_variables, x_orig, return_multiscale=True)
     feats_orig = jax.tree_util.tree_map(jax.lax.stop_gradient, feats_orig)
 
     # Allow gradient to flow through reconstruction features → decoder can learn
     # Backbone weights are frozen (not in trainable params), but gradient flows
     # through the fixed computation graph back to x_rec
-    feats_rec = backbone_apply_fn(backbone_variables, x_rec_scaled, return_multiscale=True)
+    feats_rec = _apply_fn(backbone_variables, x_rec_scaled, return_multiscale=True)
 
     # L1 distance at each scale, normalized by spatial size
     loss = jnp.float32(0.0)
@@ -573,6 +578,7 @@ def sepvae_loss(
     backbone_apply_fn=None,
     backbone_variables: Dict = None,
     current_epoch: int = 0,
+    use_remat: bool = False,
 ) -> Tuple[jnp.ndarray, Tuple[Dict[str, jnp.ndarray], jnp.ndarray, jnp.ndarray]]:
     """
     Complete SepVAE loss function with perceptual and adversarial terms.
@@ -660,7 +666,8 @@ def sepvae_loss(
     # 5. Backbone perceptual loss (optional)
     if cfg.weight_perceptual > 0.0 and backbone_apply_fn is not None:
         l_perceptual = backbone_perceptual_loss(
-            x, x_rec, backbone_apply_fn, backbone_variables
+            x, x_rec, backbone_apply_fn, backbone_variables,
+            use_remat=use_remat,
         )
     else:
         l_perceptual = jnp.float32(0.0)

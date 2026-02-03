@@ -39,7 +39,59 @@ from flax import linen as nn
 from typing import Dict, Tuple, Sequence
 
 from models.resnet_jax import ResNet50CheSS
-from models.ae_kl import ResBlock, Up
+from models.ae_kl import ResBlock
+
+
+class SmoothUp(nn.Module):
+    """
+    Anti-aliased upsampling block for SepVAE decoder.
+
+    Designed to prevent checkerboard artifacts that occur with nearest-neighbor
+    upsampling. Supports three methods:
+
+    1. 'bilinear': Smooth interpolation followed by conv (recommended default)
+    2. 'nearest': Legacy method - prone to checkerboard artifacts
+    3. 'subpixel': Learned upsampling via pixel-shuffle (best quality, more compute)
+
+    The bilinear method matches what FPN uses internally for feature fusion,
+    ensuring consistent upsampling behavior throughout the architecture.
+
+    Attributes:
+        ch: Output channels
+        dtype: Compute dtype (default: float32)
+        method: Upsampling method - 'bilinear', 'nearest', or 'subpixel'
+    """
+    ch: int
+    dtype: jnp.dtype = jnp.float32
+    method: str = 'bilinear'
+
+    @nn.compact
+    def __call__(self, x):
+        B, H, W, C = x.shape
+
+        if self.method == 'subpixel':
+            # Sub-pixel convolution (pixel shuffle): fully learnable upsampling
+            # More expensive but produces the smoothest results
+            # Conv to 4x output channels, then pixel-shuffle to 2x spatial
+            h = nn.Conv(self.ch * 4, (3, 3), padding="SAME", dtype=self.dtype, name='subpixel_conv')(x)
+            # Reshape: (B, H, W, C*4) -> (B, H, W, 2, 2, C) -> (B, H*2, W*2, C)
+            h = h.reshape(B, H, W, 2, 2, self.ch)
+            h = jnp.transpose(h, (0, 1, 3, 2, 4, 5))  # (B, H, 2, W, 2, C)
+            h = h.reshape(B, H * 2, W * 2, self.ch)
+            # Smoothing conv to reduce any residual artifacts
+            h = nn.Conv(self.ch, (3, 3), padding="SAME", dtype=self.dtype, name='smooth')(h)
+        elif self.method == 'bilinear':
+            # Bilinear interpolation + conv (recommended)
+            # This matches the FPN upsampling strategy
+            h = jax.image.resize(x, (B, H * 2, W * 2, C), method='bilinear')
+            h = nn.Conv(self.ch, (3, 3), padding="SAME", dtype=self.dtype, name='conv_up')(h)
+            # Additional smoothing to eliminate any aliasing
+            h = nn.Conv(self.ch, (3, 3), padding="SAME", dtype=self.dtype, name='smooth')(h)
+        else:  # 'nearest' - legacy, not recommended
+            h = jax.image.resize(x, (B, H * 2, W * 2, C), method='nearest')
+            h = nn.Conv(self.ch, (3, 3), padding="SAME", dtype=self.dtype, name='conv_up')(h)
+
+        return h
 
 
 class FPN(nn.Module):
@@ -55,8 +107,10 @@ class FPN(nn.Module):
 
     Attributes:
         out_channels: Number of output channels (default: 512)
+        dtype: Compute dtype for mixed precision (default: float32)
     """
     out_channels: int = 512
+    dtype: jnp.dtype = jnp.float32
 
     @nn.compact
     def __call__(self, features: Dict[str, jnp.ndarray]) -> jnp.ndarray:
@@ -73,9 +127,9 @@ class FPN(nn.Module):
             Fused features (B, 64, 64, out_channels)
         """
         # Lateral connections: 1×1 conv to project each scale to common channels
-        lat2 = nn.Conv(self.out_channels, (1, 1), name='lateral_layer2')(features['layer2'])
-        lat3 = nn.Conv(self.out_channels, (1, 1), name='lateral_layer3')(features['layer3'])
-        lat4 = nn.Conv(self.out_channels, (1, 1), name='lateral_layer4')(features['layer4'])
+        lat2 = nn.Conv(self.out_channels, (1, 1), dtype=self.dtype, name='lateral_layer2')(features['layer2'])
+        lat3 = nn.Conv(self.out_channels, (1, 1), dtype=self.dtype, name='lateral_layer3')(features['layer3'])
+        lat4 = nn.Conv(self.out_channels, (1, 1), dtype=self.dtype, name='lateral_layer4')(features['layer4'])
 
         # Top-down pathway: upsample deeper features and add to shallower
         # Layer4 (16×16) → upsample to 32×32 → add to layer3
@@ -88,7 +142,7 @@ class FPN(nn.Module):
         p2 = lat2 + p3_up
 
         # Smooth with 3×3 conv to reduce aliasing from upsampling
-        fused = nn.Conv(self.out_channels, (3, 3), padding='SAME', name='smooth')(p2)
+        fused = nn.Conv(self.out_channels, (3, 3), padding='SAME', dtype=self.dtype, name='smooth')(p2)
 
         return fused  # (B, 64, 64, out_channels)
 
@@ -104,9 +158,11 @@ class ConvHead(nn.Module):
     Attributes:
         out_channels: Output channels (latent channels)
         hidden_channels: Hidden layer channels (default: 512)
+        dtype: Compute dtype for mixed precision (default: float32)
     """
     out_channels: int
     hidden_channels: int = 512
+    dtype: jnp.dtype = jnp.float32
 
     @nn.compact
     def __call__(self, h):
@@ -115,18 +171,19 @@ class ConvHead(nn.Module):
             h: Spatial features (B, 64, 64, in_channels)
 
         Returns:
-            mu: Mean of latent distribution (B, 64, 64, out_channels)
-            logvar: Log-variance of latent distribution (B, 64, 64, out_channels)
+            mu: Mean of latent distribution (B, 64, 64, out_channels) in float32
+            logvar: Log-variance of latent distribution (B, 64, 64, out_channels) in float32
         """
         # Hidden conv layer
-        x = nn.Conv(self.hidden_channels, kernel_size=(3, 3), padding='SAME', name='conv1')(h)
-        x = nn.GroupNorm(num_groups=32)(x)
+        x = nn.Conv(self.hidden_channels, kernel_size=(3, 3), padding='SAME', dtype=self.dtype, name='conv1')(h)
+        x = nn.GroupNorm(num_groups=32, dtype=self.dtype)(x)
         x = nn.relu(x)
 
         # Output layer (2x out_channels for mu and logvar)
-        x = nn.Conv(self.out_channels * 2, kernel_size=(3, 3), padding='SAME', name='conv2')(x)
+        x = nn.Conv(self.out_channels * 2, kernel_size=(3, 3), padding='SAME', dtype=self.dtype, name='conv2')(x)
 
-        # Split into mu and logvar
+        # Split into mu and logvar — cast to float32 for numerical stability in KL/sampling
+        x = x.astype(jnp.float32)
         mu, logvar = jnp.split(x, 2, axis=-1)
 
         return mu, logvar
@@ -153,6 +210,8 @@ class SepVAEEncoder(nn.Module):
         use_fpn: Whether to use Feature Pyramid Network (default: False)
         fpn_channels: FPN output channels (default: 512)
         unfreeze_from: Layer name to unfreeze from ('layer3' or 'layer4', default: None)
+        dtype: Compute dtype for mixed precision (default: float32).
+               Backbone always runs in float32; dtype is applied to FPN and ConvHeads.
     """
     z_channels_common: int = 4
     z_channels_disease: int = 2
@@ -160,15 +219,16 @@ class SepVAEEncoder(nn.Module):
     use_fpn: bool = False
     fpn_channels: int = 512
     unfreeze_from: str = None
+    dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         """Initialize backbone, optional FPN, and three Conv heads."""
-        self.backbone = ResNet50CheSS()
+        self.backbone = ResNet50CheSS()  # Always float32 (frozen weights + BatchNorm)
         if self.use_fpn:
-            self.fpn = FPN(out_channels=self.fpn_channels)
-        self.head_common = ConvHead(out_channels=self.z_channels_common, name='head_common')
-        self.head_cardiomegaly = ConvHead(out_channels=self.z_channels_disease, name='head_cardiomegaly')
-        self.head_effusion = ConvHead(out_channels=self.z_channels_disease, name='head_effusion')
+            self.fpn = FPN(out_channels=self.fpn_channels, dtype=self.dtype)
+        self.head_common = ConvHead(out_channels=self.z_channels_common, dtype=self.dtype, name='head_common')
+        self.head_cardiomegaly = ConvHead(out_channels=self.z_channels_disease, dtype=self.dtype, name='head_cardiomegaly')
+        self.head_effusion = ConvHead(out_channels=self.z_channels_disease, dtype=self.dtype, name='head_effusion')
 
     def _apply_selective_freeze(self, features: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
         """
@@ -209,20 +269,23 @@ class SepVAEEncoder(nn.Module):
 
         Returns:
             Dict with keys 'common', 'cardiomegaly', 'effusion'
-            Each value is a tuple (mu, logvar) with shape (B, 64, 64, channels)
+            Each value is a tuple (mu, logvar) with shape (B, 64, 64, channels) in float32
         """
         if self.use_fpn:
-            # Multi-scale feature extraction
+            # Multi-scale feature extraction (backbone always float32)
             features = self.backbone(x, return_multiscale=True)
             features = self._apply_selective_freeze(features)
-            h = self.fpn(features)  # (B, 64, 64, fpn_channels)
+            # Cast backbone features to compute dtype at the boundary
+            features = jax.tree_util.tree_map(lambda f: f.astype(self.dtype), features)
+            h = self.fpn(features)  # (B, 64, 64, fpn_channels) in compute dtype
         else:
             # Legacy: single-scale features from layer4 upsampled to 64×64
             h = self.backbone(x, return_spatial=True)
             if self.frozen_backbone:
                 h = jax.lax.stop_gradient(h)
+            h = h.astype(self.dtype)
 
-        # Three parallel Conv heads
+        # Three parallel Conv heads (output mu/logvar in float32 via ConvHead cast)
         mu_c, logvar_c = self.head_common(h)
         mu_cardio, logvar_cardio = self.head_cardiomegaly(h)
         mu_effusion, logvar_effusion = self.head_effusion(h)
@@ -322,20 +385,35 @@ class SepVAEDecoder(nn.Module):
 
     Each upsampling stage uses:
     - ResBlocks (2 per stage)
-    - Bilinear upsampling + Conv (from ae_kl.py)
+    - Anti-aliased upsampling (bilinear or subpixel)
     - GroupNorm + Swish activation
 
+    IMPORTANT: Channel schedule is HIGH→LOW (more capacity at lower resolutions):
+        64×64: 256ch → 128×128: 128ch → 256×256: 64ch → 512×512: 32ch
+
+    This ensures the decoder has enough capacity to process the rich spatial
+    latent information before expanding to full resolution.
+
     Attributes:
-        ch_mults: Channel multipliers indexed low→high res (default: 32, 64, 128, 256)
-                  reversed() iteration gives 256ch@64×64, 128ch@128×128, 64ch@256×256, 32ch@512×512
+        ch_mults: Channel multipliers indexed LOW→HIGH resolution (default: 32, 64, 128, 256)
+                  The decoder iterates in reverse: 256ch@64×64 → 32ch@512×512
         num_res_blocks: ResBlocks per stage (default: 2)
         dropout: Dropout rate (default: 0.0)
         z_channels: Total latent channels (4 + 2 + 2 = 8)
+        dtype: Compute dtype for mixed precision (default: float32)
+        use_remat: Enable gradient checkpointing on ResBlocks (default: False)
+        upsample_method: Upsampling interpolation method (default: 'bilinear')
+            - 'bilinear': Smooth interpolation (recommended, matches FPN)
+            - 'subpixel': Learned pixel-shuffle (best quality, more compute)
+            - 'nearest': Legacy nearest-neighbor (causes checkerboard artifacts)
     """
-    ch_mults: Sequence[int] = (32, 64, 128, 256)  # 4 stages: 64(256ch)→128(128ch)→256(64ch)→512(32ch)
+    ch_mults: Sequence[int] = (32, 64, 128, 256)  # LOW→HIGH res: 512×512(32ch) ... 64×64(256ch)
     num_res_blocks: int = 2
     dropout: float = 0.0
     z_channels: int = 8  # 4 (common) + 2 (cardio) + 2 (effusion)
+    dtype: jnp.dtype = jnp.float32
+    use_remat: bool = False
+    upsample_method: str = 'bilinear'  # 'bilinear', 'subpixel', or 'nearest'
 
     @nn.compact
     def __call__(self, z, train: bool = True):
@@ -349,29 +427,39 @@ class SepVAEDecoder(nn.Module):
         Returns:
             Reconstructed images (B, 512, 512, 1) in [0, 1] range
         """
-        # Initial processing: lightweight projection from z_channels
-        h = nn.Conv(self.ch_mults[0], kernel_size=(3, 3), padding='SAME', name='z_proj')(z)
-        # h is now (B, 64, 64, 32); first ResBlock expands to ch_mults[-1]=256
+        # Select ResBlock class — optionally wrapped with gradient checkpointing
+        block_cls = nn.remat(ResBlock) if self.use_remat else ResBlock
 
-        # Progressive upsampling: 64 → 128 → 256 → 512
-        # 4 stages total
+        # Cast input to compute dtype
+        h = z.astype(self.dtype)
+
+        # Initial processing: project from z_channels to highest channel count
+        # Start with ch_mults[-1] = 256 channels at 64×64 for maximum capacity
+        init_ch = self.ch_mults[-1]
+        h = nn.Conv(init_ch, kernel_size=(3, 3), padding='SAME', dtype=self.dtype, name='z_proj')(h)
+
+        # Progressive upsampling: 64×64 → 128×128 → 256×256 → 512×512
+        # Iterate in reverse through ch_mults (high channels → low channels)
+        # Stage i uses ch_mults[i] channels, then upsamples to ch_mults[i-1]
         for i in reversed(range(len(self.ch_mults))):
             ch = self.ch_mults[i]
 
             # ResBlocks at current resolution
             for j in range(self.num_res_blocks):
-                h = ResBlock(ch=ch, dropout=self.dropout)(h, train=train)
+                h = block_cls(ch=ch, dropout=self.dropout, dtype=self.dtype)(h, train=train)
 
-            # Upsample (except for last iteration which is already at 512×512)
+            # Upsample to next (higher) resolution, except at final stage
             if i > 0:
                 target_ch = self.ch_mults[i - 1]
-                h = Up(ch=target_ch)(h)
-            # i=3: 256ch @ 64×64  → Up(128) → 128×128
-            # i=2: 128ch @ 128×128 → Up(64) → 256×256
-            # i=1: 64ch  @ 256×256 → Up(32) → 512×512
-            # i=0: 32ch  @ 512×512 → no Up
+                h = SmoothUp(ch=target_ch, dtype=self.dtype, method=self.upsample_method)(h)
+            # i=3: 256ch @ 64×64   → SmoothUp(128) → 128×128
+            # i=2: 128ch @ 128×128 → SmoothUp(64)  → 256×256
+            # i=1: 64ch  @ 256×256 → SmoothUp(32)  → 512×512
+            # i=0: 32ch  @ 512×512 → no upsample (final resolution)
 
         # Final layers: GroupNorm → Swish → Conv → Sigmoid
+        # Cast back to float32 for numerically stable sigmoid and loss computation
+        h = h.astype(jnp.float32)
         h = nn.GroupNorm(num_groups=32)(h)
         h = nn.swish(h)
         h = nn.Conv(features=1, kernel_size=(3, 3), padding='SAME', name='conv_out')(h)
@@ -387,7 +475,7 @@ class SepVAE(nn.Module):
     This is the main model that combines:
     - SepVAEEncoder: ResNet-50 backbone + optional FPN + 3 Conv heads → 64×64×8
     - Head nulling logic
-    - SepVAEDecoder: Progressive upsampling decoder
+    - SepVAEDecoder: Progressive upsampling decoder with anti-aliasing
 
     Spatial latents: 64×64×8 for LDM training
     - Common: 4 channels
@@ -402,6 +490,12 @@ class SepVAE(nn.Module):
         fpn_channels: FPN output channels (default: 512)
         unfreeze_from: Layer to unfreeze from ('layer3', 'layer4', or None)
         sigma_inactive: Std dev for soft nulling prior on inactive channels (default: 0.1)
+        dtype: Compute dtype for mixed precision (default: float32)
+        use_remat: Enable gradient checkpointing (default: False)
+        upsample_method: Decoder upsampling method (default: 'bilinear')
+            - 'bilinear': Smooth interpolation (recommended, prevents checkerboard)
+            - 'subpixel': Learned pixel-shuffle (best quality, more compute)
+            - 'nearest': Legacy (causes checkerboard artifacts - not recommended)
     """
     z_channels_common: int = 4
     z_channels_disease: int = 2
@@ -410,6 +504,9 @@ class SepVAE(nn.Module):
     fpn_channels: int = 512
     unfreeze_from: str = None
     sigma_inactive: float = 0.1
+    dtype: jnp.dtype = jnp.float32
+    use_remat: bool = False
+    upsample_method: str = 'bilinear'
 
     def setup(self):
         """Initialize encoder and decoder."""
@@ -420,9 +517,13 @@ class SepVAE(nn.Module):
             use_fpn=self.use_fpn,
             fpn_channels=self.fpn_channels,
             unfreeze_from=self.unfreeze_from,
+            dtype=self.dtype,
         )
         self.decoder = SepVAEDecoder(
-            z_channels=self.z_channels_common + 2 * self.z_channels_disease
+            z_channels=self.z_channels_common + 2 * self.z_channels_disease,
+            dtype=self.dtype,
+            use_remat=self.use_remat,
+            upsample_method=self.upsample_method,
         )
 
     def __call__(self, x, labels, *, key, train: bool = True):
@@ -510,17 +611,33 @@ class SepVAE(nn.Module):
 
 # Testing utilities
 def test_sepvae():
-    """Test SepVAE model with dummy inputs."""
+    """Test SepVAE model with dummy inputs, including mixed precision, remat, and upsampling methods."""
     print("Testing SepVAE model (Spatial Latents)...")
 
-    for use_fpn in [False, True]:
-        print(f"\n--- use_fpn={use_fpn} ---")
+    configs = [
+        {'use_fpn': False, 'dtype': jnp.float32, 'use_remat': False, 'upsample_method': 'bilinear'},
+        {'use_fpn': True, 'dtype': jnp.float32, 'use_remat': False, 'upsample_method': 'bilinear'},
+        {'use_fpn': True, 'dtype': jnp.bfloat16, 'use_remat': True, 'upsample_method': 'bilinear'},
+        {'use_fpn': True, 'dtype': jnp.float32, 'use_remat': False, 'upsample_method': 'subpixel'},
+    ]
+
+    for cfg in configs:
+        use_fpn = cfg['use_fpn']
+        dtype = cfg['dtype']
+        use_remat = cfg['use_remat']
+        upsample_method = cfg['upsample_method']
+        dtype_name = 'bf16' if dtype == jnp.bfloat16 else 'fp32'
+        print(f"\n--- use_fpn={use_fpn}, dtype={dtype_name}, remat={use_remat}, upsample={upsample_method} ---")
+
         model = SepVAE(
             z_channels_common=4,
             z_channels_disease=2,
             frozen_backbone=True,
             use_fpn=use_fpn,
             unfreeze_from='layer3' if use_fpn else None,
+            dtype=dtype,
+            use_remat=use_remat,
+            upsample_method=upsample_method,
         )
 
         batch_size = 2
@@ -535,18 +652,24 @@ def test_sepvae():
 
         print(f"Model parameters: {sum(p.size for p in jax.tree_util.tree_leaves(variables['params'])):,}")
 
+        # Verify params are still float32 (mixed precision only affects compute, not storage)
+        param_dtypes = set(p.dtype for p in jax.tree_util.tree_leaves(variables['params']))
+        print(f"Parameter dtypes: {param_dtypes}")
+
         print("Running forward pass...")
         x_rec, latents_dict, inactive_mus = model.apply(
             variables, x, labels, key=key_forward, train=True
         )
 
         print(f"Input shape: {x.shape}")
-        print(f"Output shape: {x_rec.shape}")
+        print(f"Output shape: {x_rec.shape}, dtype: {x_rec.dtype}")
         print(f"Output range: [{x_rec.min():.3f}, {x_rec.max():.3f}]")
+        assert x_rec.dtype == jnp.float32, f"Output should be float32, got {x_rec.dtype}"
 
         print("Spatial Latent dimensions (64×64×channels):")
         for head_name, (mu, logvar) in latents_dict.items():
-            print(f"  {head_name}: μ{mu.shape}, log_σ{logvar.shape}")
+            print(f"  {head_name}: μ{mu.shape} ({mu.dtype}), log_σ{logvar.shape} ({logvar.dtype})")
+            assert mu.dtype == jnp.float32, f"mu should be float32, got {mu.dtype}"
 
     print("\n✓ SepVAE test passed!")
 

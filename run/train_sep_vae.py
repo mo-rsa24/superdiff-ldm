@@ -7,9 +7,44 @@ This script implements the full training loop for SepVAE with:
 - VinBigData triplet dataset
 - W&B logging
 - Checkpoint saving/loading
+- Anti-aliased upsampling (bilinear/subpixel) to prevent checkerboard artifacts
 
-Usage:
-    python -m run.train_sep_vae --wandb --epochs 100 --batch_size 8
+GPU Memory & Batch Size Recommendations:
+========================================
+| GPU               | VRAM   | Recommended batch_size | With gradient_checkpointing |
+|-------------------|--------|------------------------|------------------------------|
+| RTX 3090          | 24 GB  | 4-6                    | 8                            |
+| Quadro RTX 8000   | 48 GB  | 10-12                  | 16                           |
+| A100              | 80 GB  | 14-16                  | 24+                          |
+
+Note: These assume 512×512 images with FPN enabled and perceptual+adversarial losses.
+For bf16 mixed precision (--half_precision bf16), add ~20% to batch sizes.
+
+Usage Examples:
+===============
+
+RTX 3090 (24GB):
+    python -m run.train_sep_vae --batch_size 6 --gradient_checkpointing --upsample_method bilinear
+
+Quadro RTX 8000 (48GB):
+    python -m run.train_sep_vae --batch_size 12 --half_precision bf16 --upsample_method bilinear
+
+A100 (80GB) - Recommended for research:
+    python -m run.train_sep_vae \\
+        --batch_size 16 \\
+        --half_precision bf16 \\
+        --gradient_checkpointing \\
+        --upsample_method bilinear \\
+        --use_fpn \\
+        --weight_perceptual 0.1 \\
+        --weight_adversarial 0.1
+
+Anti-Aliasing:
+==============
+The --upsample_method flag controls decoder upsampling:
+- 'bilinear': Smooth interpolation (recommended, prevents checkerboard)
+- 'subpixel': Learned pixel-shuffle (best quality, ~10% more memory)
+- 'nearest': Legacy (causes checkerboard artifacts - avoid)
 """
 
 import argparse
@@ -101,6 +136,19 @@ def parse_args():
                    help="PatchGAN generator loss weight (0=disabled, try 0.1)")
     p.add_argument("--disc_start_epoch", type=int, default=10,
                    help="Epoch at which PatchGAN discriminator loss activates")
+
+    # Performance & Anti-Aliasing
+    p.add_argument("--half_precision", type=str, default="none",
+                   choices=["none", "bf16", "fp16"],
+                   help="Half precision dtype for compute (none=fp32, bf16=bfloat16, fp16=float16)")
+    p.add_argument("--gradient_checkpointing", action="store_true", default=False,
+                   help="Enable gradient checkpointing (remat) to reduce memory at cost of ~30%% more compute")
+    p.add_argument("--upsample_method", type=str, default="bilinear",
+                   choices=["bilinear", "subpixel", "nearest"],
+                   help="Decoder upsampling method (default: bilinear). "
+                        "'bilinear': Smooth interpolation - prevents checkerboard artifacts (recommended). "
+                        "'subpixel': Learned pixel-shuffle - best quality but more compute. "
+                        "'nearest': Legacy nearest-neighbor - causes checkerboard artifacts (not recommended).")
 
     # Optimizer
     p.add_argument("--lr_vae", type=float, default=1e-4,
@@ -226,9 +274,21 @@ def main():
     torch.manual_seed(args.seed)
     rng = jax.random.PRNGKey(args.seed)
 
+    # Resolve compute dtype for mixed precision
+    if args.half_precision == "bf16":
+        compute_dtype = jnp.bfloat16
+    elif args.half_precision == "fp16":
+        compute_dtype = jnp.float16
+    else:
+        compute_dtype = jnp.float32
+
     print("="*60)
     print("MULTI-HEAD SEPVAE WITH CHESS BACKBONE")
     print("="*60)
+    if compute_dtype != jnp.float32:
+        print(f"  Mixed precision: {args.half_precision}")
+    if args.gradient_checkpointing:
+        print(f"  Gradient checkpointing: enabled")
 
     # ===== Setup output directories =====
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -314,6 +374,9 @@ def main():
         fpn_channels=args.fpn_channels,
         unfreeze_from=args.unfreeze_from,
         sigma_inactive=args.sigma_inactive,
+        dtype=compute_dtype,
+        use_remat=args.gradient_checkpointing,
+        upsample_method=args.upsample_method,
     )
 
     # MI discriminator
@@ -367,7 +430,7 @@ def main():
     patch_disc = None
     patch_disc_params = None
     if args.weight_adversarial > 0.0:
-        patch_disc = NLayerDiscriminator(in_channels=1, n_layers=3)
+        patch_disc = NLayerDiscriminator(in_channels=1, n_layers=3, dtype=compute_dtype)
         rng, init_rng = jax.random.split(rng)
         dummy_img = jnp.ones((1, args.img_size, args.img_size, 1))
         pd_vars = patch_disc.init(init_rng, dummy_img)
@@ -397,6 +460,14 @@ def main():
         print(f"✓ Partial unfreezing from: {args.unfreeze_from}")
     if args.free_bits > 0:
         print(f"✓ Free-bits KL: {args.free_bits} nats per channel")
+
+    # Upsample method (anti-aliasing)
+    upsample_notes = {
+        'bilinear': '(smooth, prevents checkerboard - recommended)',
+        'subpixel': '(learned, best quality)',
+        'nearest': '(legacy, causes checkerboard artifacts - not recommended)',
+    }
+    print(f"✓ Decoder upsample method: {args.upsample_method} {upsample_notes.get(args.upsample_method, '')}")
 
     # ===== Create optimizers =====
     print("\n" + "="*60)
@@ -473,10 +544,10 @@ def main():
         # Verify architecture matches
         ckpt_args = ckpt.get('args', {})
         for key in ['z_channels_common', 'z_channels_disease', 'use_fpn',
-                     'fpn_channels', 'unfreeze_from']:
+                     'fpn_channels', 'unfreeze_from', 'upsample_method']:
             ckpt_val = ckpt_args.get(key)
-            curr_val = getattr(args, key)
-            if str(ckpt_val) != str(curr_val):
+            curr_val = getattr(args, key, None)
+            if ckpt_val is not None and curr_val is not None and str(ckpt_val) != str(curr_val):
                 print(f"  ⚠ Architecture mismatch: {key}={ckpt_val} (ckpt) vs {curr_val} (current)")
 
         # Restore VAE state (params as arrays, opt_state with structure template)
@@ -555,6 +626,8 @@ def main():
     # Create backbone apply function for perceptual loss
     _backbone_apply_fn = backbone_for_percep.apply if backbone_for_percep is not None else None
 
+    _use_remat = args.gradient_checkpointing  # static bool captured in jit closure
+
     @jax.jit
     def vae_step(vae_state, disc_state, batch, key, kl_anneal, current_epoch,
                  pd_params=None):
@@ -569,6 +642,7 @@ def main():
                 backbone_apply_fn=_backbone_apply_fn,
                 backbone_variables=backbone_variables_percep,
                 current_epoch=current_epoch,
+                use_remat=_use_remat,
             )
             return total_loss, logs
 
@@ -602,6 +676,7 @@ def main():
                 patch_disc=patch_disc,
                 patch_disc_params=pd_params,
                 current_epoch=current_epoch,
+                use_remat=_use_remat,
             )
             return pd_loss
 
