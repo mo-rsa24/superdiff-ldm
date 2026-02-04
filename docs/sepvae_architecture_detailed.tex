@@ -22,6 +22,17 @@
 \definecolor{concatcolor}{RGB}{240, 98, 146}
 \definecolor{sigmoidcolor}{RGB}{174, 213, 129}
 
+% Pre-defined color variants (to avoid nested color mixing)
+\definecolor{inputgray}{RGB}{180, 180, 180}
+\definecolor{outputgray}{RGB}{180, 180, 180}
+\colorlet{convcolorlight}{convcolor!70!white}
+\colorlet{commoncolorlight}{commoncolor!60!white}
+\colorlet{cardiocolorlight}{cardiocolor!60!white}
+\colorlet{effusioncolorlight}{effusioncolor!60!white}
+\colorlet{decodercolorlight}{decodercolor!30!white}
+\colorlet{latentcolorlight}{latentcolor!20!white}
+\colorlet{graylight}{gray!10!white}
+
 % =============================================================================
 % CUSTOM COMMANDS FOR DRAWING CONV LAYERS
 % =============================================================================
@@ -30,18 +41,14 @@
 % #1: x position, #2: y position, #3: height, #4: width (depth visual), #5: color, #6: label
 \newcommand{\featuremap}[6]{
     \begin{scope}[shift={(#1, #2)}]
-        \colorlet{basecolor}{#5}
-        \colorlet{darkcolor}{#5!60!black}
-        \colorlet{lightcolor}{#5!80!white}
-        \colorlet{sidecolor}{#5!70!black}
         % Back face (darker)
-        \fill[darkcolor] (0.15, 0.15) rectangle ++(#4, #3);
+        \fill[#5!60!black] (0.15, 0.15) rectangle ++(#4, #3);
         % Front face
-        \fill[basecolor] (0, 0) rectangle ++(#4, #3);
+        \fill[#5] (0, 0) rectangle ++(#4, #3);
         % Top edge (3D effect)
-        \fill[lightcolor] (0, #3) -- ++(0.15, 0.15) -- ++(#4, 0) -- ++(-0.15, -0.15) -- cycle;
+        \fill[#5!80!white] (0, #3) -- ++(0.15, 0.15) -- ++(#4, 0) -- ++(-0.15, -0.15) -- cycle;
         % Right edge (3D effect)
-        \fill[sidecolor] (#4, 0) -- ++(0.15, 0.15) -- ++(0, #3) -- ++(-0.15, -0.15) -- cycle;
+        \fill[#5!70!black] (#4, 0) -- ++(0.15, 0.15) -- ++(0, #3) -- ++(-0.15, -0.15) -- cycle;
         % Border
         \draw[black, thick] (0, 0) rectangle ++(#4, #3);
         \draw[black] (0, #3) -- ++(0.15, 0.15) -- ++(#4, 0) -- ++(-0.15, -0.15);
@@ -55,20 +62,16 @@
 % #1: x, #2: y, #3: height, #4: width, #5: color, #6: num stacks, #7: label
 \newcommand{\stackedmaps}[7]{
     \begin{scope}[shift={(#1, #2)}]
-        \colorlet{basecolor}{#5}
-        \colorlet{darkcolor}{#5!60!black}
-        \colorlet{lightcolor}{#5!80!white}
-        \colorlet{sidecolor}{#5!70!black}
         \foreach \i in {1,...,#6} {
             \pgfmathsetmacro{\offset}{(\i-1)*0.08}
             % Back face
-            \fill[darkcolor, opacity=0.9] (\offset+0.15, \offset+0.15) rectangle ++({#4}, {#3});
+            \fill[#5!60!black, opacity=0.9] (\offset+0.15, \offset+0.15) rectangle ++({#4}, {#3});
             % Front face
-            \fill[basecolor, opacity=0.95] (\offset, \offset) rectangle ++({#4}, {#3});
+            \fill[#5, opacity=0.95] (\offset, \offset) rectangle ++({#4}, {#3});
             % Top edge
-            \fill[lightcolor, opacity=0.9] (\offset, {#3+\offset}) -- ++(0.15, 0.15) -- ++({#4}, 0) -- ++(-0.15, -0.15) -- cycle;
+            \fill[#5!80!white, opacity=0.9] (\offset, {#3+\offset}) -- ++(0.15, 0.15) -- ++({#4}, 0) -- ++(-0.15, -0.15) -- cycle;
             % Right edge
-            \fill[sidecolor, opacity=0.9] ({#4+\offset}, \offset) -- ++(0.15, 0.15) -- ++(0, {#3}) -- ++(-0.15, -0.15) -- cycle;
+            \fill[#5!70!black, opacity=0.9] ({#4+\offset}, \offset) -- ++(0.15, 0.15) -- ++(0, {#3}) -- ++(-0.15, -0.15) -- cycle;
         }
         % Final border
         \pgfmathsetmacro{\finaloff}{(#6-1)*0.08}
@@ -103,7 +106,7 @@
 \node[font=\small\bfseries, anchor=west] at (-1, 14) {1. Input \& Stem};
 
 % Input image (1 channel)
-\stackedmaps{0}{12}{2.5}{0.4}{gray!50}{1}{Input\\$512{\times}512{\times}1$}
+\stackedmaps{0}{12}{2.5}{0.4}{inputgray}{1}{Input\\$512{\times}512{\times}1$}
 
 % Arrow
 \draw[->, thick] (0.7, 13.25) -- (1.5, 13.25);
@@ -146,7 +149,7 @@
 \node[font=\tiny, above] at (2.1, 9.1) {64→64};
 
 % After 1x1
-\stackedmaps{2.8}{8}{1.6}{0.3}{convcolor!70}{4}{$128^2{\times}64$}
+\stackedmaps{2.8}{8}{1.6}{0.3}{convcolorlight}{4}{$128^2{\times}64$}
 
 % 3x3 Conv
 \draw[->, thick] (3.5, 8.8) -- (4.2, 8.8);
@@ -154,7 +157,7 @@
 \node[font=\tiny, above] at (4.8, 9.1) {64→64};
 
 % After 3x3
-\stackedmaps{5.5}{8}{1.6}{0.3}{convcolor!70}{4}{$128^2{\times}64$}
+\stackedmaps{5.5}{8}{1.6}{0.3}{convcolorlight}{4}{$128^2{\times}64$}
 
 % 1x1 Conv (expand channels)
 \draw[->, thick] (6.2, 8.8) -- (6.9, 8.8);
@@ -242,7 +245,7 @@
 \draw[->, thick] (6.5, -0.1) -- (7.2, 0.3);
 \draw[->, thick] (6.5, -0.1) -- (7.2, -0.5);
 \stackedmaps{7.3}{0}{0.6}{0.2}{commoncolor}{3}{μ\\$64^2{\times}4$}
-\stackedmaps{7.3}{-1}{0.6}{0.2}{commoncolor!60}{3}{log σ²\\$64^2{\times}4$}
+\stackedmaps{7.3}{-1}{0.6}{0.2}{commoncolorlight}{3}{log σ²\\$64^2{\times}4$}
 
 % Cardiomegaly Head
 \node[font=\tiny\bfseries, cardiocolor!80!black] at (1.5, -2) {Cardiomegaly Head};
@@ -259,7 +262,7 @@
 \draw[->, thick] (6.4, -2.6) -- (7.2, -2.2);
 \draw[->, thick] (6.4, -2.6) -- (7.2, -3);
 \stackedmaps{7.3}{-2.5}{0.6}{0.15}{cardiocolor}{2}{μ\\$64^2{\times}2$}
-\stackedmaps{7.3}{-3.5}{0.6}{0.15}{cardiocolor!60}{2}{log σ²\\$64^2{\times}2$}
+\stackedmaps{7.3}{-3.5}{0.6}{0.15}{cardiocolorlight}{2}{log σ²\\$64^2{\times}2$}
 
 % Effusion Head
 \node[font=\tiny\bfseries, effusioncolor!80!black] at (1.5, -4.5) {Effusion Head};
@@ -276,7 +279,7 @@
 \draw[->, thick] (6.4, -5.1) -- (7.2, -4.7);
 \draw[->, thick] (6.4, -5.1) -- (7.2, -5.5);
 \stackedmaps{7.3}{-5}{0.6}{0.15}{effusioncolor}{2}{μ\\$64^2{\times}2$}
-\stackedmaps{7.3}{-6}{0.6}{0.15}{effusioncolor!60}{2}{log σ²\\$64^2{\times}2$}
+\stackedmaps{7.3}{-6}{0.6}{0.15}{effusioncolorlight}{2}{log σ²\\$64^2{\times}2$}
 
 % =============================================================================
 % SECTION 6: HEAD NULLING & REPARAMETERIZATION
@@ -284,12 +287,12 @@
 \node[font=\small\bfseries, anchor=west] at (9, 1.5) {6. Head Nulling \& Sampling};
 
 % Sampling equation box
-\draw[thick, rounded corners, fill=gray!10] (9, -0.5) rectangle (14.5, 1);
+\draw[thick, rounded corners, fill=graylight] (9, -0.5) rectangle (14.5, 1);
 \node[font=\small, align=left] at (11.75, 0.5) {$z = \mu + \sigma \odot \epsilon$, \quad $\epsilon \sim \mathcal{N}(0, I)$};
 \node[font=\tiny, align=left] at (11.75, -0.1) {Inactive heads → sample from $\mathcal{N}(0, \sigma_{inactive}^2)$};
 
 % Nulling logic
-\draw[thick, rounded corners, fill=latentcolor!20] (9, -2.5) rectangle (14.5, -0.8);
+\draw[thick, rounded corners, fill=latentcolorlight] (9, -2.5) rectangle (14.5, -0.8);
 \node[font=\tiny\bfseries] at (11.75, -1.1) {Head Nulling Logic:};
 \node[font=\tiny, align=left, anchor=north west] at (9.2, -1.4) {
     • Normal (y=0): Cardio→null, Effusion→null\\
@@ -316,7 +319,7 @@
 
 % Stage 1: 64x64 ResBlocks
 \draw[->, thick] (18.7, -0.1) -- (19.3, -0.1);
-\draw[thick, rounded corners, fill=decodercolor!30] (19.4, -0.7) rectangle (21.5, 0.5);
+\draw[thick, rounded corners, fill=decodercolorlight] (19.4, -0.7) rectangle (21.5, 0.5);
 \node[font=\tiny\bfseries] at (20.45, 0.2) {2× ResBlock};
 \node[font=\tiny] at (20.45, -0.3) {256ch @ 64²};
 
@@ -329,7 +332,7 @@
 % Stage 2: 128x128
 \stackedmaps{23.7}{-0.7}{1}{0.35}{decodercolor}{6}{$128^2{\times}128$}
 \draw[->, thick] (24.5, -0.2) -- (25.1, -0.2);
-\draw[thick, rounded corners, fill=decodercolor!30] (25.2, -0.8) rectangle (27.3, 0.4);
+\draw[thick, rounded corners, fill=decodercolorlight] (25.2, -0.8) rectangle (27.3, 0.4);
 \node[font=\tiny\bfseries] at (26.25, 0.1) {2× ResBlock};
 \node[font=\tiny] at (26.25, -0.4) {128ch @ 128²};
 
@@ -344,14 +347,14 @@
 \opbox{31.8}{-0.45}{1}{convcolor}{3×3}
 \opbox{32.9}{-0.45}{0.8}{sigmoidcolor}{σ}
 
-\stackedmaps{34}{-0.5}{1.2}{0.3}{gray!50}{1}{Output\\$512^2{\times}1$}
+\stackedmaps{34}{-0.5}{1.2}{0.3}{outputgray}{1}{Output\\$512^2{\times}1$}
 
 % =============================================================================
 % SECTION 8: RESBLOCK DETAIL
 % =============================================================================
 \node[font=\small\bfseries, anchor=west] at (15, -3) {8. Decoder ResBlock Detail};
 
-\draw[thick, rounded corners, fill=gray!10] (15, -6.5) rectangle (24, -3.5);
+\draw[thick, rounded corners, fill=graylight] (15, -6.5) rectangle (24, -3.5);
 
 \stackedmaps{15.3}{-5.5}{0.7}{0.3}{decodercolor}{5}{Input\\$H{\times}W{\times}C$}
 
