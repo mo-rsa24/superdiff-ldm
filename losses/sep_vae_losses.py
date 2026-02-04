@@ -159,12 +159,13 @@ def kl_divergence_free_bits(
     # Apply free-bits: clamp per-channel KL to minimum
     kl_clamped = jnp.maximum(kl_per_channel, free_bits)
 
-    if mu.ndim == 4:
-        # Scale back: multiply by spatial size so total KL is comparable
-        H, W = mu.shape[1], mu.shape[2]
-        return jnp.sum(kl_clamped, axis=-1) * H * W
-    else:
-        return jnp.sum(kl_clamped, axis=-1)
+    # Sum over channels to get per-sample KL
+    # NOTE: Do NOT multiply by H*W for spatial latents. The per-channel mean
+    # already represents the average KL density. Multiplying by spatial size
+    # creates an enormous floor (e.g., 8 channels × 1.0 nat × 4096 = 32,768)
+    # that causes the encoder to collapse to the floor and stop learning.
+    # The correct behavior: free_bits=1.0 with 8 channels → minimum 8 nats total.
+    return jnp.sum(kl_clamped, axis=-1)
 
 
 def kl_divergence_conditional_free_bits(
@@ -213,11 +214,8 @@ def kl_divergence_conditional_free_bits(
 
     kl_clamped = jnp.maximum(kl_per_channel, free_bits)
 
-    if mu.ndim == 4:
-        H, W = mu.shape[1], mu.shape[2]
-        return jnp.sum(kl_clamped, axis=-1) * H * W
-    else:
-        return jnp.sum(kl_clamped, axis=-1)
+    # Sum over channels (same fix as kl_divergence_free_bits - no H*W scaling)
+    return jnp.sum(kl_clamped, axis=-1)
 
 
 def compute_kl_losses(
