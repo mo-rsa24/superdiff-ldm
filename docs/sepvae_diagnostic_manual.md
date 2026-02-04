@@ -9,7 +9,8 @@ A comprehensive framework for interpreting model health during training and eval
 1. [Loss Term Interpretation & Convergence Guidelines](#1-loss-term-interpretation--convergence-guidelines)
 2. [Structural Reconstruction & Artifact Evaluation](#2-structural-reconstruction--artifact-evaluation)
 3. [Latent Manifold Diagnostics](#3-latent-manifold-diagnostics)
-4. [Quick Reference Tables](#4-quick-reference-tables)
+4. [Compositional Geometry for Multi-Disease Synthesis](#4-compositional-geometry-for-multi-disease-synthesis)
+5. [Quick Reference Tables](#5-quick-reference-tables)
 
 ---
 
@@ -579,9 +580,616 @@ print(f"ARI: {ari:.3f}, NMI: {nmi:.3f}")
 
 ---
 
-## 4. Quick Reference Tables
+## 4. Compositional Geometry for Multi-Disease Synthesis
 
-### 4.1 Loss Value Reference Card
+This section addresses a critical question: **How must the SepVAE latent manifold be structured to enable meaningful composition of multiple diseases (e.g., cardiomegaly + effusion) via the downstream Latent Diffusion Model?**
+
+The LDM operates by denoising in the latent space. For disease composition to work, the manifold geometry must support additive or navigable combinations of disease factors while preserving anatomical coherence.
+
+---
+
+### 4.1 The Composition Problem
+
+Our goal is to generate synthetic chest X-rays exhibiting **both cardiomegaly and effusion simultaneously**, starting from:
+- A common anatomical representation `z_c`
+- Disease-specific salient representations `z_eff` (effusion) and `z_card` (cardiomegaly)
+
+The composition operation can be expressed as:
+
+```
+z_composed = f(z_c, z_eff, z_card)
+```
+
+For this to produce clinically plausible images, the latent manifold must satisfy specific geometric constraints.
+
+---
+
+### 4.2 Manifold Structure Taxonomy
+
+Below are five distinct manifold configurations that can emerge from SepVAE training, with analysis of their compositional properties.
+
+#### Structure A: Entangled Overlap (FAILS)
+
+```
+        z_salient PC2
+              │
+              │    ●▲■ ●▲
+              │   ▲●■▲●■
+         ─────┼────●▲■●▲────── PC1
+              │   ■●▲■●▲
+              │    ▲●■●
+              │
+        (All classes overlapping)
+
+Legend: ● Normal, ▲ Effusion, ■ Cardiomegaly
+```
+
+| Property | Value | Impact on Composition |
+|----------|-------|----------------------|
+| Silhouette score | <0.1 | Cannot distinguish disease signals |
+| Inter-class margin | Negative | Diseases encoded redundantly |
+| Composition outcome | **FAILURE** | Adding z_eff + z_card = noise |
+
+**Why it fails:** When diseases overlap in the salient space, there is no distinct "effusion direction" or "cardiomegaly direction" to combine. The encoder has failed to learn disentangled disease representations—attempting composition produces incoherent features.
+
+**SepVAE dynamics causing this:**
+- Insufficient `weight_mi` (MI penalty too weak)
+- `weight_null` too low (disease signal leaks everywhere)
+- Posterior collapse in disease heads
+
+---
+
+#### Structure B: Single-Axis Collapse (FAILS)
+
+```
+        z_salient PC2
+              │
+              │
+              │
+         ─────●────▲▲▲────■■■■── PC1
+              │
+              │    (All variation on PC1)
+              │
+
+Legend: ● Normal, ▲ Effusion, ■ Cardiomegaly
+```
+
+| Property | Value | Impact on Composition |
+|----------|-------|----------------------|
+| Effective dimensions | 1 | Only one disease axis exists |
+| Orthogonality | 0.0 | Diseases mutually exclusive |
+| Composition outcome | **FAILURE** | z_eff + z_card = cancellation or interpolation |
+
+**Why it fails:** Both diseases are encoded along the same axis but in different directions. Composition becomes interpolation—you get "partial effusion + partial cardiomegaly" rather than both fully expressed. The manifold lacks the degrees of freedom to represent co-occurrence.
+
+**SepVAE dynamics causing this:**
+- Disease heads share too much encoder capacity
+- Insufficient `z_channels_disease` (only 2 channels per head)
+- Over-regularized KL collapsing variance to single direction
+
+---
+
+#### Structure C: Isolated Clusters with Gaps (FAILS for LDM)
+
+```
+        z_salient PC2
+              │
+        ●●●   │              ▲▲▲
+       ●●●●●  │             ▲▲▲▲▲
+         ─────┼───────────────────── PC1
+              │
+              │    ■■■■■
+              │   ■■■■■■
+              │
+
+Legend: ● Normal, ▲ Effusion, ■ Cardiomegaly
+```
+
+| Property | Value | Impact on Composition |
+|----------|-------|----------------------|
+| Cluster separation | High (good!) | Diseases distinguishable |
+| Manifold coverage | <30% | Large "dead zones" between clusters |
+| Composition outcome | **FAILS for LDM** | Diffusion paths cross invalid regions |
+
+**Why it fails:** Although diseases are well-separated (good for classification!), the space between clusters is empty. When the LDM tries to denoise toward a composition point (between effusion and cardiomegaly regions), it traverses regions with no training support. The decoder produces artifacts or mode collapse.
+
+**SepVAE dynamics causing this:**
+- Excessive KL weight (over-regularization)
+- Insufficient `free_bits` allowing collapse
+- Disease-only training without composition examples
+
+**The critical insight:** Good classification structure ≠ good generative structure. LDMs need **continuous manifolds**, not isolated islands.
+
+---
+
+#### Structure D: Orthogonal Factorized (IDEAL)
+
+```
+        z_salient PC2 (Effusion axis)
+              │
+              │▲▲▲▲▲
+              │▲▲▲▲▲▲
+              │▲▲▲▲▲
+         ●●●●●┼●●●●●●●●●●●●●●●●●●● PC1 (Cardiomegaly axis)
+         ●●●●●│●●●●●●●●●●●●●●●●●●●
+         ●●●●●│         ■■■■■■■■■
+              │         ■■■■■■■■■
+              │         ■■■■■■■■■
+              │
+                    ★ = z_eff + z_card
+                       (valid composition target)
+
+Legend: ● Normal (origin), ▲ Effusion, ■ Cardiomegaly, ★ Composition
+```
+
+| Property | Value | Impact on Composition |
+|----------|-------|----------------------|
+| Axis orthogonality | >0.8 | Independent disease factors |
+| Manifold coverage | >70% | Continuous traversal possible |
+| Composition outcome | **SUCCESS** | z_eff + z_card lands in valid region |
+
+**Why it works:** Effusion and cardiomegaly occupy **orthogonal subspaces**. The effusion direction (PC2) is independent of the cardiomegaly direction (PC1). Composition is additive:
+
+```
+z_composed = z_normal + Δz_eff + Δz_card
+```
+
+The composed point lies in a region the decoder can interpret because:
+1. The manifold is dense (no gaps)
+2. Each disease contributes independently
+3. Normal samples anchor the origin
+
+**SepVAE dynamics producing this:**
+- Balanced MI penalty (enough for independence, not too much)
+- Separate disease heads with sufficient capacity
+- Nulling loss anchoring normal at origin
+- Appropriate KL with free-bits for coverage
+
+---
+
+#### Structure E: Curved Compositional Manifold (REQUIRES RIEMANNIAN)
+
+```
+        z_salient PC2
+              │
+              │    ▲▲▲▲
+              │   ▲▲  ▲▲
+              │  ▲      ▲
+         ─────┼─●●●      ╲──────── PC1
+              │  ●●●●     ╲
+              │    ●●●●    ■■■
+              │      ●●●●  ■■■■
+              │         ●●●■■■
+              │            ■■■
+
+        Curved path ╲ = geodesic (valid)
+        Straight line = Euclidean (INVALID - crosses gap)
+```
+
+| Property | Value | Impact on Composition |
+|----------|-------|----------------------|
+| Manifold curvature | High | Euclidean interpolation fails |
+| Geodesic path | Valid | Riemannian navigation required |
+| Composition outcome | **CONDITIONAL** | Works only with geometry-aware LDM |
+
+**Why Euclidean fails, Riemannian works:** The latent manifold is curved—diseases don't lie on a flat plane. Straight-line interpolation (Euclidean) cuts through regions of low probability density, causing:
+- Blurry intermediate samples
+- Anatomical inconsistencies
+- Mode collapse artifacts
+
+**Geodesic paths** follow the manifold's curvature, staying in high-density regions throughout the composition trajectory.
+
+---
+
+### 4.3 Riemannian Geometry for Latent Navigation
+
+When the SepVAE learns a curved manifold, Euclidean operations (addition, linear interpolation) become invalid. This section explains why and how to diagnose/address it.
+
+#### The Problem: Euclidean vs. Geodesic Paths
+
+```
+EUCLIDEAN INTERPOLATION (Flat assumption):
+─────────────────────────────────────────
+
+    z_eff ●━━━━━━━━━━━━━━━━━● z_card
+              │
+              │ ✗ Crosses low-density void
+              │ ✗ Decoder sees OOD inputs
+              │ ✗ Artifacts and mode mixing
+              ▼
+         [Blurry mess]
+
+
+GEODESIC INTERPOLATION (Manifold-aware):
+────────────────────────────────────────
+
+    z_eff ●                    ● z_card
+           ╲                  ╱
+            ╲   ●    ●    ●  ╱
+             ╲  │    │    │ ╱
+              ╲─┴────┴────┴╱
+               ✓ Stays on manifold
+               ✓ High-density path
+               ✓ Plausible intermediates
+                      │
+                      ▼
+              [Smooth transition]
+```
+
+#### Metric Tensor Interpretation
+
+The Riemannian metric tensor `G(z)` at each point describes local geometry:
+
+| Metric Property | Interpretation | Diagnostic |
+|-----------------|----------------|------------|
+| `det(G) ≈ 1` everywhere | Flat manifold (Euclidean OK) | Interpolation test |
+| `det(G)` varies significantly | Curved manifold (Riemannian needed) | Jacobian analysis |
+| `det(G) → 0` in regions | Manifold boundary/void | Coverage maps |
+
+#### Practical Geodesic Computation
+
+For SepVAE latents, approximate geodesics using:
+
+```python
+def geodesic_interpolation(z_start, z_end, decoder, n_steps=10):
+    """
+    Compute geodesic path using decoder Jacobian.
+
+    The key insight: geodesics minimize path length in OUTPUT space,
+    not input space. We want smooth image transitions.
+    """
+    # Initialize with Euclidean (as starting guess)
+    path = [z_start + t * (z_end - z_start)
+            for t in np.linspace(0, 1, n_steps)]
+
+    # Iterative refinement toward geodesic
+    for iteration in range(100):
+        for i in range(1, n_steps - 1):
+            # Compute local metric from decoder Jacobian
+            J = jacobian(decoder, path[i])
+            G = J.T @ J  # Pullback metric
+
+            # Geodesic equation: move toward weighted midpoint
+            G_inv = np.linalg.inv(G + 1e-6 * np.eye(G.shape[0]))
+            midpoint = 0.5 * (path[i-1] + path[i+1])
+            path[i] = path[i] + 0.1 * G_inv @ (midpoint - path[i])
+
+    return path
+```
+
+#### When is Riemannian Geometry Necessary?
+
+| Scenario | Euclidean OK? | Recommendation |
+|----------|---------------|----------------|
+| Structure D (orthogonal) | ✓ Yes | Simple addition works |
+| Structure E (curved) | ✗ No | Use geodesic sampling |
+| Mixed (partially curved) | Sometimes | Test interpolations first |
+
+#### Diagnostic: Interpolation Smoothness Test
+
+```
+Test Protocol:
+1. Sample z_eff from effusion cluster
+2. Sample z_card from cardiomegaly cluster
+3. Linear interpolate: z(t) = (1-t)*z_eff + t*z_card
+4. Decode all z(t) → images
+5. Evaluate:
+
+PASS (Euclidean OK):
+┌─────┬─────┬─────┬─────┬─────┐
+│ Eff │ ↘   │  ↘  │  ↘  │Card │  Smooth transition
+│     │     │     │     │     │  No blur spikes
+└─────┴─────┴─────┴─────┴─────┘
+  t=0   0.25  0.5   0.75  1.0
+
+FAIL (Riemannian needed):
+┌─────┬─────┬─────┬─────┬─────┐
+│ Eff │ ░░░ │█████│ ░░░ │Card │  Middle frames blurry
+│     │blur │VOID │blur │     │  or artifact-filled
+└─────┴─────┴─────┴─────┴─────┘
+  t=0   0.25  0.5   0.75  1.0
+```
+
+---
+
+### 4.4 SepVAE Training Dynamics Affecting Composition
+
+The geometry of the learned manifold is determined by training dynamics. This table maps hyperparameters to compositional outcomes.
+
+#### Hyperparameter → Geometry → Composition Mapping
+
+| Hyperparameter | Low Value Effect | High Value Effect | Ideal for Composition |
+|----------------|------------------|-------------------|----------------------|
+| `weight_mi` | Entangled (Structure A) | Over-separated (Structure C) | 1e-3 to 5e-3 |
+| `weight_null` | Disease leakage | Origin collapse | 1e-3 (balanced anchoring) |
+| `weight_kl_disease` | Scattered clusters | Collapsed to point | 1e-4 with free_bits |
+| `free_bits` | Sparse coverage (C) | Overly uniform | 0.5 to 1.0 |
+| `z_channels_disease` | Single-axis (B) | Sufficient DoF | ≥2 per disease |
+| `sigma_inactive` | Tight origin | Dispersed normals | 1.0 (unit Gaussian) |
+
+#### Training Phase Recommendations
+
+| Phase | Focus | Key Metrics to Monitor |
+|-------|-------|----------------------|
+| **Epochs 1-20** | Reconstruction + Disentanglement | MSE↓, Nulling↓, MI stabilizing |
+| **Epochs 20-50** | Manifold coverage | KL in range, no collapse |
+| **Epochs 50-80** | Compositional structure | Interpolation smoothness test |
+| **Epochs 80+** | Fine-tuning | Orthogonality, coverage maps |
+
+#### Diagnostic: Compositional Readiness Checklist
+
+Before training the downstream LDM, verify:
+
+- [ ] **Orthogonality test**: cos(mean_z_eff, mean_z_card) < 0.3
+- [ ] **Coverage test**: >60% of unit hypercube contains samples
+- [ ] **Interpolation test**: No blurry frames in disease→disease paths
+- [ ] **Additivity test**: z_normal + Δz_eff + Δz_card decodes plausibly
+- [ ] **Jacobian test**: det(G) varies <10x across manifold (near-flat)
+
+---
+
+### 4.5 Composition Architectures
+
+Given different manifold geometries, here are recommended LDM composition strategies:
+
+#### Strategy 1: Additive Composition (For Structure D)
+
+```
+Architecture:
+┌─────────────┐
+│   z_common  │ ← Anatomy (frozen during composition)
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────────────────────────┐
+│  z_salient = z_eff + z_card         │ ← Simple addition
+│            = Δeff + Δcard + z_origin │
+└──────┬──────────────────────────────┘
+       │
+       ▼
+┌─────────────┐
+│   Decoder   │ → X-ray with both diseases
+└─────────────┘
+```
+
+| Condition | Requirement |
+|-----------|-------------|
+| Manifold structure | Orthogonal (Structure D) |
+| Nulling quality | Excellent (normal ≈ origin) |
+| Implementation | Direct latent arithmetic |
+
+#### Strategy 2: Classifier-Free Guidance Composition (For Structure C/E)
+
+```
+Architecture:
+┌────────────────────────────────────────────────────┐
+│  LDM with disease conditioning                      │
+│                                                     │
+│  ε_θ(z_t, t, c_eff, c_card)                        │
+│                                                     │
+│  Guidance: ε = ε_uncond + w_eff*(ε_eff - ε_uncond) │
+│                        + w_card*(ε_card - ε_uncond)│
+└────────────────────────────────────────────────────┘
+```
+
+| Condition | Requirement |
+|-----------|-------------|
+| Manifold structure | Any (guidance navigates) |
+| Training data | Needs some co-occurrence examples |
+| Implementation | Conditional diffusion with CFG |
+
+#### Strategy 3: Geodesic Diffusion (For Structure E)
+
+```
+Architecture:
+┌─────────────────────────────────────────────────────┐
+│  Riemannian Score Matching                          │
+│                                                     │
+│  Score: ∇_z log p(z) computed on manifold          │
+│  Diffusion: dz = -G⁻¹(z)∇_z log p(z)dt + noise     │
+│                                                     │
+│  G(z) = J(z)ᵀJ(z) from decoder Jacobian            │
+└─────────────────────────────────────────────────────┘
+```
+
+| Condition | Requirement |
+|-----------|-------------|
+| Manifold structure | Curved (Structure E) |
+| Computational cost | High (Jacobian per step) |
+| Implementation | Custom diffusion with metric |
+
+---
+
+### 4.6 Failure Case Gallery
+
+Visual examples of composition failures and their manifold causes:
+
+#### Case 1: Ghosting Artifacts (Entangled Manifold)
+
+```
+Input intent: Effusion + Cardiomegaly
+Manifold: Structure A (entangled)
+
+Result:
+┌─────────────────────────────────┐
+│     ░░░▓▓▓░░░                   │
+│   ░▓███░░███▓░    ← Ghost       │
+│  ▓████░░░████▓      effusion    │
+│  ████░░░░░████   ← Doubled      │
+│  ████░░░░░████      cardiac     │
+│   ▓███░░███▓        border      │
+│     ░░▓▓▓░░                     │
+│                                 │
+│  Diagnosis: z_eff and z_card    │
+│  encode overlapping features    │
+└─────────────────────────────────┘
+```
+
+#### Case 2: Feature Cancellation (Single-Axis Collapse)
+
+```
+Input intent: Effusion + Cardiomegaly
+Manifold: Structure B (single axis)
+
+Result:
+┌─────────────────────────────────┐
+│                                 │
+│        ┌─────────┐              │
+│       ╱           ╲             │
+│      │   Normal-   │  ← Neither │
+│      │   looking   │    disease │
+│      │   heart     │    visible │
+│       ╲           ╱             │
+│        └─────────┘              │
+│                                 │
+│  Diagnosis: Diseases cancel     │
+│  when on opposite ends of       │
+│  same axis                      │
+└─────────────────────────────────┘
+```
+
+#### Case 3: Void Artifacts (Sparse Clusters)
+
+```
+Input intent: Effusion + Cardiomegaly
+Manifold: Structure C (gaps)
+
+Result:
+┌─────────────────────────────────┐
+│     ▒▒▒▒▒▒▒▒▒▒▒                │
+│   ▒▒███████████▒▒   ← Blurry   │
+│  ▒▒█████████████▒▒    mess     │
+│  ▒▒█████████████▒▒             │
+│  ▒▒█████████████▒▒  ← No clear │
+│   ▒▒███████████▒▒     anatomy  │
+│     ▒▒▒▒▒▒▒▒▒▒▒                │
+│                                 │
+│  Diagnosis: Composition point   │
+│  falls in untrained void region │
+└─────────────────────────────────┘
+```
+
+#### Case 4: Successful Composition (Orthogonal Manifold)
+
+```
+Input intent: Effusion + Cardiomegaly
+Manifold: Structure D (orthogonal)
+
+Result:
+┌─────────────────────────────────┐
+│                                 │
+│      ┌───────────────┐          │
+│     ╱                 ╲         │
+│    │   ████████████    │ ← Clear│
+│    │   ████████████    │ cardio-│
+│    │   ████████████    │ megaly │
+│     ╲_________________╱         │
+│    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ← Clear│
+│    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  effusion│
+│                                 │
+│  Both diseases clearly present  │
+│  with preserved anatomy         │
+└─────────────────────────────────┘
+```
+
+---
+
+### 4.7 Manifold Diagnostic Commands
+
+```python
+# === Orthogonality Test ===
+def test_orthogonality(z_eff_samples, z_card_samples, z_normal_samples):
+    """Test if disease directions are orthogonal."""
+    # Compute disease directions from normal origin
+    delta_eff = z_eff_samples.mean(0) - z_normal_samples.mean(0)
+    delta_card = z_card_samples.mean(0) - z_normal_samples.mean(0)
+
+    # Cosine similarity (should be near 0 for orthogonal)
+    cos_sim = np.dot(delta_eff.flatten(), delta_card.flatten()) / (
+        np.linalg.norm(delta_eff) * np.linalg.norm(delta_card)
+    )
+
+    print(f"Disease axis cosine similarity: {cos_sim:.3f}")
+    print(f"Orthogonality: {'GOOD' if abs(cos_sim) < 0.3 else 'POOR'}")
+    return cos_sim
+
+# === Coverage Test ===
+def test_coverage(z_samples, n_bins=10):
+    """Test manifold coverage via histogram occupancy."""
+    z_flat = z_samples.reshape(len(z_samples), -1)
+
+    # Normalize to unit cube
+    z_min, z_max = z_flat.min(0), z_flat.max(0)
+    z_norm = (z_flat - z_min) / (z_max - z_min + 1e-8)
+
+    # Count occupied bins
+    occupied = set()
+    for z in z_norm:
+        bin_idx = tuple((z * n_bins).astype(int).clip(0, n_bins-1))
+        occupied.add(bin_idx)
+
+    coverage = len(occupied) / (n_bins ** min(z_flat.shape[1], 4))  # Cap at 4D
+    print(f"Manifold coverage: {coverage*100:.1f}%")
+    print(f"Coverage: {'GOOD' if coverage > 0.6 else 'SPARSE'}")
+    return coverage
+
+# === Interpolation Smoothness Test ===
+def test_interpolation_smoothness(z_start, z_end, decoder, n_steps=10):
+    """Test if interpolation produces smooth transitions."""
+    path = [z_start + t * (z_end - z_start)
+            for t in np.linspace(0, 1, n_steps)]
+
+    images = [decoder(z) for z in path]
+
+    # Compute frame-to-frame differences
+    diffs = [np.abs(images[i+1] - images[i]).mean()
+             for i in range(len(images)-1)]
+
+    # Check for spikes (indicates void crossing)
+    mean_diff = np.mean(diffs)
+    max_diff = np.max(diffs)
+    spike_ratio = max_diff / (mean_diff + 1e-8)
+
+    print(f"Interpolation spike ratio: {spike_ratio:.2f}")
+    print(f"Smoothness: {'GOOD' if spike_ratio < 2.0 else 'VOID DETECTED'}")
+    return spike_ratio, images
+
+# === Additivity Test ===
+def test_additivity(z_normal, z_eff, z_card, decoder):
+    """Test if z_normal + delta_eff + delta_card decodes plausibly."""
+    delta_eff = z_eff - z_normal
+    delta_card = z_card - z_normal
+
+    z_composed = z_normal + delta_eff + delta_card
+
+    img_composed = decoder(z_composed)
+    img_eff = decoder(z_eff)
+    img_card = decoder(z_card)
+
+    # Check that composed image has features of both
+    # (Manual inspection recommended)
+    return z_composed, img_composed
+```
+
+---
+
+### 4.8 Summary: Manifold Requirements for Composition
+
+| Requirement | Metric | Threshold | Why It Matters |
+|-------------|--------|-----------|----------------|
+| **Orthogonality** | cos(Δz_eff, Δz_card) | <0.3 | Ensures additive composition |
+| **Coverage** | % bins occupied | >60% | Prevents void artifacts |
+| **Smoothness** | Interpolation spike ratio | <2.0 | Validates continuous manifold |
+| **Anchoring** | ‖z_normal - 0‖ | <0.5 | Enables origin-based arithmetic |
+| **Flatness** | max/min det(G) | <10 | Euclidean approximation valid |
+
+When all criteria pass, the SepVAE latent space is **compositionally ready** for multi-disease synthesis via LDM.
+
+---
+
+## 5. Quick Reference Tables
+
+### 5.1 Loss Value Reference Card
 
 | Loss Term | Early (1-10) | Mid (10-50) | Converged (50+) | Alert Threshold |
 |-----------|--------------|-------------|-----------------|-----------------|
@@ -595,7 +1203,7 @@ print(f"ARI: {ari:.3f}, NMI: {nmi:.3f}")
 | `loss/gen_adversarial` | N/A (0) | 0.5 - 2.0 | 0.5 - 1.5 | >3.0 |
 | `loss/patch_disc` | N/A (0) | 0.4 - 0.7 | 0.3 - 0.6 | <0.1 or >0.9 |
 
-### 4.2 Hyperparameter Adjustment Guide
+### 5.2 Hyperparameter Adjustment Guide
 
 | Problem | Primary Adjustment | Secondary Adjustment |
 |---------|-------------------|---------------------|
@@ -608,7 +1216,7 @@ print(f"ARI: {ari:.3f}, NMI: {nmi:.3f}")
 | High variance in losses | ↓ `lr_vae` and `lr_disc` | ↑ `grad_clip` to 0.5 |
 | Out of memory | ↓ `batch_size` by 2 | Enable `gradient_checkpointing` |
 
-### 4.3 Training Checklist by Epoch
+### 5.3 Training Checklist by Epoch
 
 #### Epoch 5 Checkpoint
 - [ ] Reconstruction loss < 0.15
