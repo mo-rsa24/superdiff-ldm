@@ -1,4 +1,5 @@
 \documentclass[tikz,border=15pt]{standalone}
+\usepackage[dvipsnames,svgnames,x11names,table]{xcolor}
 \usepackage{tikz}
 \usepackage{tikz-3dplot}
 \usetikzlibrary{shapes.geometric, arrows.meta, positioning, calc, fit, backgrounds, decorations.pathreplacing, 3d}
@@ -29,14 +30,18 @@
 % #1: x position, #2: y position, #3: height, #4: width (depth visual), #5: color, #6: label
 \newcommand{\featuremap}[6]{
     \begin{scope}[shift={(#1, #2)}]
+        \colorlet{basecolor}{#5}
+        \colorlet{darkcolor}{#5!60!black}
+        \colorlet{lightcolor}{#5!80!white}
+        \colorlet{sidecolor}{#5!70!black}
         % Back face (darker)
-        \fill[#5!60!black] (0.15, 0.15) rectangle ++(#4, #3);
+        \fill[darkcolor] (0.15, 0.15) rectangle ++(#4, #3);
         % Front face
-        \fill[#5] (0, 0) rectangle ++(#4, #3);
+        \fill[basecolor] (0, 0) rectangle ++(#4, #3);
         % Top edge (3D effect)
-        \fill[#5!80!white] (0, #3) -- ++(0.15, 0.15) -- ++(#4, 0) -- ++(-0.15, -0.15) -- cycle;
+        \fill[lightcolor] (0, #3) -- ++(0.15, 0.15) -- ++(#4, 0) -- ++(-0.15, -0.15) -- cycle;
         % Right edge (3D effect)
-        \fill[#5!70!black] (#4, 0) -- ++(0.15, 0.15) -- ++(0, #3) -- ++(-0.15, -0.15) -- cycle;
+        \fill[sidecolor] (#4, 0) -- ++(0.15, 0.15) -- ++(0, #3) -- ++(-0.15, -0.15) -- cycle;
         % Border
         \draw[black, thick] (0, 0) rectangle ++(#4, #3);
         \draw[black] (0, #3) -- ++(0.15, 0.15) -- ++(#4, 0) -- ++(-0.15, -0.15);
@@ -50,16 +55,20 @@
 % #1: x, #2: y, #3: height, #4: width, #5: color, #6: num stacks, #7: label
 \newcommand{\stackedmaps}[7]{
     \begin{scope}[shift={(#1, #2)}]
+        \colorlet{basecolor}{#5}
+        \colorlet{darkcolor}{#5!60!black}
+        \colorlet{lightcolor}{#5!80!white}
+        \colorlet{sidecolor}{#5!70!black}
         \foreach \i in {1,...,#6} {
             \pgfmathsetmacro{\offset}{(\i-1)*0.08}
             % Back face
-            \fill[#5!60!black, opacity=0.9] (\offset+0.15, \offset+0.15) rectangle ++({#4}, {#3});
+            \fill[darkcolor, opacity=0.9] (\offset+0.15, \offset+0.15) rectangle ++({#4}, {#3});
             % Front face
-            \fill[#5, opacity=0.95] (\offset, \offset) rectangle ++({#4}, {#3});
+            \fill[basecolor, opacity=0.95] (\offset, \offset) rectangle ++({#4}, {#3});
             % Top edge
-            \fill[#5!80!white, opacity=0.9] (\offset, {#3+\offset}) -- ++(0.15, 0.15) -- ++({#4}, 0) -- ++(-0.15, -0.15) -- cycle;
+            \fill[lightcolor, opacity=0.9] (\offset, {#3+\offset}) -- ++(0.15, 0.15) -- ++({#4}, 0) -- ++(-0.15, -0.15) -- cycle;
             % Right edge
-            \fill[#5!70!black, opacity=0.9] ({#4+\offset}, \offset) -- ++(0.15, 0.15) -- ++(0, {#3}) -- ++(-0.15, -0.15) -- cycle;
+            \fill[sidecolor, opacity=0.9] ({#4+\offset}, \offset) -- ++(0.15, 0.15) -- ++(0, {#3}) -- ++(-0.15, -0.15) -- cycle;
         }
         % Final border
         \pgfmathsetmacro{\finaloff}{(#6-1)*0.08}
