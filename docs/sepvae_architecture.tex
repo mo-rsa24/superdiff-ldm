@@ -1,0 +1,387 @@
+\documentclass[border=8pt, multi, tikz]{standalone}
+\usepackage{import}
+\subimport{../layers/}{init}
+\usetikzlibrary{positioning}
+\usetikzlibrary{3d}
+
+% Define custom colors for SepVAE
+\def\CommonColor{rgb:yellow,5;red,2.5;white,5}       % Amber for common head
+\def\CardioColor{rgb:red,5;green,1;white,2}          % Red for cardiomegaly head
+\def\EffusionColor{rgb:blue,5;green,2;white,2}       % Blue for effusion head
+\def\BackboneColor{rgb:green,3;blue,2;white,3}       % Teal for backbone
+\def\FPNColor{rgb:purple,5;red,2;white,5}            % Purple for FPN
+\def\DecoderColor{rgb:orange,5;red,3;white,4}        % Orange for decoder
+\def\DiscColor{rgb:gray,5;white,3}                   % Gray for discriminators
+\def\LatentColor{rgb:magenta,5;blue,2;white,4}       % Magenta for latent space
+
+\newcommand{\copymi_mark}[3]{
+    \node[canvas is zy plane at x=0] (temp_mark) at (#1) {\includegraphics[scale=#2]{#3}};
+}
+
+\begin{document}
+\begin{tikzpicture}
+\tikzstyle{connection}=[ultra thick,every node/.style={sloped,allow upside down},draw=\edgecolor,opacity=0.7]
+\tikzstyle{copyconnection}=[ultra thick,every node/.style={sloped,allow upside down},draw={rgb:blue,4;red,1;green,1;black,3},opacity=0.7]
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% INPUT IMAGE
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\pic[shift={(0,0,0)}] at (0,0,0)
+    {Box={
+        name=input,
+        caption=Input\\$512\times512\times1$,
+        xlabel={{"",""}},
+        zlabel=512,
+        fill=\CommonColor,
+        height=40,
+        width=1,
+        depth=40
+        }
+    };
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% RESNET-50 CHESS BACKBONE (FROZEN)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Stage 1: Conv + Pool (512 -> 128)
+\pic[shift={(2,0,0)}] at (input-east)
+    {RightBandedBox={
+        name=conv1,
+        caption=Conv1\\$128\times128\times64$,
+        xlabel={{"64",""}},
+        zlabel=128,
+        fill=\BackboneColor,
+        bandfill=\BackboneColor,
+        height=32,
+        width=2,
+        depth=32
+        }
+    };
+
+% Stage 2: Layer2 (128 -> 64)
+\pic[shift={(1.5,0,0)}] at (conv1-east)
+    {RightBandedBox={
+        name=layer2,
+        caption=Layer2\\$64\times64\times512$,
+        xlabel={{"512",""}},
+        zlabel=64,
+        fill=\BackboneColor,
+        bandfill=\BackboneColor,
+        height=24,
+        width=4,
+        depth=24
+        }
+    };
+
+% Stage 3: Layer3 (64 -> 32)
+\pic[shift={(1.5,0,0)}] at (layer2-east)
+    {RightBandedBox={
+        name=layer3,
+        caption=Layer3\\$32\times32\times1024$,
+        xlabel={{"1024",""}},
+        zlabel=32,
+        fill=\BackboneColor,
+        bandfill=\BackboneColor,
+        height=16,
+        width=5,
+        depth=16
+        }
+    };
+
+% Stage 4: Layer4 (32 -> 16)
+\pic[shift={(1.5,0,0)}] at (layer3-east)
+    {RightBandedBox={
+        name=layer4,
+        caption=Layer4\\$16\times16\times2048$,
+        xlabel={{"2048",""}},
+        zlabel=16,
+        fill=\BackboneColor,
+        bandfill=\BackboneColor,
+        height=10,
+        width=6,
+        depth=10
+        }
+    };
+
+% Backbone label
+\node[above=0.8cm of layer3, font=\small\bfseries] {Frozen CheSS ResNet-50 Backbone};
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% FEATURE PYRAMID NETWORK (FPN)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\pic[shift={(2.5,0,0)}] at (layer4-east)
+    {RightBandedBox={
+        name=fpn,
+        caption=FPN Fusion\\$64\times64\times512$,
+        xlabel={{"512",""}},
+        zlabel=64,
+        fill=\FPNColor,
+        bandfill=\FPNColor,
+        height=24,
+        width=4,
+        depth=24
+        }
+    };
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% THREE PARALLEL CONV HEADS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Common Head (shifted up)
+\pic[shift={(3,2.5,0)}] at (fpn-east)
+    {RightBandedBox={
+        name=head_common,
+        caption=Common Head\\$64\times64\times4$,
+        xlabel={{"4",""}},
+        zlabel=64,
+        fill=\CommonColor,
+        bandfill=\CommonColor,
+        height=24,
+        width=2,
+        depth=24
+        }
+    };
+
+% Cardiomegaly Head (middle)
+\pic[shift={(3,0,0)}] at (fpn-east)
+    {RightBandedBox={
+        name=head_cardio,
+        caption=Cardio Head\\$64\times64\times2$,
+        xlabel={{"2",""}},
+        zlabel=64,
+        fill=\CardioColor,
+        bandfill=\CardioColor,
+        height=24,
+        width=1,
+        depth=24
+        }
+    };
+
+% Effusion Head (shifted down)
+\pic[shift={(3,-2.5,0)}] at (fpn-east)
+    {RightBandedBox={
+        name=head_effusion,
+        caption=Effusion Head\\$64\times64\times2$,
+        xlabel={{"2",""}},
+        zlabel=64,
+        fill=\EffusionColor,
+        bandfill=\EffusionColor,
+        height=24,
+        width=1,
+        depth=24
+        }
+    };
+
+% ConvHead label
+\node[above=0.3cm of head_common, font=\small\bfseries] {Parallel Conv Heads ($\mu$, $\log\sigma$)};
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% HEAD NULLING & CONCATENATION
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\pic[shift={(3,0,0)}] at (head_cardio-east)
+    {RightBandedBox={
+        name=latent_concat,
+        caption=Head Nulling\\+ Concat\\$64\times64\times8$,
+        xlabel={{"8",""}},
+        zlabel=64,
+        fill=\LatentColor,
+        bandfill=\LatentColor,
+        height=24,
+        width=3,
+        depth=24
+        }
+    };
+
+% Sampling notation
+\node[below=0.5cm of latent_concat, font=\footnotesize] {$z = \mu + \sigma \odot \epsilon$};
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% DECODER (Progressive Upsampling)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Decoder Stage 1: 64x64 (256 ch)
+\pic[shift={(2.5,0,0)}] at (latent_concat-east)
+    {RightBandedBox={
+        name=dec1,
+        caption=Dec\\$64^2{\times}256$,
+        xlabel={{"256",""}},
+        zlabel=64,
+        fill=\DecoderColor,
+        bandfill=\DecoderColor,
+        height=24,
+        width=5,
+        depth=24
+        }
+    };
+
+% Decoder Stage 2: 128x128 (128 ch)
+\pic[shift={(1.5,0,0)}] at (dec1-east)
+    {RightBandedBox={
+        name=dec2,
+        caption=\\$128^2{\times}128$,
+        xlabel={{"128",""}},
+        zlabel=128,
+        fill=\DecoderColor,
+        bandfill=\DecoderColor,
+        height=32,
+        width=4,
+        depth=32
+        }
+    };
+
+% Decoder Stage 3: 256x256 (64 ch)
+\pic[shift={(1.5,0,0)}] at (dec2-east)
+    {RightBandedBox={
+        name=dec3,
+        caption=\\$256^2{\times}64$,
+        xlabel={{"64",""}},
+        zlabel=256,
+        fill=\DecoderColor,
+        bandfill=\DecoderColor,
+        height=36,
+        width=3,
+        depth=36
+        }
+    };
+
+% Decoder Stage 4: 512x512 (32 ch)
+\pic[shift={(1.5,0,0)}] at (dec3-east)
+    {RightBandedBox={
+        name=dec4,
+        caption=\\$512^2{\times}32$,
+        xlabel={{"32",""}},
+        zlabel=512,
+        fill=\DecoderColor,
+        bandfill=\DecoderColor,
+        height=40,
+        width=2,
+        depth=40
+        }
+    };
+
+% Decoder label
+\node[above=0.3cm of dec2, font=\small\bfseries] {SepVAE Decoder (Anti-aliased Upsampling)};
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% OUTPUT IMAGE
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\pic[shift={(2,0,0)}] at (dec4-east)
+    {Box={
+        name=output,
+        caption=Output\\$512\times512\times1$,
+        xlabel={{"",""}},
+        zlabel=512,
+        fill=\CommonColor,
+        height=40,
+        width=1,
+        depth=40
+        }
+    };
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% MI DISCRIMINATOR (below main flow)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\pic[shift={(0,-5,0)}] at (latent_concat-south)
+    {Box={
+        name=mi_disc,
+        caption=MI Disc\\(MLP),
+        xlabel={{"",""}},
+        fill=\DiscColor,
+        height=8,
+        width=8,
+        depth=8
+        }
+    };
+
+% MI discriminator annotations
+\node[below=0.3cm of mi_disc, font=\footnotesize, align=center] {$z_c$ vs $z_d$ \\(Disentanglement)};
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% PATCHGAN DISCRIMINATOR (below output)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\pic[shift={(0,-4.5,0)}] at (output-south)
+    {RightBandedBox={
+        name=patch_disc,
+        caption=PatchGAN\\Discriminator,
+        xlabel={{"",""}},
+        fill=\DiscColor,
+        bandfill=\DiscColor,
+        height=12,
+        width=6,
+        depth=12
+        }
+    };
+
+% PatchGAN annotations
+\node[below=0.3cm of patch_disc, font=\footnotesize, align=center] {Real vs Fake\\(Adversarial)};
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% CONNECTIONS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Main forward path
+\draw [connection]  (input-east)    -- node {\mimark} (conv1-west);
+\draw [connection]  (conv1-east)    -- node {\mimark} (layer2-west);
+\draw [connection]  (layer2-east)   -- node {\mimark} (layer3-west);
+\draw [connection]  (layer3-east)   -- node {\mimark} (layer4-west);
+
+% FPN skip connections (dashed)
+\draw [connection, dashed, opacity=0.5] (layer2-east) to[out=30,in=150] (fpn-west);
+\draw [connection, dashed, opacity=0.5] (layer3-east) to[out=20,in=160] (fpn-west);
+\draw [connection]  (layer4-east)   -- node {\mimark} (fpn-west);
+
+% FPN to heads
+\draw [connection]  (fpn-east) to[out=30,in=180] (head_common-west);
+\draw [connection]  (fpn-east) -- node {\mimark} (head_cardio-west);
+\draw [connection]  (fpn-east) to[out=-30,in=180] (head_effusion-west);
+
+% Heads to latent concat
+\draw [connection]  (head_common-east) to[out=0,in=150] (latent_concat-west);
+\draw [connection]  (head_cardio-east) -- node {\mimark} (latent_concat-west);
+\draw [connection]  (head_effusion-east) to[out=0,in=-150] (latent_concat-west);
+
+% Latent to decoder
+\draw [connection]  (latent_concat-east) -- node {\mimark} (dec1-west);
+\draw [connection]  (dec1-east)          -- node {\mimark} (dec2-west);
+\draw [connection]  (dec2-east)          -- node {\mimark} (dec3-west);
+\draw [connection]  (dec3-east)          -- node {\mimark} (dec4-west);
+\draw [connection]  (dec4-east)          -- node {\mimark} (output-west);
+
+% MI discriminator connection
+\draw [connection, dashed, color=gray] (latent_concat-south) -- (mi_disc-north);
+
+% PatchGAN discriminator connections
+\draw [connection, dashed, color=gray] (output-south) -- (patch_disc-north);
+\draw [connection, dashed, color=gray] (input-south) to[out=-90,in=180] (patch_disc-west);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% LEGEND
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\node[draw, fill=white, align=left, font=\footnotesize, anchor=north west] at (-1.5,-8) {
+    \textbf{SepVAE Architecture}\\[2pt]
+    \tikz\fill[\BackboneColor] (0,0) rectangle (0.3,0.2); CheSS Backbone (Frozen)\\
+    \tikz\fill[\FPNColor] (0,0) rectangle (0.3,0.2); Feature Pyramid Network\\
+    \tikz\fill[\CommonColor] (0,0) rectangle (0.3,0.2); Common Head (anatomy)\\
+    \tikz\fill[\CardioColor] (0,0) rectangle (0.3,0.2); Cardiomegaly Head\\
+    \tikz\fill[\EffusionColor] (0,0) rectangle (0.3,0.2); Effusion Head\\
+    \tikz\fill[\LatentColor] (0,0) rectangle (0.3,0.2); Spatial Latent ($64{\times}64{\times}8$)\\
+    \tikz\fill[\DecoderColor] (0,0) rectangle (0.3,0.2); VAE Decoder\\
+    \tikz\fill[\DiscColor] (0,0) rectangle (0.3,0.2); Discriminators\\[2pt]
+    \textit{Dashed}: Skip/auxiliary connections
+};
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% TITLE
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\node[font=\Large\bfseries, anchor=south] at (12, 7) {Multi-head SepVAE with CheSS Backbone};
+\node[font=\normalsize, anchor=north] at (12, 6.8) {Separated Variational Autoencoder for Chest X-ray Disentanglement};
+
+\end{tikzpicture}
+\end{document}
