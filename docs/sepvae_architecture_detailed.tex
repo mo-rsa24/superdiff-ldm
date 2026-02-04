@@ -1,0 +1,414 @@
+\documentclass[tikz,border=15pt]{standalone}
+\usepackage{tikz}
+\usepackage{tikz-3dplot}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, calc, fit, backgrounds, decorations.pathreplacing, 3d}
+
+% =============================================================================
+% COLOR DEFINITIONS
+% =============================================================================
+\definecolor{backbonecolor}{RGB}{76, 175, 80}
+\definecolor{fpncolor}{RGB}{156, 39, 176}
+\definecolor{commoncolor}{RGB}{255, 193, 7}
+\definecolor{cardiocolor}{RGB}{244, 67, 54}
+\definecolor{effusioncolor}{RGB}{33, 150, 243}
+\definecolor{latentcolor}{RGB}{233, 30, 99}
+\definecolor{decodercolor}{RGB}{255, 152, 0}
+\definecolor{convcolor}{RGB}{100, 181, 246}
+\definecolor{bncolor}{RGB}{129, 199, 132}
+\definecolor{relucolor}{RGB}{255, 183, 77}
+\definecolor{poolcolor}{RGB}{186, 104, 200}
+\definecolor{upsamplecolor}{RGB}{77, 208, 225}
+\definecolor{concatcolor}{RGB}{240, 98, 146}
+\definecolor{sigmoidcolor}{RGB}{174, 213, 129}
+
+% =============================================================================
+% CUSTOM COMMANDS FOR DRAWING CONV LAYERS
+% =============================================================================
+
+% Draw a single feature map as a filled rectangle with 3D effect
+% #1: x position, #2: y position, #3: height, #4: width (depth visual), #5: color, #6: label
+\newcommand{\featuremap}[6]{
+    \begin{scope}[shift={(#1, #2)}]
+        % Back face (darker)
+        \fill[#5!60!black] (0.15, 0.15) rectangle ++(#4, #3);
+        % Front face
+        \fill[#5] (0, 0) rectangle ++(#4, #3);
+        % Top edge (3D effect)
+        \fill[#5!80!white] (0, #3) -- ++(0.15, 0.15) -- ++(#4, 0) -- ++(-0.15, -0.15) -- cycle;
+        % Right edge (3D effect)
+        \fill[#5!70!black] (#4, 0) -- ++(0.15, 0.15) -- ++(0, #3) -- ++(-0.15, -0.15) -- cycle;
+        % Border
+        \draw[black, thick] (0, 0) rectangle ++(#4, #3);
+        \draw[black] (0, #3) -- ++(0.15, 0.15) -- ++(#4, 0) -- ++(-0.15, -0.15);
+        \draw[black] (#4, 0) -- ++(0.15, 0.15) -- ++(0, #3);
+        % Label
+        \node[font=\tiny, below] at (#4/2, -0.1) {#6};
+    \end{scope}
+}
+
+% Draw stacked feature maps (multiple channels)
+% #1: x, #2: y, #3: height, #4: width, #5: color, #6: num stacks, #7: label
+\newcommand{\stackedmaps}[7]{
+    \begin{scope}[shift={(#1, #2)}]
+        \foreach \i in {1,...,#6} {
+            \pgfmathsetmacro{\offset}{(\i-1)*0.08}
+            % Back face
+            \fill[#5!60!black, opacity=0.9] (\offset+0.15, \offset+0.15) rectangle ++({#4}, {#3});
+            % Front face
+            \fill[#5, opacity=0.95] (\offset, \offset) rectangle ++({#4}, {#3});
+            % Top edge
+            \fill[#5!80!white, opacity=0.9] (\offset, {#3+\offset}) -- ++(0.15, 0.15) -- ++({#4}, 0) -- ++(-0.15, -0.15) -- cycle;
+            % Right edge
+            \fill[#5!70!black, opacity=0.9] ({#4+\offset}, \offset) -- ++(0.15, 0.15) -- ++(0, {#3}) -- ++(-0.15, -0.15) -- cycle;
+        }
+        % Final border
+        \pgfmathsetmacro{\finaloff}{(#6-1)*0.08}
+        \draw[black, thick] (\finaloff, \finaloff) rectangle ++({#4}, {#3});
+        \draw[black] (\finaloff, {#3+\finaloff}) -- ++(0.15, 0.15) -- ++({#4}, 0);
+        \draw[black] ({#4+\finaloff}, \finaloff) -- ++(0.15, 0.15) -- ++(0, {#3});
+        % Label
+        \node[font=\tiny, below, align=center] at ({#4/2 + \finaloff/2}, -0.15) {#7};
+    \end{scope}
+}
+
+% Operation box (Conv, BN, ReLU, etc.)
+\newcommand{\opbox}[5]{
+    % #1: x, #2: y, #3: width, #4: color, #5: label
+    \fill[#4, rounded corners=2pt] (#1, #2) rectangle ++(#3, 0.5);
+    \draw[black, rounded corners=2pt] (#1, #2) rectangle ++(#3, 0.5);
+    \node[font=\tiny\bfseries, white] at ({#1 + #3/2}, {#2 + 0.25}) {#5};
+}
+
+\begin{document}
+\begin{tikzpicture}[>=Stealth]
+
+% =============================================================================
+% TITLE
+% =============================================================================
+\node[font=\Large\bfseries] at (12, 16) {SepVAE Architecture - Detailed View};
+\node[font=\small] at (12, 15.4) {Convolutional Operations \& Channel Transformations};
+
+% =============================================================================
+% SECTION 1: INPUT & INITIAL CONVOLUTION
+% =============================================================================
+\node[font=\small\bfseries, anchor=west] at (-1, 14) {1. Input \& Stem};
+
+% Input image (1 channel)
+\stackedmaps{0}{12}{2.5}{0.4}{gray!50}{1}{Input\\$512{\times}512{\times}1$}
+
+% Arrow
+\draw[->, thick] (0.7, 13.25) -- (1.5, 13.25);
+
+% Conv1: 7x7, stride 2
+\opbox{1.6}{13.5}{1.2}{convcolor}{Conv 7×7}
+\node[font=\tiny, above] at (2.2, 14.05) {s=2, p=3};
+
+% After Conv1 (64 channels, 256x256)
+\stackedmaps{3}{12}{2}{0.35}{backbonecolor}{5}{$256^2{\times}64$}
+
+% Arrow
+\draw[->, thick] (3.8, 13) -- (4.5, 13);
+
+% BatchNorm + ReLU
+\opbox{4.6}{13.2}{0.7}{bncolor}{BN}
+\opbox{5.4}{13.2}{0.7}{relucolor}{ReLU}
+
+% Arrow
+\draw[->, thick] (6.2, 13.45) -- (6.8, 13.45);
+
+% MaxPool
+\opbox{6.9}{13.2}{1}{poolcolor}{MaxPool}
+\node[font=\tiny, above] at (7.4, 13.75) {3×3, s=2};
+
+% After pool (64 channels, 128x128)
+\stackedmaps{8.2}{12}{1.8}{0.35}{backbonecolor}{5}{$128^2{\times}64$}
+
+% =============================================================================
+% SECTION 2: RESNET BOTTLENECK BLOCK (Layer2 example)
+% =============================================================================
+\node[font=\small\bfseries, anchor=west] at (-1, 10.5) {2. ResNet Bottleneck Block (Layer2)};
+
+% Input to block
+\stackedmaps{0}{8}{1.6}{0.35}{backbonecolor}{5}{$128^2{\times}64$}
+
+% 1x1 Conv (reduce channels)
+\draw[->, thick] (0.8, 8.8) -- (1.5, 8.8);
+\opbox{1.6}{8.55}{1}{convcolor}{1×1 Conv}
+\node[font=\tiny, above] at (2.1, 9.1) {64→64};
+
+% After 1x1
+\stackedmaps{2.8}{8}{1.6}{0.3}{convcolor!70}{4}{$128^2{\times}64$}
+
+% 3x3 Conv
+\draw[->, thick] (3.5, 8.8) -- (4.2, 8.8);
+\opbox{4.3}{8.55}{1}{convcolor}{3×3 Conv}
+\node[font=\tiny, above] at (4.8, 9.1) {64→64};
+
+% After 3x3
+\stackedmaps{5.5}{8}{1.6}{0.3}{convcolor!70}{4}{$128^2{\times}64$}
+
+% 1x1 Conv (expand channels)
+\draw[->, thick] (6.2, 8.8) -- (6.9, 8.8);
+\opbox{7}{8.55}{1}{convcolor}{1×1 Conv}
+\node[font=\tiny, above] at (7.5, 9.1) {64→256};
+
+% After expansion (256 channels)
+\stackedmaps{8.2}{7.8}{1.6}{0.4}{backbonecolor}{8}{$128^2{\times}256$}
+
+% Skip connection
+\draw[->, thick, dashed, gray] (0.4, 7.8) -- (0.4, 7.2) -- (8.8, 7.2) -- (8.8, 7.8);
+\node[font=\tiny, gray] at (4.5, 7) {Skip (1×1 Conv if dims differ)};
+
+% Add symbol
+\node[circle, draw, thick, fill=white, inner sep=1pt, font=\tiny] at (8.8, 8.6) {+};
+
+% =============================================================================
+% SECTION 3: MULTI-SCALE FEATURES (Layer2, 3, 4)
+% =============================================================================
+\node[font=\small\bfseries, anchor=west] at (-1, 5.5) {3. Multi-Scale Backbone Features};
+
+% Layer2 output
+\stackedmaps{0}{3}{1.5}{0.4}{backbonecolor}{6}{Layer2\\$64^2{\times}512$}
+
+% Layer3 output
+\stackedmaps{2.5}{3.2}{1.1}{0.35}{backbonecolor}{7}{Layer3\\$32^2{\times}1024$}
+
+% Layer4 output
+\stackedmaps{5}{3.4}{0.7}{0.3}{backbonecolor}{8}{Layer4\\$16^2{\times}2048$}
+
+% Arrows to FPN
+\draw[->, thick] (1, 4.5) -- (7.5, 5.8);
+\draw[->, thick] (3.2, 4.3) -- (7.5, 5.5);
+\draw[->, thick] (5.7, 4.1) -- (7.5, 5.2);
+
+% =============================================================================
+% SECTION 4: FPN FUSION
+% =============================================================================
+\node[font=\small\bfseries, anchor=west] at (7, 6.5) {4. FPN Top-Down Pathway};
+
+% Lateral connections (1x1 conv)
+\opbox{7.6}{5.7}{0.9}{fpncolor}{1×1}
+\opbox{7.6}{5.1}{0.9}{fpncolor}{1×1}
+\opbox{7.6}{4.5}{0.9}{fpncolor}{1×1}
+
+\node[font=\tiny, right] at (8.6, 5.95) {→ 512ch};
+\node[font=\tiny, right] at (8.6, 5.35) {→ 512ch};
+\node[font=\tiny, right] at (8.6, 4.75) {→ 512ch};
+
+% Upsample + Add operations
+\stackedmaps{10}{4.8}{0.5}{0.25}{fpncolor}{5}{$16^2$}
+\draw[->, thick] (10.6, 5.05) -- (11, 5.05);
+\opbox{11.1}{4.8}{0.8}{upsamplecolor}{↑2×}
+\stackedmaps{12.1}{4.6}{0.7}{0.25}{fpncolor}{5}{$32^2$}
+\node[circle, draw, thick, fill=white, inner sep=1pt, font=\tiny] at (12.5, 5.3) {+};
+
+\draw[->, thick] (12.8, 4.95) -- (13.2, 4.95);
+\opbox{13.3}{4.7}{0.8}{upsamplecolor}{↑2×}
+\stackedmaps{14.3}{4.3}{0.9}{0.3}{fpncolor}{5}{$64^2$}
+\node[circle, draw, thick, fill=white, inner sep=1pt, font=\tiny] at (14.7, 5.2) {+};
+
+% Final smooth conv
+\draw[->, thick] (15.2, 4.75) -- (15.6, 4.75);
+\opbox{15.7}{4.5}{1}{convcolor}{3×3 Conv}
+\stackedmaps{17}{4.2}{1}{0.35}{fpncolor}{6}{FPN Out\\$64^2{\times}512$}
+
+% =============================================================================
+% SECTION 5: CONV HEADS (Parallel)
+% =============================================================================
+\node[font=\small\bfseries, anchor=west] at (-1, 2) {5. Parallel Conv Heads (μ, log σ²)};
+
+% Common Head
+\node[font=\tiny\bfseries, commoncolor!80!black] at (1.5, 1.5) {Common Head};
+\stackedmaps{0}{-0.5}{0.8}{0.3}{fpncolor}{5}{$64^2{\times}512$}
+\draw[->, thick] (0.8, -0.1) -- (1.5, -0.1);
+\opbox{1.6}{-0.35}{1}{convcolor}{3×3 Conv}
+\opbox{2.7}{-0.35}{0.6}{bncolor}{GN}
+\opbox{3.4}{-0.35}{0.6}{relucolor}{ReLU}
+\draw[->, thick] (4.1, -0.1) -- (4.5, -0.1);
+\opbox{4.6}{-0.35}{1}{convcolor}{3×3 Conv}
+\node[font=\tiny, above] at (5.1, 0.2) {512→8};
+\stackedmaps{5.8}{-0.5}{0.8}{0.25}{commoncolor}{4}{$64^2{\times}8$}
+
+% Split arrow
+\draw[->, thick] (6.5, -0.1) -- (7.2, 0.3);
+\draw[->, thick] (6.5, -0.1) -- (7.2, -0.5);
+\stackedmaps{7.3}{0}{0.6}{0.2}{commoncolor}{3}{μ\\$64^2{\times}4$}
+\stackedmaps{7.3}{-1}{0.6}{0.2}{commoncolor!60}{3}{log σ²\\$64^2{\times}4$}
+
+% Cardiomegaly Head
+\node[font=\tiny\bfseries, cardiocolor!80!black] at (1.5, -2) {Cardiomegaly Head};
+\stackedmaps{0}{-3}{0.8}{0.3}{fpncolor}{5}{$64^2{\times}512$}
+\draw[->, thick] (0.8, -2.6) -- (1.5, -2.6);
+\opbox{1.6}{-2.85}{1}{convcolor}{3×3 Conv}
+\opbox{2.7}{-2.85}{0.6}{bncolor}{GN}
+\opbox{3.4}{-2.85}{0.6}{relucolor}{ReLU}
+\draw[->, thick] (4.1, -2.6) -- (4.5, -2.6);
+\opbox{4.6}{-2.85}{1}{convcolor}{3×3 Conv}
+\node[font=\tiny, above] at (5.1, -2.3) {512→4};
+\stackedmaps{5.8}{-3}{0.8}{0.2}{cardiocolor}{3}{$64^2{\times}4$}
+
+\draw[->, thick] (6.4, -2.6) -- (7.2, -2.2);
+\draw[->, thick] (6.4, -2.6) -- (7.2, -3);
+\stackedmaps{7.3}{-2.5}{0.6}{0.15}{cardiocolor}{2}{μ\\$64^2{\times}2$}
+\stackedmaps{7.3}{-3.5}{0.6}{0.15}{cardiocolor!60}{2}{log σ²\\$64^2{\times}2$}
+
+% Effusion Head
+\node[font=\tiny\bfseries, effusioncolor!80!black] at (1.5, -4.5) {Effusion Head};
+\stackedmaps{0}{-5.5}{0.8}{0.3}{fpncolor}{5}{$64^2{\times}512$}
+\draw[->, thick] (0.8, -5.1) -- (1.5, -5.1);
+\opbox{1.6}{-5.35}{1}{convcolor}{3×3 Conv}
+\opbox{2.7}{-5.35}{0.6}{bncolor}{GN}
+\opbox{3.4}{-5.35}{0.6}{relucolor}{ReLU}
+\draw[->, thick] (4.1, -5.1) -- (4.5, -5.1);
+\opbox{4.6}{-5.35}{1}{convcolor}{3×3 Conv}
+\node[font=\tiny, above] at (5.1, -4.8) {512→4};
+\stackedmaps{5.8}{-5.5}{0.8}{0.2}{effusioncolor}{3}{$64^2{\times}4$}
+
+\draw[->, thick] (6.4, -5.1) -- (7.2, -4.7);
+\draw[->, thick] (6.4, -5.1) -- (7.2, -5.5);
+\stackedmaps{7.3}{-5}{0.6}{0.15}{effusioncolor}{2}{μ\\$64^2{\times}2$}
+\stackedmaps{7.3}{-6}{0.6}{0.15}{effusioncolor!60}{2}{log σ²\\$64^2{\times}2$}
+
+% =============================================================================
+% SECTION 6: HEAD NULLING & REPARAMETERIZATION
+% =============================================================================
+\node[font=\small\bfseries, anchor=west] at (9, 1.5) {6. Head Nulling \& Sampling};
+
+% Sampling equation box
+\draw[thick, rounded corners, fill=gray!10] (9, -0.5) rectangle (14.5, 1);
+\node[font=\small, align=left] at (11.75, 0.5) {$z = \mu + \sigma \odot \epsilon$, \quad $\epsilon \sim \mathcal{N}(0, I)$};
+\node[font=\tiny, align=left] at (11.75, -0.1) {Inactive heads → sample from $\mathcal{N}(0, \sigma_{inactive}^2)$};
+
+% Nulling logic
+\draw[thick, rounded corners, fill=latentcolor!20] (9, -2.5) rectangle (14.5, -0.8);
+\node[font=\tiny\bfseries] at (11.75, -1.1) {Head Nulling Logic:};
+\node[font=\tiny, align=left, anchor=north west] at (9.2, -1.4) {
+    • Normal (y=0): Cardio→null, Effusion→null\\
+    • Effusion (y=1): Cardio→null, Effusion→active\\
+    • Cardiomegaly (y=2): Cardio→active, Effusion→null
+};
+
+% Concatenated latent
+\draw[->, thick] (12, -2.7) -- (12, -3.5);
+\stackedmaps{10.5}{-5}{1}{0.5}{latentcolor}{6}{Concat z\\$64^2{\times}8$}
+\node[font=\tiny, right] at (11.5, -4.5) {[Common(4) | Cardio(2) | Effusion(2)]};
+
+% =============================================================================
+% SECTION 7: DECODER
+% =============================================================================
+\node[font=\small\bfseries, anchor=west] at (15, 1.5) {7. Decoder (Progressive Upsampling)};
+
+% Initial projection
+\stackedmaps{15}{-0.5}{0.8}{0.4}{latentcolor}{5}{z\\$64^2{\times}8$}
+\draw[->, thick] (15.9, -0.1) -- (16.5, -0.1);
+\opbox{16.6}{-0.35}{1}{convcolor}{3×3 Conv}
+\node[font=\tiny, above] at (17.1, 0.2) {8→256};
+\stackedmaps{17.8}{-0.5}{0.8}{0.4}{decodercolor}{7}{$64^2{\times}256$}
+
+% Stage 1: 64x64 ResBlocks
+\draw[->, thick] (18.7, -0.1) -- (19.3, -0.1);
+\draw[thick, rounded corners, fill=decodercolor!30] (19.4, -0.7) rectangle (21.5, 0.5);
+\node[font=\tiny\bfseries] at (20.45, 0.2) {2× ResBlock};
+\node[font=\tiny] at (20.45, -0.3) {256ch @ 64²};
+
+% Upsample 64->128
+\draw[->, thick] (21.6, -0.1) -- (22.2, -0.1);
+\opbox{22.3}{-0.35}{1.2}{upsamplecolor}{Bilinear↑}
+\opbox{22.3}{-0.9}{1.2}{convcolor}{3×3 Conv}
+\node[font=\tiny] at (22.9, -1.5) {256→128};
+
+% Stage 2: 128x128
+\stackedmaps{23.7}{-0.7}{1}{0.35}{decodercolor}{6}{$128^2{\times}128$}
+\draw[->, thick] (24.5, -0.2) -- (25.1, -0.2);
+\draw[thick, rounded corners, fill=decodercolor!30] (25.2, -0.8) rectangle (27.3, 0.4);
+\node[font=\tiny\bfseries] at (26.25, 0.1) {2× ResBlock};
+\node[font=\tiny] at (26.25, -0.4) {128ch @ 128²};
+
+% Continue to output (simplified)
+\draw[->, thick] (27.4, -0.2) -- (28, -0.2);
+\node[font=\tiny, align=center] at (28.8, -0.2) {↑2× → 256²\\↑2× → 512²};
+
+% Final output
+\draw[->, thick] (29.6, -0.2) -- (30.2, -0.2);
+\opbox{30.3}{-0.45}{0.6}{bncolor}{GN}
+\opbox{31}{-0.45}{0.7}{relucolor}{Swish}
+\opbox{31.8}{-0.45}{1}{convcolor}{3×3}
+\opbox{32.9}{-0.45}{0.8}{sigmoidcolor}{σ}
+
+\stackedmaps{34}{-0.5}{1.2}{0.3}{gray!50}{1}{Output\\$512^2{\times}1$}
+
+% =============================================================================
+% SECTION 8: RESBLOCK DETAIL
+% =============================================================================
+\node[font=\small\bfseries, anchor=west] at (15, -3) {8. Decoder ResBlock Detail};
+
+\draw[thick, rounded corners, fill=gray!10] (15, -6.5) rectangle (24, -3.5);
+
+\stackedmaps{15.3}{-5.5}{0.7}{0.3}{decodercolor}{5}{Input\\$H{\times}W{\times}C$}
+
+\draw[->, thick] (16, -5.15) -- (16.5, -5.15);
+\opbox{16.6}{-5.4}{0.6}{bncolor}{GN}
+\opbox{17.3}{-5.4}{0.7}{relucolor}{Swish}
+\opbox{18.1}{-5.4}{1}{convcolor}{3×3}
+\draw[->, thick] (19.2, -5.15) -- (19.6, -5.15);
+\opbox{19.7}{-5.4}{0.6}{bncolor}{GN}
+\opbox{20.4}{-5.4}{0.7}{relucolor}{Swish}
+\opbox{21.2}{-5.4}{1}{convcolor}{3×3}
+
+\stackedmaps{22.5}{-5.5}{0.7}{0.3}{decodercolor}{5}{Output\\$H{\times}W{\times}C$}
+
+% Skip connection in ResBlock
+\draw[->, thick, dashed, gray] (15.7, -5.7) -- (15.7, -6.2) -- (22.9, -6.2) -- (22.9, -5.7);
+\node[circle, draw, thick, fill=white, inner sep=1pt, font=\tiny] at (22.9, -5.15) {+};
+\node[font=\tiny, gray] at (19.3, -6.4) {Skip Connection};
+
+% =============================================================================
+% LEGEND
+% =============================================================================
+\draw[thick, rounded corners, fill=white] (25, -7) rectangle (34, -3.3);
+\node[font=\small\bfseries, anchor=north west] at (25.2, -3.5) {Legend:};
+
+% Row 1
+\fill[convcolor] (25.3, -4.2) rectangle (25.8, -3.9);
+\node[font=\tiny, anchor=west] at (25.9, -4.05) {Convolution};
+\fill[bncolor] (28.5, -4.2) rectangle (29, -3.9);
+\node[font=\tiny, anchor=west] at (29.1, -4.05) {BatchNorm/GroupNorm};
+
+% Row 2
+\fill[relucolor] (25.3, -4.7) rectangle (25.8, -4.4);
+\node[font=\tiny, anchor=west] at (25.9, -4.55) {ReLU/Swish};
+\fill[poolcolor] (28.5, -4.7) rectangle (29, -4.4);
+\node[font=\tiny, anchor=west] at (29.1, -4.55) {Pooling};
+
+% Row 3
+\fill[upsamplecolor] (25.3, -5.2) rectangle (25.8, -4.9);
+\node[font=\tiny, anchor=west] at (25.9, -5.05) {Upsample (Bilinear)};
+\fill[sigmoidcolor] (28.5, -5.2) rectangle (29, -4.9);
+\node[font=\tiny, anchor=west] at (29.1, -5.05) {Sigmoid};
+
+% Row 4
+\fill[backbonecolor] (25.3, -5.7) rectangle (25.8, -5.4);
+\node[font=\tiny, anchor=west] at (25.9, -5.55) {Backbone (Frozen)};
+\fill[fpncolor] (28.5, -5.7) rectangle (29, -5.4);
+\node[font=\tiny, anchor=west] at (29.1, -5.55) {FPN};
+
+% Row 5
+\fill[commoncolor] (25.3, -6.2) rectangle (25.8, -5.9);
+\node[font=\tiny, anchor=west] at (25.9, -6.05) {Common Head};
+\fill[cardiocolor] (28.5, -6.2) rectangle (29, -5.9);
+\node[font=\tiny, anchor=west] at (29.1, -6.05) {Cardio Head};
+
+% Row 6
+\fill[effusioncolor] (25.3, -6.7) rectangle (25.8, -6.4);
+\node[font=\tiny, anchor=west] at (25.9, -6.55) {Effusion Head};
+\fill[latentcolor] (28.5, -6.7) rectangle (29, -6.4);
+\node[font=\tiny, anchor=west] at (29.1, -6.55) {Latent Space};
+
+% Stacked maps explanation
+\draw[thick] (32, -4.5) rectangle (32.3, -4);
+\draw[thick] (32.08, -4.42) rectangle (32.38, -3.92);
+\draw[thick] (32.16, -4.34) rectangle (32.46, -3.84);
+\node[font=\tiny, anchor=west] at (32.6, -4.15) {Stacked = Channels};
+
+\end{tikzpicture}
+\end{document}
