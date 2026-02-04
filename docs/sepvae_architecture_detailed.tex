@@ -227,7 +227,7 @@
 % =============================================================================
 % SECTION 5: CONV HEADS (Parallel)
 % =============================================================================
-\node[font=\small\bfseries, anchor=west] at (-1, 2) {5. Parallel Conv Heads (μ, log σ²)};
+\node[font=\small\bfseries, anchor=west] at (-1, 2) {5. Parallel Conv Heads ($\mu$, $\log\sigma^2$)};
 
 % Common Head
 \node[font=\tiny\bfseries, commoncolor!80!black] at (1.5, 1.5) {Common Head};
@@ -244,8 +244,8 @@
 % Split arrow
 \draw[->, thick] (6.5, -0.1) -- (7.2, 0.3);
 \draw[->, thick] (6.5, -0.1) -- (7.2, -0.5);
-\stackedmaps{7.3}{0}{0.6}{0.2}{commoncolor}{3}{μ\\$64^2{\times}4$}
-\stackedmaps{7.3}{-1}{0.6}{0.2}{commoncolorlight}{3}{log σ²\\$64^2{\times}4$}
+\stackedmaps{7.3}{0}{0.6}{0.2}{commoncolor}{3}{$\mu$\\$64^2{\times}4$}
+\stackedmaps{7.3}{-1}{0.6}{0.2}{commoncolorlight}{3}{$\log \sigma^2$\\$64^2{\times}4$}
 
 % Cardiomegaly Head
 \node[font=\tiny\bfseries, cardiocolor!80!black] at (1.5, -2) {Cardiomegaly Head};
@@ -261,8 +261,8 @@
 
 \draw[->, thick] (6.4, -2.6) -- (7.2, -2.2);
 \draw[->, thick] (6.4, -2.6) -- (7.2, -3);
-\stackedmaps{7.3}{-2.5}{0.6}{0.15}{cardiocolor}{2}{μ\\$64^2{\times}2$}
-\stackedmaps{7.3}{-3.5}{0.6}{0.15}{cardiocolorlight}{2}{log σ²\\$64^2{\times}2$}
+\stackedmaps{7.3}{-2.5}{0.6}{0.15}{cardiocolor}{2}{$\mu$\\$64^2{\times}2$}
+\stackedmaps{7.3}{-3.5}{0.6}{0.15}{cardiocolorlight}{2}{$\log \sigma^2$\\$64^2{\times}2$}
 
 % Effusion Head
 \node[font=\tiny\bfseries, effusioncolor!80!black] at (1.5, -4.5) {Effusion Head};
@@ -278,8 +278,8 @@
 
 \draw[->, thick] (6.4, -5.1) -- (7.2, -4.7);
 \draw[->, thick] (6.4, -5.1) -- (7.2, -5.5);
-\stackedmaps{7.3}{-5}{0.6}{0.15}{effusioncolor}{2}{μ\\$64^2{\times}2$}
-\stackedmaps{7.3}{-6}{0.6}{0.15}{effusioncolorlight}{2}{log σ²\\$64^2{\times}2$}
+\stackedmaps{7.3}{-5}{0.6}{0.15}{effusioncolor}{2}{$\mu$\\$64^2{\times}2$}
+\stackedmaps{7.3}{-6}{0.6}{0.15}{effusioncolorlight}{2}{$\log \sigma^2$\\$64^2{\times}2$}
 
 % =============================================================================
 % SECTION 6: HEAD NULLING & REPARAMETERIZATION
@@ -345,7 +345,7 @@
 \opbox{30.3}{-0.45}{0.6}{bncolor}{GN}
 \opbox{31}{-0.45}{0.7}{relucolor}{Swish}
 \opbox{31.8}{-0.45}{1}{convcolor}{3×3}
-\opbox{32.9}{-0.45}{0.8}{sigmoidcolor}{σ}
+\opbox{32.9}{-0.45}{0.8}{sigmoidcolor}{$\sigma$}
 
 \stackedmaps{34}{-0.5}{1.2}{0.3}{outputgray}{1}{Output\\$512^2{\times}1$}
 
