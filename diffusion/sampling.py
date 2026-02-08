@@ -146,7 +146,7 @@ def Euler_Maruyama_sampler(
     final_latent = x
 
     # 3. Decoding / Reconstruction (Identical to Reference)
-    grid = None
+    grid = None #
     if ae_model is not None:
         target_channels = vae_z_channels if vae_z_channels is not None else z_channels
 
