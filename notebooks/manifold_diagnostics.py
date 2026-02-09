@@ -29,8 +29,14 @@ from sklearn.manifold import TSNE
 import umap
 from PIL import Image
 
-from diffusers import StableDiffusionPipeline, DDIMScheduler
+from diffusers import StableDiffusionPipeline, DDIMScheduler, EulerDiscreteScheduler
 from diffusers.models.attention_processor import Attention
+
+# Import SuperDiff dynamics
+import sys
+from pathlib import Path as PathLib
+sys.path.insert(0, str(PathLib(__file__).parent.parent))
+from notebooks.dynamics import stochastic_super_diff_multi, get_latents
 
 
 # ---------------------------------------------------------------------------
@@ -826,6 +832,204 @@ class ManifoldDiagnostics:
             "std_distance": float(np.std(distances)),
         }
 
+    # ------------------------------------------------------------------
+    # 7. Multi-Prompt SuperDiff Composition
+    # ------------------------------------------------------------------
+    def multi_prompt_composition(self, prompts: List[str],
+                                 operation: str = "AND",
+                                 num_inference_steps: int = 50,
+                                 guidance_scale: float = 7.5,
+                                 batch_size: int = 4,
+                                 lift: float = 0.0,
+                                 output_dir: str = "outputs/manifold") -> Dict:
+        """
+        Compose M prompts using SuperDiff and visualize the results.
+
+        Args:
+            prompts: List of M prompts to compose (e.g., ["cat", "dog", "cat and dog"])
+            operation: "AND" or "OR" composition mode
+            num_inference_steps: Number of diffusion steps
+            guidance_scale: CFG scale
+            batch_size: Number of images to generate
+            lift: Lift parameter for stability
+            output_dir: Save directory
+
+        Returns:
+            Dict with generated images, kappa evolution, and log-likelihoods
+        """
+        print(f"\n{'='*80}")
+        print(f"7. MULTI-PROMPT SUPERDIFF COMPOSITION ({operation})")
+        print(f"{'='*80}\n")
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        M = len(prompts)
+        print(f"Composing {M} prompts:")
+        for i, p in enumerate(prompts):
+            print(f"  {i+1}. '{p}'")
+        print(f"\nOperation: {operation}")
+        print(f"Steps: {num_inference_steps}, Guidance: {guidance_scale}, Lift: {lift}\n")
+
+        # Initialize scheduler
+        scheduler = EulerDiscreteScheduler.from_config(self.pipe.scheduler.config)
+
+        # Get initial latents
+        latents = get_latents(
+            scheduler,
+            z_channels=4,
+            device=self.device,
+            dtype=self.dtype,
+            num_inference_steps=num_inference_steps,
+            batch_size=batch_size,
+            latent_width=64,
+            latent_height=64,
+            seed=42
+        )
+
+        # Run multi-prompt SuperDiff
+        print("Running SuperDiff composition...")
+        final_latents, kappas, log_likelihoods = stochastic_super_diff_multi(
+            latents=latents,
+            prompts=prompts,
+            scheduler=scheduler,
+            unet=self.unet,
+            tokenizer=self.tokenizer,
+            text_encoder=self.text_encoder,
+            guidance_scale=guidance_scale,
+            num_inference_steps=num_inference_steps,
+            batch_size=batch_size,
+            device=self.device,
+            dtype=self.dtype,
+            lift=lift,
+            operation=operation
+        )
+
+        # Decode latents to images
+        print("Decoding latents to images...")
+        images = []
+        for i in range(batch_size):
+            img = self._decode_latents(final_latents[i])
+            images.append(img)
+
+        # Also generate individual images for comparison
+        print("Generating individual prompt images for comparison...")
+        individual_images = []
+        for prompt in prompts:
+            img = self._generate(prompt, num_inference_steps=num_inference_steps,
+                               guidance_scale=guidance_scale, seed=42)
+            individual_images.append(img)
+
+        # Convert to numpy for plotting
+        kappas_np = kappas.cpu().numpy()  # (num_steps+1, batch, M)
+        ll_np = log_likelihoods.cpu().numpy()  # (num_steps+1, batch, M)
+
+        # --- Visualization ---
+        self._plot_multi_composition_results(
+            prompts, images, individual_images, kappas_np, ll_np,
+            operation, output_path, batch_size
+        )
+
+        print(f"\nComposition complete!")
+
+        return {
+            "images": images,
+            "individual_images": individual_images,
+            "kappas": kappas_np,
+            "log_likelihoods": ll_np,
+        }
+
+    def _plot_multi_composition_results(self, prompts, composed_images,
+                                        individual_images, kappas, log_likelihoods,
+                                        operation, output_path, batch_size):
+        """Plot comprehensive multi-prompt composition results."""
+        M = len(prompts)
+
+        # Create a large figure with multiple subplots
+        fig = plt.figure(figsize=(20, 12))
+        colors = plt.cm.tab10(np.linspace(0, 1, M))
+
+        # --- Panel 1: Individual images ---
+        for i, (prompt, img) in enumerate(zip(prompts, individual_images)):
+            ax = plt.subplot(3, max(M, 4), i + 1)
+            ax.imshow(img)
+            ax.set_title(f'Individual: "{prompt}"', fontsize=10, fontweight='bold')
+            ax.axis('off')
+
+        # --- Panel 2: Composed images ---
+        n_show = min(4, batch_size)
+        for i in range(n_show):
+            ax = plt.subplot(3, max(M, 4), M + i + 1)
+            ax.imshow(composed_images[i])
+            ax.set_title(f'Composed #{i+1}', fontsize=10, fontweight='bold')
+            ax.axis('off')
+
+        # --- Panel 3: Kappa evolution (average over batch) ---
+        ax = plt.subplot(3, 3, 7)
+        kappa_mean = kappas.mean(axis=1)  # Average over batch: (num_steps+1, M)
+        timesteps = np.arange(kappa_mean.shape[0])
+
+        for m in range(M):
+            ax.plot(timesteps, kappa_mean[:, m], label=f'κ_{m+1}: "{prompts[m][:20]}"',
+                   linewidth=2, color=colors[m])
+
+        ax.set_xlabel('Diffusion Step', fontsize=11)
+        ax.set_ylabel('Composition Weight (κ)', fontsize=11)
+        ax.set_title(f'κ Evolution ({operation} operation)', fontweight='bold')
+        ax.legend(fontsize=9)
+        ax.grid(alpha=0.3)
+
+        # --- Panel 4: Kappa final distribution ---
+        ax = plt.subplot(3, 3, 8)
+        final_kappas = kappas[-1]  # (batch, M)
+        positions = np.arange(M)
+        width = 0.6
+
+        # Plot box plots for each kappa
+        box_data = [final_kappas[:, m] for m in range(M)]
+        bp = ax.boxplot(box_data, positions=positions, widths=width,
+                       patch_artist=True, showfliers=False)
+
+        for patch, color in zip(bp['boxes'], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.6)
+
+        ax.set_xticks(positions)
+        ax.set_xticklabels([f'"{p[:15]}"' for p in prompts], rotation=15, ha='right', fontsize=9)
+        ax.set_ylabel('Final κ Value', fontsize=11)
+        ax.set_title('Final Composition Weights Distribution', fontweight='bold')
+        ax.grid(alpha=0.3, axis='y')
+
+        # --- Panel 5: Log-likelihood evolution ---
+        ax = plt.subplot(3, 3, 9)
+        ll_mean = log_likelihoods.mean(axis=1)  # Average over batch
+        timesteps = np.arange(ll_mean.shape[0])
+
+        for m in range(M):
+            ax.plot(timesteps, ll_mean[:, m], label=f'ℓ_{m+1}: "{prompts[m][:20]}"',
+                   linewidth=2, color=colors[m])
+
+        ax.set_xlabel('Diffusion Step', fontsize=11)
+        ax.set_ylabel('Log-Likelihood', fontsize=11)
+        ax.set_title('Log-Likelihood Evolution', fontweight='bold')
+        ax.legend(fontsize=9)
+        ax.grid(alpha=0.3)
+
+        prompt_str = " + ".join(f'"{p}"' for p in prompts)
+
+        plt.suptitle(
+            f"Multi-Prompt SuperDiff Composition: {prompt_str}",
+            fontsize=14,
+            fontweight="bold"
+        )
+
+        plt.tight_layout()
+
+        save_path = output_path / f'multi_prompt_composition_{operation.lower()}.png'
+        plt.savefig(save_path, dpi=200, bbox_inches='tight')
+        print(f"Saved: {save_path}")
+        plt.close()
+
 
 # ---------------------------------------------------------------------------
 # CLI entry-point
@@ -846,6 +1050,21 @@ def main():
     parser.add_argument("--traversal-steps", type=int, default=8)
     parser.add_argument("--skip-traversal", action="store_true")
     parser.add_argument("--skip-centroid", action="store_true")
+
+    # Multi-prompt composition arguments
+    parser.add_argument("--multi-composition", action="store_true",
+                       help="Run multi-prompt SuperDiff composition")
+    parser.add_argument("--composition-prompts", type=str, nargs="+",
+                       default=["a cat", "a dog", "a cat and a dog"],
+                       help="Prompts for multi-composition (default: cat, dog, cat and dog)")
+    parser.add_argument("--composition-operation", type=str, default="AND",
+                       choices=["AND", "OR"], help="Composition operation")
+    parser.add_argument("--composition-steps", type=int, default=50,
+                       help="Number of steps for composition")
+    parser.add_argument("--composition-batch", type=int, default=4,
+                       help="Batch size for composition")
+    parser.add_argument("--composition-lift", type=float, default=0.0,
+                       help="Lift parameter for composition stability")
 
     args = parser.parse_args()
 
@@ -887,6 +1106,17 @@ def main():
             comp_prompt, n_samples=args.n_samples, output_dir=args.output_dir,
         )
 
+    # 7. Multi-prompt composition (new)
+    if args.multi_composition:
+        diag.multi_prompt_composition(
+            prompts=args.composition_prompts,
+            operation=args.composition_operation,
+            num_inference_steps=args.composition_steps,
+            batch_size=args.composition_batch,
+            lift=args.composition_lift,
+            output_dir=args.output_dir,
+        )
+
     # Summary
     out = Path(args.output_dir)
     print("\n" + "=" * 80)
@@ -901,6 +1131,9 @@ def main():
     print(f"  5. {out / 'svd_analysis.png'}                 - SVD semantic structure")
     if not args.skip_centroid:
         print(f"  6. {out / 'centroid_distance_analysis.png'}  - Spatial bias detection")
+    if args.multi_composition:
+        op_lower = args.composition_operation.lower()
+        print(f"  7. {out / f'multi_prompt_composition_{op_lower}.png'} - Multi-prompt SuperDiff composition")
 
     print("\n" + "=" * 80)
     print("KEY INSIGHTS TO LOOK FOR:")
@@ -929,6 +1162,13 @@ def main():
 6. Centroid Distance:
    - Low mean distance reveals centre bias.
    - Affects spatial composition capability.
+
+7. Multi-Prompt SuperDiff Composition (if enabled):
+   - How do kappa weights evolve during generation?
+   - Do weights converge to specific values or remain dynamic?
+   - Compare composed outputs with individual prompts.
+   - AND operation: seeks joint satisfaction of all concepts.
+   - OR operation: softmax selection based on log-likelihoods.
 """)
     print("=" * 80 + "\n")
 
