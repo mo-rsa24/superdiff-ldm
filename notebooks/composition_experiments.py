@@ -238,7 +238,7 @@ class CompositionExperimentSuite:
         self.text_encoder = models["text_encoder"]
         self.unet = models["unet"]
         self.scheduler = EulerDiscreteScheduler.from_pretrained(
-            "runwayml/stable-diffusion-v1-5", subfolder="scheduler"
+            "Manojb/stable-diffusion-2-1-base", subfolder="scheduler"
         )
 
         # Storage for results

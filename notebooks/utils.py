@@ -4,7 +4,7 @@ from diffusers import AutoencoderKL, UNet2DConditionModel
 from PIL import Image
 import matplotlib.pyplot as plt
 
-def get_sd_models(model_id: str = "runwayml/stable-diffusion-v1-5", dtype=torch.float16, device=torch.device("cuda")): # CompVis/stable-diffusion-v1-4
+def get_sd_models(model_id: str = "Manojb/stable-diffusion-2-1-base", dtype=torch.float16, device=torch.device("cuda")):
     vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", torch_dtype=dtype, use_safetensors=True).to(device)
     tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=dtype, use_safetensors=True).to(device)

@@ -16,9 +16,54 @@ A comprehensive framework for interpreting model health during training and eval
 
 ## 1. Loss Term Interpretation & Convergence Guidelines
 
+### Overview: The SepVAE Loss Landscape
+
+The Multi-head SepVAE optimizes a composite objective balancing six loss terms, each serving a distinct purpose in learning disentangled representations:
+
+| Loss Term | Symbol | Purpose | What It Compares |
+|-----------|--------|---------|------------------|
+| **Reconstruction** | L_rec | Pixel fidelity | Original vs. decoded image |
+| **KL Divergence** | L_KL | Latent regularization | Posterior vs. prior distribution |
+| **Nulling** | L_null | Disease head silencing | Disease output vs. inactive prior (for normals) |
+| **MI Penalty** | L_MI | Latent independence | Joint vs. marginal z_c, z_d statistics |
+| **Perceptual** | L_perc | Semantic similarity | Backbone features of original vs. reconstruction |
+| **Adversarial** | L_adv | Texture realism | Discriminator judgment: real vs. fake |
+
+**Total Loss:**
+```
+L_total = λ_rec · L_rec
+        + λ_kl_c · L_KL_common + λ_kl_d · L_KL_disease
+        + λ_null · L_null
+        + λ_mi · L_MI_penalty
+        + λ_perc · L_perc
+        + λ_adv · L_adv_G
+```
+
+The sections below provide mathematical formulations, expected behaviors, and diagnostic guidance for each term.
+
+---
+
 ### 1.1 Reconstruction Loss (MSE)
 
 The reconstruction loss measures pixel-level fidelity between input images and their reconstructions. In the SepVAE architecture, this operates on 512×512 grayscale chest X-rays normalized to [-1, 1].
+
+#### Mathematical Formulation
+
+```
+L_rec = (1/N) Σᵢ ||xᵢ - x̂ᵢ||²₂
+```
+
+Where:
+- `x ∈ ℝ^(H×W)` is the original chest X-ray (512×512×1)
+- `x̂ = Decoder(z_c, z_d)` is the reconstruction from latent codes
+- `N = H × W` is the total number of pixels
+
+**What it compares:** The squared Euclidean distance between each pixel in the original image and its reconstructed counterpart. This enforces that the decoder learns to faithfully reproduce the input from the compressed latent representation.
+
+**Justification:** MSE is chosen over alternatives (L1, perceptual-only) because:
+1. It provides strong gradients for large errors, accelerating early learning
+2. It's differentiable everywhere, ensuring stable optimization
+3. Combined with perceptual loss, it balances pixel-exact fidelity with semantic coherence
 
 #### Expected Training Trajectory
 
@@ -69,6 +114,41 @@ Symptom: High-frequency noise in reconstructions
 The KL divergence terms regularize the latent spaces toward their priors. The architecture uses:
 - **Common space**: 64×64×4 spatial latents (anatomy)
 - **Disease spaces**: 64×64×2 spatial latents each (pathology-specific)
+
+#### Mathematical Formulation
+
+**Common Space KL:**
+```
+L_KL_common = KL(q(z_c|x) || p(z_c))
+            = (1/2) Σⱼ (μ_c,ⱼ² + σ_c,ⱼ² - log(σ_c,ⱼ²) - 1)
+```
+
+**Disease Space KL (per active head d):**
+```
+L_KL_disease = Σ_d∈active KL(q(z_d|x) || p(z_d))
+             = Σ_d (1/2) Σⱼ (μ_d,ⱼ² + σ_d,ⱼ² - log(σ_d,ⱼ²) - 1)
+```
+
+**Total KL with Weighting:**
+```
+L_KL_total = λ_c · L_KL_common + λ_d · L_KL_disease
+```
+
+Where:
+- `q(z|x) = N(μ(x), σ²(x))` is the encoder's approximate posterior (diagonal Gaussian)
+- `p(z) = N(0, I)` is the standard Gaussian prior
+- `μ, σ` are spatial feature maps output by the encoder heads
+- `j` indexes over all spatial locations and channels (64×64×C)
+- `λ_c, λ_d` are `--weight_kl_common` and `--weight_kl_disease`
+
+**What it compares:** The KL divergence measures how much the learned posterior distribution `q(z|x)` diverges from the prior `p(z)`. It penalizes:
+1. **Non-zero means (μ²)**: Pushes latent codes toward the origin
+2. **Non-unit variance (σ² - log σ² - 1)**: Penalizes both collapsed (σ→0) and exploded (σ→∞) variance
+
+**Justification:** The KL term serves three purposes:
+1. **Regularization**: Prevents the encoder from memorizing training data by spreading representations
+2. **Generative capability**: Ensures the latent space is structured for sampling (new images from p(z))
+3. **Disentanglement**: Separate KL terms for common/disease encourage factorized representations
 
 #### Free-Bits Mechanism
 
@@ -130,6 +210,37 @@ Is kl_total < 5.0?
 
 The nulling loss enforces that disease-specific latent heads remain inactive (close to prior) for healthy control samples. This is critical for the "common + salient" disentanglement.
 
+#### Mathematical Formulation
+
+```
+L_null = (1/|D|) Σ_{d∈D} KL(q(z_d|x_normal) || N(0, σ²_inactive · I))
+```
+
+Expanding the KL for diagonal Gaussians:
+```
+L_null = (1/|D|) Σ_d (1/2) Σⱼ [
+    (μ_d,ⱼ² / σ²_inactive) +
+    (σ_d,ⱼ² / σ²_inactive) -
+    log(σ_d,ⱼ² / σ²_inactive) - 1
+]
+```
+
+Where:
+- `x_normal` are samples with label "Normal" (class 0)
+- `D = {Effusion, Cardiomegaly}` is the set of disease heads
+- `q(z_d|x_normal) = N(μ_d, σ_d²)` is the encoder output for disease head d
+- `σ_inactive` is the prior standard deviation for inactive heads (default: 1.0)
+- `j` indexes spatial locations and channels
+
+**What it compares:** The nulling loss measures the divergence between what the disease encoder outputs for healthy patients and what it *should* output (the inactive prior). It penalizes:
+1. **Non-zero means**: Disease heads should not encode any disease signal for normals
+2. **Incorrect variance**: Output variance should match the prior σ_inactive
+
+**Justification:** This loss is the cornerstone of the "common + salient" decomposition:
+1. **Disentanglement**: Forces all anatomical information into z_common by preventing disease heads from "helping" reconstruct normal anatomy
+2. **Compositional semantics**: Establishes a meaningful "zero point" in disease space—normal patients map to the origin, enabling additive disease composition
+3. **Routing signal**: Teaches the encoder to recognize which features are disease-specific vs. anatomical
+
 #### Mechanism
 
 For samples labeled as "Normal" (class 0):
@@ -172,6 +283,43 @@ For samples labeled as "Normal" (class 0):
 ### 1.4 Mutual Information (MI) Penalty
 
 The MI penalty ensures latent independence between the common (anatomical) and salient (disease) spaces. This uses a discriminator-based estimator trained adversarially.
+
+#### Mathematical Formulation
+
+The MI penalty uses a discriminator-based approach inspired by the MINE (Mutual Information Neural Estimation) framework:
+
+**MI Discriminator Objective (maximize):**
+```
+L_MI_disc = E_{(z_c,z_d)~joint}[log D(z_c, z_d)] + E_{(z_c,z_d')~marginal}[log(1 - D(z_c, z_d'))]
+```
+
+**Encoder MI Penalty (minimize):**
+```
+L_MI_penalty = -E_{(z_c,z_d)~joint}[log(1 - D(z_c, z_d))]
+```
+
+Where:
+- `D(z_c, z_d) ∈ [0, 1]` is a discriminator predicting if z_c and z_d are from the same sample (joint) or different samples (marginal)
+- `(z_c, z_d) ~ joint`: Common and disease latents from the same image
+- `(z_c, z_d') ~ marginal`: z_c from one image, z_d from a different (shuffled) image
+- The discriminator learns to distinguish joint from marginal pairs
+- The encoder learns to make joint pairs indistinguishable from marginal (i.e., independent)
+
+**Alternative Formulation (CLUB-style upper bound):**
+```
+L_MI_upper = E_{z_c,z_d}[log q(z_d|z_c)] - E_{z_c}E_{z_d}[log q(z_d|z_c)]
+```
+
+**What it compares:** The MI discriminator compares the statistical relationship between z_c and z_d when they come from:
+1. **The same image** (joint distribution): Should the discriminator be able to tell they're paired?
+2. **Different images** (marginal/product distribution): Random pairing as a baseline
+
+If the discriminator cannot distinguish joint from marginal pairs, then z_c and z_d are statistically independent—they share no information.
+
+**Justification:** The MI penalty is essential for true disentanglement:
+1. **Prevents information leakage**: Without MI penalty, anatomy could leak into disease space (or vice versa), enabling redundant encoding
+2. **Enables compositional generation**: Independent z_c and z_d mean we can mix-and-match anatomy with different diseases
+3. **Interpretability**: Each latent space captures distinct, non-overlapping factors of variation
 
 #### Two-Player Dynamics
 
@@ -227,6 +375,72 @@ Equilibrium Analysis:
 ### 1.5 Perceptual & Adversarial (PatchGAN) Dynamics
 
 These auxiliary losses improve reconstruction quality by matching high-level features (perceptual) and local texture statistics (adversarial).
+
+#### Mathematical Formulation
+
+**Perceptual Loss:**
+```
+L_perc = Σₗ wₗ · ||φₗ(x) - φₗ(x̂)||²₂ / Nₗ
+```
+
+Where:
+- `φₗ(·)` extracts feature maps from layer l of the frozen CheSS backbone
+- `wₗ` is the weight for layer l (typically decreasing with depth)
+- `Nₗ` is the number of elements in the feature map at layer l
+- The sum is over selected backbone layers (e.g., layer1, layer2, layer3)
+
+**What it compares:** Instead of comparing raw pixels, perceptual loss compares *feature representations* extracted by a pretrained network. Two images with similar high-level structure (edges, textures, anatomical regions) will have similar feature maps even if they differ pixel-by-pixel.
+
+**Justification:**
+1. **Semantic similarity**: MSE treats all pixels equally; perceptual loss weights clinically meaningful structures (learned by CheSS) more heavily
+2. **Blur prevention**: Pure MSE incentivizes averaging over uncertainty; perceptual loss preserves sharp edges and textures
+3. **Domain-specific features**: Using the CheSS backbone (trained on chest X-rays) ensures the loss emphasizes medically relevant features
+
+---
+
+**Adversarial Loss (PatchGAN):**
+
+**Generator (Decoder) Loss:**
+```
+L_adv_G = E_{x̂}[-log D(x̂)]
+```
+
+Or with least-squares formulation:
+```
+L_adv_G = E_{x̂}[(D(x̂) - 1)²]
+```
+
+**Discriminator Loss:**
+```
+L_adv_D = E_x[(D(x) - 1)²] + E_{x̂}[D(x̂)²]
+```
+
+Where:
+- `D(·) ∈ ℝ^(H'×W')` outputs a spatial map of "realness" scores (PatchGAN)
+- `x` is a real chest X-ray from the dataset
+- `x̂` is a reconstruction from the decoder
+- Each spatial location in D's output judges a local patch of the input
+
+**What it compares:** The discriminator learns to distinguish real X-rays from reconstructions by examining local texture statistics. The decoder learns to produce reconstructions that are locally indistinguishable from real images.
+
+**Justification:**
+1. **Texture realism**: Captures high-frequency details that MSE/perceptual loss miss
+2. **Local focus**: PatchGAN architecture ensures realistic textures everywhere, not just globally plausible images
+3. **Training stability**: Patch-based discrimination is more stable than full-image GAN training
+
+---
+
+**Combined Total Loss:**
+```
+L_total = λ_rec · L_rec
+        + λ_kl_c · L_KL_common + λ_kl_d · L_KL_disease
+        + λ_null · L_null
+        + λ_mi · L_MI_penalty
+        + λ_perc · L_perc
+        + λ_adv · L_adv_G
+```
+
+Where λ values are the `--weight_*` hyperparameters.
 
 #### Perceptual Loss (Backbone-Based)
 
@@ -621,6 +835,11 @@ Below are five distinct manifold configurations that can emerge from SepVAE trai
               │
         (All classes overlapping)
 
+Where does composition land? NOWHERE MEANINGFUL
+─────────────────────────────────────────────────
+Since Δ▲ ≈ Δ■ ≈ random noise (no consistent direction),
+z_composed = z_● + Δ▲ + Δ■ = z_● + noise + noise = garbage
+
 Legend: ● Normal, ▲ Effusion, ■ Cardiomegaly
 ```
 
@@ -646,12 +865,22 @@ Legend: ● Normal, ▲ Effusion, ■ Cardiomegaly
               │
               │
               │
-         ─────●────▲▲▲────■■■■── PC1
-              │
-              │    (All variation on PC1)
-              │
+         ─────●────▲▲▲──✗─■■■■── PC1
+              │         ↑
+              │    Composition lands HERE
+              │    (between diseases = interpolation, not both!)
 
-Legend: ● Normal, ▲ Effusion, ■ Cardiomegaly
+Where does composition land? BETWEEN the diseases
+─────────────────────────────────────────────────
+Δ▲ = (+d, 0)  →  effusion is "positive" on PC1
+Δ■ = (+2d, 0) →  cardiomegaly is "more positive" on PC1
+
+z_composed = z_● + Δ▲ + Δ■ = (+3d, 0)
+           = lands past cardiomegaly (extrapolation)
+     OR if Δ▲ and Δ■ are opposite directions:
+z_composed = z_● + (+d) + (-d) = z_● = NORMAL (cancellation!)
+
+Legend: ● Normal, ▲ Effusion, ■ Cardiomegaly, ✗ Invalid composition
 ```
 
 | Property | Value | Impact on Composition |
@@ -675,14 +904,29 @@ Legend: ● Normal, ▲ Effusion, ■ Cardiomegaly
         z_salient PC2
               │
         ●●●   │              ▲▲▲
-       ●●●●●  │             ▲▲▲▲▲
-         ─────┼───────────────────── PC1
-              │
+       ●●●●●  │      ✗      ▲▲▲▲▲
+         ─────┼───────↑───────────── PC1
+              │       │
+              │   Composition lands in VOID
               │    ■■■■■
               │   ■■■■■■
               │
 
-Legend: ● Normal, ▲ Effusion, ■ Cardiomegaly
+Where does composition land? IN THE VOID
+─────────────────────────────────────────
+z_composed = z_● + Δ▲ + Δ■
+
+        ●●●               ▲▲▲
+       ●●●●●      ✗      ▲▲▲▲▲    ✗ is equidistant from
+              ↗     ↖              ▲ and ■, but the decoder
+           Δ■         Δ▲           has NEVER seen this region!
+              ■■■■■
+             ■■■■■■
+
+The composition point ✗ falls in untrained "dead space"
+→ Decoder produces artifacts, blur, or mode collapse
+
+Legend: ● Normal, ▲ Effusion, ■ Cardiomegaly, ✗ Void composition
 ```
 
 | Property | Value | Impact on Composition |
@@ -707,17 +951,23 @@ Legend: ● Normal, ▲ Effusion, ■ Cardiomegaly
 ```
         z_salient PC2 (Effusion axis)
               │
-              │▲▲▲▲▲
-              │▲▲▲▲▲▲
-              │▲▲▲▲▲
+              │▲▲▲▲▲               ★★★ ← COMPOSITION ZONE
+              │▲▲▲▲▲▲             ★★★★   (Eff + Card)
+              │▲▲▲▲▲              ★★★
          ●●●●●┼●●●●●●●●●●●●●●●●●●● PC1 (Cardiomegaly axis)
          ●●●●●│●●●●●●●●●●●●●●●●●●●
          ●●●●●│         ■■■■■■■■■
               │         ■■■■■■■■■
               │         ■■■■■■■■■
               │
-                    ★ = z_eff + z_card
-                       (valid composition target)
+
+Composition formula: z_★ = z_● + (z_▲ - z_●) + (z_■ - z_●)
+                        = origin + Δ_eff + Δ_card
+
+The ★ region is in the UPPER-RIGHT quadrant because:
+- Moving UP adds effusion features (Δ_eff along PC2)
+- Moving RIGHT adds cardiomegaly features (Δ_card along PC1)
+- The quadrant is POPULATED (manifold is dense) → decoder works!
 
 Legend: ● Normal (origin), ▲ Effusion, ■ Cardiomegaly, ★ Composition
 ```
@@ -755,15 +1005,21 @@ The composed point lies in a region the decoder can interpret because:
               │    ▲▲▲▲
               │   ▲▲  ▲▲
               │  ▲      ▲
-         ─────┼─●●●      ╲──────── PC1
-              │  ●●●●     ╲
-              │    ●●●●    ■■■
-              │      ●●●●  ■■■■
+         ─────┼─●●●    ✗ ╲──────── PC1
+              │  ●●●●  ↑  ╲
+              │    ●●●●│   ★■■■  ← ★ Geodesic composition
+              │      ●●●●  ■■■■     (follows the curve)
               │         ●●●■■■
               │            ■■■
 
-        Curved path ╲ = geodesic (valid)
-        Straight line = Euclidean (INVALID - crosses gap)
+              ✗ = Euclidean composition target (INVALID!)
+                  Falls in void between clusters
+
+              ★ = Geodesic composition target (VALID)
+                  Reached by following manifold curvature
+
+Why ✗ fails: Direct addition z_● + Δ▲ + Δ■ lands OFF-manifold
+Why ★ works: Path-integrated composition stays ON-manifold
 ```
 
 | Property | Value | Impact on Composition |

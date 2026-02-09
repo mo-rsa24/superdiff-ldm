@@ -12,6 +12,9 @@ MNIST/
 *.pyc
 *.log
 *.wandb
+data/
+*.html
+*.txt
 *.png
 *.json
 logs/

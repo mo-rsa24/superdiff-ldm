@@ -1,0 +1,351 @@
+\documentclass[tikz,border=15pt]{standalone}
+\usepackage[dvipsnames,svgnames,x11names,table]{xcolor}
+\usepackage{tikz}
+\usepackage{amsmath,amssymb}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, calc, fit, backgrounds, decorations.pathreplacing, 3d}
+
+% =============================================================================
+% COLOR DEFINITIONS
+% =============================================================================
+\definecolor{inputcolor}{RGB}{158, 158, 158}
+\definecolor{convcolor}{RGB}{100, 181, 246}
+\definecolor{bncolor}{RGB}{129, 199, 132}
+\definecolor{relucolor}{RGB}{255, 183, 77}
+\definecolor{fccolor}{RGB}{186, 104, 200}
+\definecolor{flattencolor}{RGB}{255, 138, 128}
+\definecolor{commoncolor}{RGB}{255, 193, 7}
+\definecolor{disease1color}{RGB}{244, 67, 54}
+\definecolor{disease2color}{RGB}{33, 150, 243}
+\definecolor{latentcolor}{RGB}{233, 30, 99}
+\definecolor{deconvcolor}{RGB}{0, 150, 136}
+\definecolor{outputcolor}{RGB}{158, 158, 158}
+\definecolor{unflattencolor}{RGB}{255, 138, 128}
+
+% =============================================================================
+% CUSTOM COMMANDS
+% =============================================================================
+% Feature map block with 3D effect
+% #1: x, #2: y, #3: height, #4: width (depth), #5: color, #6: label
+\newcommand{\featuremap}[6]{
+    \begin{scope}[shift={(#1, #2)}]
+        % Back face
+        \fill[#5!50!black] (0.1, 0.1) rectangle ++(#4, #3);
+        % Front face
+        \fill[#5] (0, 0) rectangle ++(#4, #3);
+        % Top edge
+        \fill[#5!80!white] (0, #3) -- ++(0.1, 0.1) -- ++(#4, 0) -- ++(-0.1, -0.1) -- cycle;
+        % Right edge
+        \fill[#5!60!black] (#4, 0) -- ++(0.1, 0.1) -- ++(0, #3) -- ++(-0.1, -0.1) -- cycle;
+        % Border
+        \draw[black, thick] (0, 0) rectangle ++(#4, #3);
+        \draw[black] (0, #3) -- ++(0.1, 0.1) -- ++(#4, 0);
+        \draw[black] (#4, 0) -- ++(0.1, 0.1) -- ++(0, #3);
+        % Label
+        \node[font=\tiny, below, align=center] at (#4/2, -0.1) {#6};
+    \end{scope}
+}
+
+% Stacked feature maps
+\newcommand{\stackedmaps}[7]{
+    % #1: x, #2: y, #3: height, #4: width, #5: color, #6: num stacks, #7: label
+    \begin{scope}[shift={(#1, #2)}]
+        \foreach \i in {1,...,#6} {
+            \pgfmathsetmacro{\offset}{(\i-1)*0.06}
+            \fill[#5!50!black, opacity=0.9] (\offset+0.1, \offset+0.1) rectangle ++({#4}, {#3});
+            \fill[#5, opacity=0.95] (\offset, \offset) rectangle ++({#4}, {#3});
+            \fill[#5!80!white, opacity=0.9] (\offset, {#3+\offset}) -- ++(0.1, 0.1) -- ++({#4}, 0) -- ++(-0.1, -0.1) -- cycle;
+            \fill[#5!60!black, opacity=0.9] ({#4+\offset}, \offset) -- ++(0.1, 0.1) -- ++(0, {#3}) -- ++(-0.1, -0.1) -- cycle;
+        }
+        \pgfmathsetmacro{\finaloff}{(#6-1)*0.06}
+        \draw[black, thick] (\finaloff, \finaloff) rectangle ++({#4}, {#3});
+        \draw[black] (\finaloff, {#3+\finaloff}) -- ++(0.1, 0.1) -- ++({#4}, 0);
+        \draw[black] ({#4+\finaloff}, \finaloff) -- ++(0.1, 0.1) -- ++(0, {#3});
+        \node[font=\tiny, below, align=center] at ({#4/2 + \finaloff/2}, -0.15) {#7};
+    \end{scope}
+}
+
+% Operation box
+\newcommand{\opbox}[5]{
+    % #1: x, #2: y, #3: width, #4: color, #5: label
+    \fill[#4, rounded corners=2pt] (#1, #2) rectangle ++(#3, 0.4);
+    \draw[black, rounded corners=2pt] (#1, #2) rectangle ++(#3, 0.4);
+    \node[font=\tiny\bfseries, white] at ({#1 + #3/2}, {#2 + 0.2}) {#5};
+}
+
+% FC layer (vertical bar)
+\newcommand{\fclayer}[5]{
+    % #1: x, #2: y, #3: height, #4: color, #5: label
+    \fill[#4] (#1, #2) rectangle ++(0.15, #3);
+    \draw[black, thick] (#1, #2) rectangle ++(0.15, #3);
+    \node[font=\tiny, below, align=center] at ({#1 + 0.075}, {#2 - 0.1}) {#5};
+}
+
+\begin{document}
+\begin{tikzpicture}[>=Stealth]
+
+% =============================================================================
+% TITLE
+% =============================================================================
+\node[font=\Large\bfseries] at (12, 14) {Mini-SepVAE Detailed Architecture};
+\node[font=\normalsize] at (12, 13.3) {Convolutional Operations with I/O Dimensions};
+
+% =============================================================================
+% SECTION 1: ENCODER
+% =============================================================================
+\node[font=\normalsize\bfseries, anchor=west] at (-1, 12) {1. Encoder (Shared Backbone)};
+
+% Input (28x28x1)
+\stackedmaps{0}{10}{1.4}{0.2}{inputcolor}{1}{Input\\$28{\times}28{\times}1$}
+
+% Arrow + Conv1
+\draw[->, thick] (0.4, 10.7) -- (1, 10.7);
+\opbox{1.1}{10.5}{1.2}{convcolor}{Conv2d}
+\node[font=\tiny, above] at (1.7, 10.95) {$k{=}3, s{=}2, p{=}1$};
+\node[font=\tiny, below] at (1.7, 10.45) {$1 \to 32$};
+
+% After Conv1 (14x14x32)
+\stackedmaps{2.5}{10}{1.1}{0.25}{convcolor}{4}{$14{\times}14{\times}32$}
+
+% Arrow + BN + LeakyReLU
+\draw[->, thick] (3.1, 10.55) -- (3.5, 10.55);
+\opbox{3.6}{10.35}{0.6}{bncolor}{BN}
+\opbox{4.3}{10.35}{0.7}{relucolor}{LReLU}
+
+% Arrow + Conv2
+\draw[->, thick] (5.1, 10.55) -- (5.6, 10.55);
+\opbox{5.7}{10.35}{1.2}{convcolor}{Conv2d}
+\node[font=\tiny, above] at (6.3, 10.8) {$k{=}3, s{=}2, p{=}1$};
+\node[font=\tiny, below] at (6.3, 10.3) {$32 \to 64$};
+
+% After Conv2 (7x7x64)
+\stackedmaps{7.1}{10}{0.9}{0.25}{convcolor}{5}{$7{\times}7{\times}64$}
+
+% Arrow + BN + LeakyReLU
+\draw[->, thick] (7.8, 10.45) -- (8.2, 10.45);
+\opbox{8.3}{10.25}{0.6}{bncolor}{BN}
+\opbox{9}{10.25}{0.7}{relucolor}{LReLU}
+
+% Arrow + Conv3
+\draw[->, thick] (9.8, 10.45) -- (10.3, 10.45);
+\opbox{10.4}{10.25}{1.2}{convcolor}{Conv2d}
+\node[font=\tiny, above] at (11, 10.7) {$k{=}3, s{=}2, p{=}1$};
+\node[font=\tiny, below] at (11, 10.2) {$64 \to 128$};
+
+% After Conv3 (4x4x128)
+\stackedmaps{11.8}{9.9}{0.7}{0.25}{convcolor}{6}{$4{\times}4{\times}128$}
+
+% Arrow + BN + LeakyReLU
+\draw[->, thick] (12.5, 10.25) -- (12.9, 10.25);
+\opbox{13}{10.05}{0.6}{bncolor}{BN}
+\opbox{13.7}{10.05}{0.7}{relucolor}{LReLU}
+
+% Flatten
+\draw[->, thick] (14.5, 10.25) -- (15, 10.25);
+\opbox{15.1}{10.05}{0.9}{flattencolor}{Flatten}
+
+% FC to hidden
+\draw[->, thick] (16.1, 10.25) -- (16.6, 10.25);
+\fclayer{16.7}{9.5}{1.5}{fccolor}{FC\\$2048{\to}256$}
+
+% Hidden features
+\fclayer{17.5}{9.7}{1.1}{fccolor!50}{$h$\\$\mathbb{R}^{256}$}
+
+% =============================================================================
+% SECTION 2: LATENT HEADS
+% =============================================================================
+\node[font=\normalsize\bfseries, anchor=west] at (-1, 8) {2. Latent Heads (Parallel)};
+
+% Connection from hidden to heads
+\draw[->, thick, dashed] (17.55, 9.6) -- (17.55, 8.5) -- (3, 8.5);
+
+% --- Common Head ---
+\node[font=\small\bfseries, commoncolor!80!black] at (1.5, 7.8) {Common Head};
+
+\fclayer{0}{6.5}{0.8}{fccolor}{$h$\\$256$}
+\draw[->, thick] (0.25, 6.9) -- (0.8, 7.2);
+\draw[->, thick] (0.25, 6.9) -- (0.8, 6.5);
+
+\fclayer{0.9}{6.9}{0.6}{commoncolor}{$\mu_c$\\FC: $256{\to}16$}
+\fclayer{0.9}{6.2}{0.6}{commoncolor!70}{$\log\sigma^2_c$\\FC: $256{\to}16$}
+
+\draw[->, thick] (1.15, 7.2) -- (1.8, 6.9);
+\draw[->, thick] (1.15, 6.5) -- (1.8, 6.9);
+
+\node[draw, dashed, rounded corners=2pt, minimum width=0.8cm, minimum height=0.6cm, fill=commoncolor!20] (zc) at (2.4, 6.9) {$z_c$};
+\node[font=\tiny, below] at (2.4, 6.5) {$\mathbb{R}^{16}$};
+
+% Reparameterization annotation
+\node[font=\tiny, align=center] at (2.4, 7.6) {$z_c = \mu_c + \sigma_c \odot \epsilon$};
+
+% --- Disease Head 1 ---
+\node[font=\small\bfseries, disease1color!80!black] at (6, 7.8) {Disease\_1 Head};
+
+\fclayer{4.5}{6.5}{0.8}{fccolor}{$h$\\$256$}
+\draw[->, thick] (4.75, 6.9) -- (5.3, 7.2);
+\draw[->, thick] (4.75, 6.9) -- (5.3, 6.5);
+
+\fclayer{5.4}{6.9}{0.6}{disease1color}{$\mu_{d1}$\\FC: $256{\to}8$}
+\fclayer{5.4}{6.2}{0.6}{disease1color!70}{$\log\sigma^2_{d1}$\\FC: $256{\to}8$}
+
+\draw[->, thick] (5.65, 7.2) -- (6.3, 6.9);
+\draw[->, thick] (5.65, 6.5) -- (6.3, 6.9);
+
+\node[draw, dashed, rounded corners=2pt, minimum width=0.8cm, minimum height=0.6cm, fill=disease1color!20] (zd1) at (6.9, 6.9) {$z_{d1}$};
+\node[font=\tiny, below] at (6.9, 6.5) {$\mathbb{R}^{8}$};
+
+% --- Disease Head 2 ---
+\node[font=\small\bfseries, disease2color!80!black] at (10.5, 7.8) {Disease\_2 Head};
+
+\fclayer{9}{6.5}{0.8}{fccolor}{$h$\\$256$}
+\draw[->, thick] (9.25, 6.9) -- (9.8, 7.2);
+\draw[->, thick] (9.25, 6.9) -- (9.8, 6.5);
+
+\fclayer{9.9}{6.9}{0.6}{disease2color}{$\mu_{d2}$\\FC: $256{\to}8$}
+\fclayer{9.9}{6.2}{0.6}{disease2color!70}{$\log\sigma^2_{d2}$\\FC: $256{\to}8$}
+
+\draw[->, thick] (10.15, 7.2) -- (10.8, 6.9);
+\draw[->, thick] (10.15, 6.5) -- (10.8, 6.9);
+
+\node[draw, dashed, rounded corners=2pt, minimum width=0.8cm, minimum height=0.6cm, fill=disease2color!20] (zd2) at (11.4, 6.9) {$z_{d2}$};
+\node[font=\tiny, below] at (11.4, 6.5) {$\mathbb{R}^{8}$};
+
+% =============================================================================
+% SECTION 3: ROUTING & CONCATENATION
+% =============================================================================
+\node[font=\normalsize\bfseries, anchor=west] at (-1, 5.3) {3. Label-Based Routing \& Concatenation};
+
+% Routing box
+\draw[thick, rounded corners, fill=orange!10] (0, 3.8) rectangle (8, 5);
+\node[font=\small\bfseries] at (4, 4.7) {Routing Logic};
+\node[font=\tiny, align=left, anchor=north west] at (0.2, 4.5) {
+    \textbf{Normal (label=0):} $z_d = \mathbf{0}^8$ (nulled) \\
+    \textbf{Disease\_1 (label=1):} $z_d = z_{d1}$ \\
+    \textbf{Disease\_2 (label=2):} $z_d = z_{d2}$
+};
+
+% Arrows from latents to routing
+\draw[->, thick] (2.4, 6.3) -- (2.4, 5);
+\draw[->, thick] (6.9, 6.3) -- (5, 5);
+\draw[->, thick] (11.4, 6.3) -- (11.4, 5.5) -- (6.5, 5.5) -- (6.5, 5);
+
+% Concatenation output
+\draw[->, thick] (4, 3.8) -- (4, 3.3);
+\node[draw, thick, rounded corners=3pt, fill=latentcolor!20, minimum width=2.5cm, minimum height=0.6cm] at (4, 2.9) {$z = [z_c \;|\; z_d]$};
+\node[font=\tiny, below] at (4, 2.5) {$z \in \mathbb{R}^{24}$ (16 + 8)};
+
+% =============================================================================
+% SECTION 4: DECODER
+% =============================================================================
+\node[font=\normalsize\bfseries, anchor=west] at (-1, 1.8) {4. Decoder (Transposed Convolutions)};
+
+% FC from z
+\draw[->, thick] (4, 2.3) -- (4, 1.5) -- (-0.5, 1.5);
+\fclayer{-0.6}{0.5}{1.2}{fccolor}{FC\\$24{\to}2048$}
+
+% Unflatten
+\draw[->, thick] (-0.35, 1.1) -- (0.2, 1.1);
+\opbox{0.3}{0.9}{1}{unflattencolor}{Unflatten}
+\node[font=\tiny, below] at (0.8, 0.85) {$\to 128{\times}4{\times}4$}
+
+% After unflatten (4x4x128)
+\stackedmaps{1.5}{0.5}{0.6}{0.2}{deconvcolor}{6}{$4{\times}4{\times}128$}
+
+% ConvTranspose1
+\draw[->, thick] (2.2, 0.8) -- (2.7, 0.8);
+\opbox{2.8}{0.6}{1.4}{deconvcolor}{ConvT2d}
+\node[font=\tiny, above] at (3.5, 1.05) {$k{=}3, s{=}2, p{=}1$};
+\node[font=\tiny, below] at (3.5, 0.55) {$128{\to}64, op{=}0$};
+
+% After ConvT1 (7x7x64)
+\stackedmaps{4.4}{0.4}{0.8}{0.22}{deconvcolor}{5}{$7{\times}7{\times}64$}
+
+% BN + LeakyReLU
+\draw[->, thick] (5, 0.75) -- (5.4, 0.75);
+\opbox{5.5}{0.55}{0.6}{bncolor}{BN}
+\opbox{6.2}{0.55}{0.7}{relucolor}{LReLU}
+
+% ConvTranspose2
+\draw[->, thick] (7, 0.75) -- (7.5, 0.75);
+\opbox{7.6}{0.55}{1.4}{deconvcolor}{ConvT2d}
+\node[font=\tiny, above] at (8.3, 1) {$k{=}3, s{=}2, p{=}1$};
+\node[font=\tiny, below] at (8.3, 0.5) {$64{\to}32, op{=}1$};
+
+% After ConvT2 (14x14x32)
+\stackedmaps{9.2}{0.3}{1}{0.22}{deconvcolor}{4}{$14{\times}14{\times}32$}
+
+% BN + LeakyReLU
+\draw[->, thick] (9.9, 0.8) -- (10.3, 0.8);
+\opbox{10.4}{0.6}{0.6}{bncolor}{BN}
+\opbox{11.1}{0.6}{0.7}{relucolor}{LReLU}
+
+% ConvTranspose3
+\draw[->, thick] (11.9, 0.8) -- (12.4, 0.8);
+\opbox{12.5}{0.6}{1.4}{deconvcolor}{ConvT2d}
+\node[font=\tiny, above] at (13.2, 1.05) {$k{=}3, s{=}2, p{=}1$};
+\node[font=\tiny, below] at (13.2, 0.55) {$32{\to}1, op{=}1$};
+
+% Tanh activation
+\draw[->, thick] (14, 0.8) -- (14.5, 0.8);
+\opbox{14.6}{0.6}{0.7}{relucolor!80!red}{Tanh}
+
+% Output (28x28x1)
+\stackedmaps{15.5}{0.3}{1.2}{0.18}{outputcolor}{1}{Output\\$28{\times}28{\times}1$}
+
+% Output range annotation
+\node[font=\tiny, right] at (15.9, 0.9) {$\hat{x} \in [-1, 1]$};
+
+% =============================================================================
+% DIMENSION FLOW SUMMARY BOX
+% =============================================================================
+\draw[thick, rounded corners, fill=gray!5] (10, 2.5) rectangle (17.5, 5.2);
+\node[font=\small\bfseries, anchor=north west] at (10.2, 5) {Dimension Flow Summary:};
+\node[font=\tiny, align=left, anchor=north west] at (10.2, 4.6) {
+    \textbf{Encoder:}\\
+    $28^2{\times}1 \xrightarrow{\text{Conv}} 14^2{\times}32 \xrightarrow{\text{Conv}} 7^2{\times}64 \xrightarrow{\text{Conv}} 4^2{\times}128$\\
+    $\xrightarrow{\text{Flatten}} 2048 \xrightarrow{\text{FC}} 256$\\[3pt]
+    \textbf{Heads:}\\
+    $256 \xrightarrow{\text{FC}} \mu_c, \sigma_c \in \mathbb{R}^{16}$ (Common)\\
+    $256 \xrightarrow{\text{FC}} \mu_{d}, \sigma_{d} \in \mathbb{R}^{8}$ (Disease)\\[3pt]
+    \textbf{Decoder:}\\
+    $24 \xrightarrow{\text{FC}} 2048 \xrightarrow{\text{Unflatten}} 4^2{\times}128$\\
+    $\xrightarrow{\text{ConvT}} 7^2{\times}64 \xrightarrow{\text{ConvT}} 14^2{\times}32 \xrightarrow{\text{ConvT}} 28^2{\times}1$
+};
+
+% =============================================================================
+% LEGEND
+% =============================================================================
+\draw[thick, rounded corners, fill=white] (-1, -1.8) rectangle (8.5, -0.2);
+\node[font=\small\bfseries, anchor=north west] at (-0.8, -0.35) {Legend:};
+
+% Row 1
+\fill[convcolor] (-0.7, -0.85) rectangle (-0.3, -0.55);
+\node[font=\tiny, anchor=west] at (-0.2, -0.7) {Conv2d};
+
+\fill[deconvcolor] (1.5, -0.85) rectangle (1.9, -0.55);
+\node[font=\tiny, anchor=west] at (2, -0.7) {ConvTranspose2d};
+
+\fill[bncolor] (4.5, -0.85) rectangle (4.9, -0.55);
+\node[font=\tiny, anchor=west] at (5, -0.7) {BatchNorm};
+
+% Row 2
+\fill[relucolor] (-0.7, -1.25) rectangle (-0.3, -0.95);
+\node[font=\tiny, anchor=west] at (-0.2, -1.1) {LeakyReLU};
+
+\fill[fccolor] (1.5, -1.25) rectangle (1.9, -0.95);
+\node[font=\tiny, anchor=west] at (2, -1.1) {FC (Linear)};
+
+\fill[flattencolor] (4.5, -1.25) rectangle (4.9, -0.95);
+\node[font=\tiny, anchor=west] at (5, -1.1) {Flatten/Unflatten};
+
+% Row 3
+\draw[dashed, thick] (-0.7, -1.55) rectangle (-0.3, -1.4);
+\node[font=\tiny, anchor=west] at (-0.2, -1.475) {Latent Variable};
+
+\fill[latentcolor!30] (1.5, -1.65) rectangle (1.9, -1.35);
+\node[font=\tiny, anchor=west] at (2, -1.5) {Concatenated $z$};
+
+% Notation
+\node[font=\tiny, align=left, anchor=west] at (4.3, -1.5) {$k$=kernel, $s$=stride, $p$=pad, $op$=output\_pad};
+
+\end{tikzpicture}
+\end{document}

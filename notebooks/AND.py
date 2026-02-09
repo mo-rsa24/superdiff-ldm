@@ -24,7 +24,7 @@ vae, tokenizer, text_encoder, unet = itemgetter(
     "vae", "tokenizer", "text_encoder", "unet"
 )(models)
 
-scheduler = EulerDiscreteScheduler.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="scheduler")
+scheduler = EulerDiscreteScheduler.from_pretrained("Manojb/stable-diffusion-2-1-base", subfolder="scheduler")
 
 obj_prompt = ["A Dog On The Left"]
 bg_prompt = ["A Cat On The Right"]
