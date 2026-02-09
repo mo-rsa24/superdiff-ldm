@@ -1,0 +1,19 @@
+# CUDA-specific package overrides
+# This file contains GPU-specific package versions that override requirements_clean.txt
+# Use this when you need newer PyTorch versions for GPU compatibility (e.g., RTX 5090 needs sm_120)
+
+# For RTX 5090 (sm_120) support - requires PyTorch 2.6+
+# Uncomment the appropriate section based on your CUDA version
+
+# === CUDA 12.4 (Recommended for RTX 5090) ===
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch>=2.6.0
+torchvision>=0.21.0
+torchaudio>=2.6.0
+triton>=3.1.0
+
+# === Alternative: PyTorch Nightly (Latest features, use with caution) ===
+# --extra-index-url https://download.pytorch.org/whl/nightly/cu124
+# torch
+# torchvision
+# torchaudio

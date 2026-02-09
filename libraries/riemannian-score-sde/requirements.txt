@@ -1,0 +1,6 @@
+jax>=0.5.3
+dm-haiku==0.0.13
+optax>=0.2.4
+distrax==0.1.5
+fsspec[http]>=2021.05.0
+joblib
