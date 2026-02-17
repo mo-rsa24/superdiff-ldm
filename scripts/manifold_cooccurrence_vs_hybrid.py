@@ -12,11 +12,12 @@ their geometric relationships on S^{767}:
   5. Standard SD3 "AND" output decoded → CLIP image embedding  (monolithic AND)
   6. Geodesic midpoint:        normalize(e_a + e_b)
 
-Two plots are produced:
-  A. Manifold projection (PCA / UMAP) — all points in a shared 2D space
+Plots produced:
+  0. Prompt/method image grid -- rows are methods/prompts, columns are runs
+  A. Manifold projection (MDS / PCA / UMAP) -- all points in a shared 2D space
   B. Geodesic decomposition (t, r) — tangential vs residual components
      relative to the great-circle arc between the two concept anchors.
-     Co-occurrence → low r; hybrids → high r.
+     Co-occurrence -> low r; hybrids -> high r.
 
 Usage:
     # Default: car+truck (best non-person pair, 224 COCO images)
@@ -27,7 +28,10 @@ Usage:
         --pair car+truck \
         --experiment-dir experiments/trajectory_dynamics/YYYYMMDD_HHMMSS
 
-    # With UMAP instead of PCA
+    # Interactive MDS (default)
+    python scripts/manifold_cooccurrence_vs_hybrid.py --projection mds
+
+    # With UMAP instead of MDS
     python scripts/manifold_cooccurrence_vs_hybrid.py --projection umap
 
     # Generate fresh SD3 outputs (requires GPU + SD3.5 model)
@@ -36,6 +40,7 @@ Usage:
 
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -49,6 +54,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
 from sklearn.decomposition import PCA
+from sklearn.manifold import MDS
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -58,6 +64,7 @@ PROMPTS_JSON = CLIP_DIR / "text_embeddings" / "prompts.json"
 MANIFEST = CLIP_DIR / "image_manifest.jsonl"
 IMAGE_EMBEDS = CLIP_DIR / "image_embeddings.npy"
 TEXT_EMBED_DIR = CLIP_DIR / "text_embeddings"
+DATASET_META = PROJECT_ROOT / "datasets" / "coco_common_pairs.json"
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +111,116 @@ def load_coco_image_embeddings(pair: str) -> np.ndarray:
 
     mask = np.array([r["pair"] == pair for r in records])
     return all_embeds[mask]
+
+
+def load_manifest_records(pair: Optional[str] = None) -> List[dict]:
+    """Load COCO manifest records, optionally filtered to one pair."""
+    with open(MANIFEST) as f:
+        records = [json.loads(line) for line in f if line.strip()]
+    if pair is None:
+        return records
+    return [r for r in records if r["pair"] == pair]
+
+
+def load_coco_image_dir() -> Optional[Path]:
+    """Read COCO image root from dataset metadata."""
+    if not DATASET_META.exists():
+        return None
+    with open(DATASET_META) as f:
+        meta = json.load(f)
+    image_dir = Path(meta["metadata"]["image_dir"])
+    return image_dir if image_dir.exists() else None
+
+
+def center_crop_resize(img, size: int = 512):
+    """Center-crop to square and resize for consistent grid cells."""
+    w, h = img.size
+    side = min(w, h)
+    left = (w - side) // 2
+    top = (h - side) // 2
+    img = img.crop((left, top, left + side, top + side))
+    from PIL import Image
+    return img.resize((size, size), Image.LANCZOS)
+
+
+def load_coco_images(pair: str, n_images: int = 4, seed: int = 42) -> List["PIL.Image"]:
+    """Load random COCO examples for a pair."""
+    from PIL import Image
+
+    image_dir = load_coco_image_dir()
+    if image_dir is None:
+        print(f"  WARNING: COCO image dir unavailable (missing {DATASET_META})")
+        return []
+
+    records = load_manifest_records(pair=pair)
+    if not records:
+        return []
+
+    rng = random.Random(seed)
+    sampled = rng.sample(records, min(n_images, len(records)))
+    images: List["PIL.Image"] = []
+    for rec in sampled:
+        img_path = image_dir / rec["file_name"]
+        if not img_path.exists():
+            continue
+        images.append(center_crop_resize(Image.open(img_path).convert("RGB")))
+    return images
+
+
+def retrieve_pair_images_for_embedding(
+    pair: str,
+    query_embedding: np.ndarray,
+    n_images: int = 4,
+) -> List["PIL.Image"]:
+    """Retrieve nearest COCO images (within pair) for a CLIP embedding query."""
+    from PIL import Image
+
+    image_dir = load_coco_image_dir()
+    if image_dir is None:
+        return []
+
+    records = load_manifest_records(pair=pair)
+    if not records:
+        return []
+
+    q = np.asarray(query_embedding, dtype=np.float32)
+    q = q / max(np.linalg.norm(q), 1e-8)
+
+    all_embeds = np.load(IMAGE_EMBEDS)
+    all_records = load_manifest_records()
+    pair_indices = [i for i, rec in enumerate(all_records) if rec["pair"] == pair]
+    if not pair_indices:
+        return []
+
+    pair_embeds = all_embeds[pair_indices]
+    sims = pair_embeds @ q
+    k = min(n_images, len(pair_indices))
+    if k == 0:
+        return []
+    top_local = np.argpartition(-sims, k - 1)[:k]
+    top_local = top_local[np.argsort(-sims[top_local])]
+
+    images: List["PIL.Image"] = []
+    for local_idx in top_local:
+        rec = all_records[pair_indices[local_idx]]
+        img_path = image_dir / rec["file_name"]
+        if not img_path.exists():
+            continue
+        images.append(center_crop_resize(Image.open(img_path).convert("RGB")))
+    return images
+
+
+def concise_prompt_label(prompt: str, max_chars: int = 12) -> str:
+    """Short row label for dense image grids."""
+    text = prompt.strip()
+    lowered = text.lower()
+    for prefix in ("a ", "an ", "the "):
+        if lowered.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
 
 
 def compute_geodesic_midpoint(e_a: np.ndarray, e_b: np.ndarray) -> np.ndarray:
@@ -203,14 +320,45 @@ def load_experiment_images(experiment_dir: Path) -> Dict[str, "PIL.Image"]:
 
     images = {}
     decoded_dir = experiment_dir
-    # Look for decoded PNGs — the trajectory experiment saves individual condition images
+    # Look for per-condition PNGs and skip diagnostics/composite plots.
+    skip_tokens = (
+        "decoded",
+        "trajectory",
+        "clip_probe",
+        "pairwise",
+        "manifold",
+        "subplot",
+        "distance",
+        "summary",
+        "kappa",
+        "statistics",
+        "comparison",
+    )
     for png in sorted(decoded_dir.glob("*.png")):
         name = png.stem
-        if "decoded" in name or "trajectory" in name or "clip_probe" in name:
-            continue  # skip composite plots
+        if any(tok in name for tok in skip_tokens):
+            continue
         images[name] = Image.open(png).convert("RGB")
 
     return images
+
+
+def load_experiment_runs(
+    experiment_dir: Path,
+    max_runs: int = 4,
+) -> Dict[str, List["PIL.Image"]]:
+    """Load per-condition images across run folders (seed_*), if available."""
+    run_dirs = sorted([d for d in experiment_dir.glob("seed_*") if d.is_dir()])
+    if not run_dirs:
+        run_dirs = [experiment_dir]
+    run_dirs = run_dirs[:max_runs]
+
+    run_images: Dict[str, List["PIL.Image"]] = {}
+    for run_dir in run_dirs:
+        loaded = load_experiment_images(run_dir)
+        for name, img in loaded.items():
+            run_images.setdefault(name, []).append(img)
+    return run_images
 
 
 # ---------------------------------------------------------------------------
@@ -220,13 +368,13 @@ def load_experiment_images(experiment_dir: Path) -> Dict[str, "PIL.Image"]:
 def generate_outputs(
     prompt_a: str,
     prompt_b: str,
-    seed: int = 42,
+    seeds: List[int],
     num_inference_steps: int = 50,
     guidance_scale: float = 4.5,
-) -> Dict[str, "PIL.Image"]:
+) -> Dict[str, List["PIL.Image"]]:
     """Generate images for all conditions using SD3.5 Medium.
 
-    Returns dict: condition_name → PIL.Image
+    Returns dict: condition_name -> list[PIL.Image] (one per run/seed)
     """
     from notebooks.utils import get_sd3_models, get_image
     from notebooks.composition_experiments import (
@@ -257,44 +405,6 @@ def generate_outputs(
         model_id, subfolder="scheduler"
     )
 
-    # Shared initial noise
-    gen = torch.Generator(device=device).manual_seed(seed)
-    latents = torch.randn(1, 16, 128, 128, device=device, dtype=dtype, generator=gen)
-
-    results = {}
-
-    # 1. Individual A
-    print(f"  Generating: {prompt_a}")
-    final_a, tracker_a = sample_sd3_with_trajectory_tracking(
-        latents.clone(), prompt_a, scheduler, transformer,
-        tokenizer, text_encoder, tokenizer_2, text_encoder_2,
-        tokenizer_3, text_encoder_3,
-        guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
-    )
-    results["individual_a"] = get_image(vae, final_a, 1, 1)
-
-    # 2. Individual B
-    print(f"  Generating: {prompt_b}")
-    final_b, tracker_b = sample_sd3_with_trajectory_tracking(
-        latents.clone(), prompt_b, scheduler, transformer,
-        tokenizer, text_encoder, tokenizer_2, text_encoder_2,
-        tokenizer_3, text_encoder_3,
-        guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
-    )
-    results["individual_b"] = get_image(vae, final_b, 1, 1)
-
-    # 3. Monolithic AND
-    print(f"  Generating: {monolithic_prompt}")
-    final_m, tracker_m = sample_sd3_with_trajectory_tracking(
-        latents.clone(), monolithic_prompt, scheduler, transformer,
-        tokenizer, text_encoder, tokenizer_2, text_encoder_2,
-        tokenizer_3, text_encoder_3,
-        guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
-    )
-    results["monolithic_and"] = get_image(vae, final_m, 1, 1)
-
-    # 4. SuperDIFF FM-ODE
-    print(f"  Generating: SuperDIFF FM-ODE ({prompt_a} ∧ {prompt_b})")
     import importlib.util
     _spec = importlib.util.spec_from_file_location(
         "trajectory_dynamics_experiment",
@@ -303,13 +413,58 @@ def generate_outputs(
     _tde = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_tde)
     superdiff_fm_ode_sd3 = _tde.superdiff_fm_ode_sd3
-    final_sd, _, kappa_sd, ll_obj, ll_bg = superdiff_fm_ode_sd3(
-        latents.clone(), prompt_a, prompt_b, scheduler, transformer,
-        tokenizer, text_encoder, tokenizer_2, text_encoder_2,
-        tokenizer_3, text_encoder_3,
-        guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
-    )
-    results["superdiff_fm_ode"] = get_image(vae, final_sd, 1, 1)
+
+    results: Dict[str, List["PIL.Image"]] = {
+        "individual_a": [],
+        "individual_b": [],
+        "monolithic_and": [],
+        "superdiff_fm_ode": [],
+    }
+
+    for run_idx, seed in enumerate(seeds):
+        print(f"\n  Run {run_idx + 1}/{len(seeds)} (seed={seed})")
+        gen = torch.Generator(device=device).manual_seed(seed)
+        latents = torch.randn(1, 16, 128, 128, device=device, dtype=dtype, generator=gen)
+
+        # 1. Individual A
+        print(f"    Generating: {prompt_a}")
+        final_a, _ = sample_sd3_with_trajectory_tracking(
+            latents.clone(), prompt_a, scheduler, transformer,
+            tokenizer, text_encoder, tokenizer_2, text_encoder_2,
+            tokenizer_3, text_encoder_3,
+            guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
+        )
+        results["individual_a"].append(get_image(vae, final_a, 1, 1))
+
+        # 2. Individual B
+        print(f"    Generating: {prompt_b}")
+        final_b, _ = sample_sd3_with_trajectory_tracking(
+            latents.clone(), prompt_b, scheduler, transformer,
+            tokenizer, text_encoder, tokenizer_2, text_encoder_2,
+            tokenizer_3, text_encoder_3,
+            guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
+        )
+        results["individual_b"].append(get_image(vae, final_b, 1, 1))
+
+        # 3. Monolithic AND
+        print(f"    Generating: {monolithic_prompt}")
+        final_m, _ = sample_sd3_with_trajectory_tracking(
+            latents.clone(), monolithic_prompt, scheduler, transformer,
+            tokenizer, text_encoder, tokenizer_2, text_encoder_2,
+            tokenizer_3, text_encoder_3,
+            guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
+        )
+        results["monolithic_and"].append(get_image(vae, final_m, 1, 1))
+
+        # 4. SuperDIFF FM-ODE
+        print(f"    Generating: SuperDIFF FM-ODE ({prompt_a} ∧ {prompt_b})")
+        final_sd, _, _, _, _ = superdiff_fm_ode_sd3(
+            latents.clone(), prompt_a, prompt_b, scheduler, transformer,
+            tokenizer, text_encoder, tokenizer_2, text_encoder_2,
+            tokenizer_3, text_encoder_3,
+            guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
+        )
+        results["superdiff_fm_ode"].append(get_image(vae, final_sd, 1, 1))
 
     # Cleanup
     del vae, transformer, scheduler
@@ -335,12 +490,115 @@ COLORS = {
 }
 
 
+def build_prompt_grid_rows(
+    pair: str,
+    prompt_a: str,
+    prompt_b: str,
+    compositional_embedding: np.ndarray,
+    generated_runs: Dict[str, List["PIL.Image"]],
+    n_cols: int,
+    seed: int,
+) -> List[Tuple[str, List["PIL.Image"]]]:
+    """Assemble concise row-labeled image sets for the run grid."""
+    rows: List[Tuple[str, List["PIL.Image"]]] = []
+
+    if generated_runs.get("individual_a"):
+        rows.append((concise_prompt_label(prompt_a), generated_runs["individual_a"][:n_cols]))
+    if generated_runs.get("individual_b"):
+        rows.append((concise_prompt_label(prompt_b), generated_runs["individual_b"][:n_cols]))
+
+    coco_images = load_coco_images(pair, n_images=n_cols, seed=seed)
+    if coco_images:
+        rows.append(("COCO", coco_images[:n_cols]))
+
+    clip_retrieved = retrieve_pair_images_for_embedding(
+        pair=pair,
+        query_embedding=compositional_embedding,
+        n_images=n_cols,
+    )
+    if clip_retrieved:
+        rows.append(("CLIP-AND", clip_retrieved[:n_cols]))
+
+    if generated_runs.get("monolithic_and"):
+        rows.append(("AND", generated_runs["monolithic_and"][:n_cols]))
+    if generated_runs.get("superdiff_fm_ode"):
+        rows.append(("FM-ODE", generated_runs["superdiff_fm_ode"][:n_cols]))
+
+    return rows
+
+
+def plot_prompt_run_grid(
+    rows: List[Tuple[str, List["PIL.Image"]]],
+    output_path: str,
+    n_cols: int = 4,
+    pair_name: str = "",
+):
+    """Plot prompt/method rows against run columns."""
+    if not rows:
+        print("  Skipping prompt image grid (no images available)")
+        return
+
+    n_rows = len(rows)
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(2.4 * n_cols, 1.9 * n_rows),
+    )
+    axes = np.atleast_2d(axes)
+    if axes.shape[0] != n_rows:
+        axes = axes.reshape(n_rows, n_cols)
+
+    blank = np.full((64, 64, 3), 245, dtype=np.uint8)
+
+    for c in range(n_cols):
+        axes[0, c].set_title(f"Run {c + 1}", fontsize=9, fontweight="bold", pad=4)
+
+    for r, (row_label, images) in enumerate(rows):
+        for c in range(n_cols):
+            ax = axes[r, c]
+            if c < len(images):
+                ax.imshow(images[c])
+            else:
+                ax.imshow(blank)
+                ax.text(
+                    0.5,
+                    0.5,
+                    "-",
+                    transform=ax.transAxes,
+                    ha="center",
+                    va="center",
+                    fontsize=12,
+                    color="#777777",
+                )
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_aspect("equal")
+
+            if c == 0:
+                ax.text(
+                    -0.06,
+                    0.5,
+                    row_label,
+                    transform=ax.transAxes,
+                    ha="right",
+                    va="center",
+                    fontsize=9,
+                    fontweight="bold",
+                )
+
+    fig.suptitle(f"Prompt/Method Runs: {pair_name}", fontsize=12, fontweight="bold", y=0.995)
+    fig.subplots_adjust(left=0.16, right=0.995, top=0.90, bottom=0.02, wspace=0.03, hspace=0.03)
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved: {output_path}")
+
+
 def plot_manifold_projection(
     embeddings: Dict[str, np.ndarray],
     labels: Dict[str, str],
     coco_embeds: np.ndarray,
     output_path: str,
-    projection: str = "pca",
+    projection: str = "mds",
     pair_name: str = "",
 ):
     """Plot A: Joint 2D projection of all embeddings.
@@ -350,7 +608,7 @@ def plot_manifold_projection(
         labels: name → display label
         coco_embeds: (N, 768) COCO ground-truth image embeddings
         output_path: where to save
-        projection: "pca" or "umap"
+        projection: "mds" or "pca" or "umap"
         pair_name: for the title
     """
     # Collect all points for fitting the projection
@@ -358,7 +616,21 @@ def plot_manifold_projection(
     all_points = np.stack([embeddings[k] for k in named_points])  # (M, 768)
     all_data = np.vstack([all_points, coco_embeds])  # (M+N, 768)
 
-    if projection == "umap":
+    if projection == "mds":
+        # Points are already L2-normalized CLIP embeddings. Use cosine distance for MDS.
+        cosine_sim = np.clip(all_data @ all_data.T, -1.0, 1.0)
+        dist = 1.0 - cosine_sim
+        reducer = MDS(
+            n_components=2,
+            dissimilarity="precomputed",
+            random_state=42,
+            n_init=2,
+            max_iter=300,
+        )
+        proj = reducer.fit_transform(dist)
+        axis_label = "MDS"
+        var_info = ""
+    elif projection == "umap":
         import umap
         reducer = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1, random_state=42)
         proj = reducer.fit_transform(all_data)
@@ -373,6 +645,100 @@ def plot_manifold_projection(
 
     proj_named = proj[:len(named_points)]
     proj_coco = proj[len(named_points):]
+
+    if projection == "mds":
+        try:
+            import plotly.graph_objects as go
+        except ImportError as e:
+            raise ImportError(
+                "Interactive MDS requires plotly. Install with: pip install plotly"
+            ) from e
+
+        symbols = {
+            "individual_a": "diamond",
+            "individual_b": "diamond",
+            "compositional_text": "triangle-up",
+            "monolithic_and": "square",
+            "superdiff_fm_ode": "star",
+            "geodesic_midpoint": "cross",
+        }
+        sizes = {
+            "individual_a": 12,
+            "individual_b": 12,
+            "compositional_text": 12,
+            "monolithic_and": 14,
+            "superdiff_fm_ode": 16,
+            "geodesic_midpoint": 12,
+        }
+
+        fig = go.Figure()
+
+        fig.add_trace(
+            go.Scattergl(
+                x=proj_coco[:, 0],
+                y=proj_coco[:, 1],
+                mode="markers",
+                name=f"COCO images ({len(coco_embeds)})",
+                marker=dict(
+                    color=COLORS["coco_images"],
+                    size=6,
+                    opacity=0.35,
+                ),
+                hovertemplate="COCO<br>MDS1=%{x:.4f}<br>MDS2=%{y:.4f}<extra></extra>",
+            )
+        )
+
+        for i, name in enumerate(named_points):
+            fig.add_trace(
+                go.Scatter(
+                    x=[proj_named[i, 0]],
+                    y=[proj_named[i, 1]],
+                    mode="markers",
+                    name=labels[name],
+                    marker=dict(
+                        color=COLORS.get(name, "#333333"),
+                        size=sizes.get(name, 10),
+                        symbol=symbols.get(name, "circle"),
+                        line=dict(color="black", width=1),
+                    ),
+                    hovertemplate=(
+                        f"{labels[name]}"
+                        "<br>MDS1=%{x:.4f}<br>MDS2=%{y:.4f}<extra></extra>"
+                    ),
+                )
+            )
+
+        if "individual_a" in embeddings and "individual_b" in embeddings:
+            a_idx = named_points.index("individual_a")
+            b_idx = named_points.index("individual_b")
+            fig.add_trace(
+                go.Scatter(
+                    x=[proj_named[a_idx, 0], proj_named[b_idx, 0]],
+                    y=[proj_named[a_idx, 1], proj_named[b_idx, 1]],
+                    mode="lines",
+                    name="A-B arc ref",
+                    line=dict(color="black", width=1, dash="dash"),
+                    opacity=0.35,
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+
+        fig.update_layout(
+            title=(
+                f"CLIP Embedding Space: {pair_name}<br>"
+                "Co-occurrence (COCO) vs Hybrid (SuperDIFF) vs Individual Concepts"
+            ),
+            xaxis_title="MDS1",
+            yaxis_title="MDS2",
+            template="plotly_white",
+            width=1050,
+            height=800,
+            legend=dict(font=dict(size=11)),
+        )
+        fig.write_html(output_path, include_plotlyjs="cdn")
+        print(f"  Saved: {output_path}")
+        return
 
     fig, ax = plt.subplots(figsize=(10, 8))
 
@@ -645,7 +1011,7 @@ def main():
     )
     parser.add_argument("--pair", default="car+truck",
                         help="COCO pair to analyze (default: car+truck)")
-    parser.add_argument("--projection", choices=["pca", "umap"], default="pca",
+    parser.add_argument("--projection", choices=["mds", "pca", "umap"], default="mds",
                         help="2D projection method")
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="Output directory (default: results/manifold_analysis/<pair>)")
@@ -654,9 +1020,13 @@ def main():
     parser.add_argument("--experiment-dir", type=Path, default=None,
                         help="Load decoded images from existing trajectory experiment")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num-seeds", type=int, default=1,
-                        help="Number of seeds to generate (averages embedding)")
+    parser.add_argument("--num-seeds", type=int, default=4,
+                        help="Number of runs/seeds to generate (averages embedding)")
+    parser.add_argument("--grid-cols", type=int, default=4,
+                        help="Number of columns in the prompt/method run grid")
     args = parser.parse_args()
+    args.num_seeds = max(1, args.num_seeds)
+    args.grid_cols = max(1, args.grid_cols)
 
     # Validate pair
     available_pairs = load_pair_list()
@@ -722,17 +1092,21 @@ def main():
     # ------------------------------------------------------------------
     # 5. Optionally generate or load SD3 outputs and encode with CLIP
     # ------------------------------------------------------------------
-    generated_images = {}
+    generated_runs: Dict[str, List["PIL.Image"]] = {}
 
     if args.generate:
-        print("\nGenerating SD3.5 outputs...")
-        generated_images = generate_outputs(
-            prompt_a, prompt_b, seed=args.seed,
+        run_seeds = [args.seed + i for i in range(args.num_seeds)]
+        print(f"\nGenerating SD3.5 outputs for {len(run_seeds)} runs...")
+        generated_runs = generate_outputs(
+            prompt_a, prompt_b, seeds=run_seeds,
         )
     elif args.experiment_dir is not None:
         print(f"\nLoading images from: {args.experiment_dir}")
-        generated_images = load_experiment_images(args.experiment_dir)
-        if not generated_images:
+        generated_runs = load_experiment_runs(
+            args.experiment_dir,
+            max_runs=max(args.num_seeds, args.grid_cols),
+        )
+        if not generated_runs:
             print("  WARNING: No images found in experiment dir. "
                   "Proceeding without generated outputs.")
 
@@ -740,14 +1114,27 @@ def main():
     image_embeddings = {}  # only CLIP image embeddings (same modality as COCO)
     image_labels = {}
 
-    if generated_images:
-        print(f"\nEncoding {len(generated_images)} generated images with CLIP...")
+    if generated_runs:
+        n_total_images = sum(len(imgs) for imgs in generated_runs.values())
+        print(f"\nEncoding {n_total_images} generated images with CLIP...")
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        image_names: List[str] = []
+        image_list = []
+        for name, imgs in generated_runs.items():
+            for img in imgs:
+                image_names.append(name)
+                image_list.append(img)
 
-        for name, img in generated_images.items():
-            clip_emb = encode_images_with_clip([img], device=device)
-            embeddings[name] = clip_emb[0]
-            image_embeddings[name] = clip_emb[0]
+        all_clip_embs = encode_images_with_clip(image_list, device=device)
+        grouped_embs: Dict[str, List[np.ndarray]] = {}
+        for name, emb in zip(image_names, all_clip_embs):
+            grouped_embs.setdefault(name, []).append(emb)
+
+        for name, emb_list in grouped_embs.items():
+            mean_emb = np.mean(np.stack(emb_list), axis=0)
+            mean_emb = mean_emb / max(np.linalg.norm(mean_emb), 1e-8)
+            embeddings[name] = mean_emb
+            image_embeddings[name] = mean_emb
             # Auto-label
             if name not in labels:
                 pretty = name.replace("_", " ").title()
@@ -809,10 +1196,33 @@ def main():
 
     pair_display = args.pair.replace("+", " + ")
 
+    # Plot 0: Prompt/method image grid (rows) across run columns
+    prompt_rows = build_prompt_grid_rows(
+        pair=args.pair,
+        prompt_a=prompt_a,
+        prompt_b=prompt_b,
+        compositional_embedding=comp_text,
+        generated_runs=generated_runs,
+        n_cols=args.grid_cols,
+        seed=args.seed,
+    )
+    plot_prompt_run_grid(
+        prompt_rows,
+        str(args.output_dir / "prompt_method_runs.png"),
+        n_cols=args.grid_cols,
+        pair_name=pair_display,
+    )
+
     # Plot A: Manifold projection (all embeddings, both modalities)
     plot_manifold_projection(
         embeddings, labels, coco_embeds,
-        str(args.output_dir / f"manifold_{args.projection}.png"),
+        str(
+            args.output_dir / (
+                "manifold_mds_interactive.html"
+                if args.projection == "mds"
+                else f"manifold_{args.projection}.png"
+            )
+        ),
         projection=args.projection,
         pair_name=pair_display,
     )
