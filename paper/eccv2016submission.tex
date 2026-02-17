@@ -1,6 +1,7 @@
 \documentclass[runningheads]{llncs}
 \usepackage{graphicx}
 \usepackage{amsmath,amssymb}
+\usepackage{booktabs}
 \usepackage{color}
 \usepackage[width=122mm,left=12mm,paperwidth=146mm,height=193mm,top=12mm,paperheight=217mm]{geometry}
 \begin{document}
@@ -20,21 +21,282 @@
 \maketitle
 
 \begin{abstract}
-The abstract should summarize the contents of the paper.
-\keywords{keyword1, keyword2, keyword3}
+We study compositional generation in Stable Diffusion 3.5 and ask whether
+natural-language conjunction (``A and B'') matches logical composition.
+We compare monolithic prompting (CLIP AND), SuperDiff logical composition,
+and hybrid guidance under shared-noise trajectory analysis.
+Across controlled experiments, CLIP AND and SuperDiff follow distinct latent
+paths and often converge to different semantic outcomes.
+We then test whether a semantic anchor can regularize logical composition by
+blending monolithic and SuperDiff velocity fields with a guidance weight
+$\alpha$.
+Our results support a practical view: semantic co-presence and logical
+intersection are related but non-equivalent objectives, and the best
+trade-off is obtained by explicit guidance interpolation.
+\keywords{compositional generation, diffusion models, latent trajectories, guidance, logical operators}
 \end{abstract}
 
-\section{Intro}
-Hello
+\section{Introduction}
+Compositional prompting is central to controllable text-to-image generation.
+However, conjunction in language does not always match conjunction in model
+inference.
+This mismatch causes hybridization artifacts, spatial collapse, and unstable
+object co-presence.
+
+Our goal is to characterize this gap and propose a practical control strategy.
+
+\textbf{Main contributions.}
+\begin{itemize}
+  \item We provide trajectory-level evidence that CLIP AND and SuperDiff AND are dynamically different.
+  \item We show that many SD3.5 failure cases can be reorganized as composition failures, not only sampling noise.
+  \item We introduce and evaluate a hybrid guidance rule that interpolates monolithic and logical dynamics.
+  \item We report reproducible protocols with shared noise, fixed seeds, and structured ablations.
+\end{itemize}
+
 \section{Background}
-Hello
-\section{Semantic and Logical Composition do not match and go to separate places in the latent space (nearly done)}
+\textbf{Semantic conjunction vs. logical conjunction.}
+In diffusion sampling, monolithic text prompting and score/velocity composition
+are distinct operators.
+They need not produce the same latent trajectory or endpoint image.
 
-\section{Whast semantic prompt does the logical composition perform then?}
+\textbf{Compositional operators used in this paper.}
+\begin{itemize}
+  \item \textbf{CLIP AND (monolithic):} one prompt ``A and B'' under standard CFG.
+  \item \textbf{SuperDiff AND:} dynamic reweighting of concept velocities to satisfy balanced composition constraints.
+  \item \textbf{PoE baseline:} additive composition of conditional scores/velocities.
+  \item \textbf{Guided hybrid:} $(1-\alpha) v_{\text{mono}} + \alpha v_{\text{superdiff}}$.
+\end{itemize}
 
-\section{Whatss if we put the semantic composition as a third prompt in the logical composition process (nearly done)}
+\textbf{Evaluation setup.}
+\begin{itemize}
+  \item Model family: Stable Diffusion 3.5 Medium.
+  \item Shared-noise protocol: all conditions start from the same $x_T$.
+  \item Outputs per run: trajectory manifold, pairwise distances, decoded images, and summary metrics.
+\end{itemize}
+
+\section{Dataset Preparation}
+We build the paper benchmark from the trajectory logs in
+\texttt{experiments/trajectory\_dynamics/*/summary.json}.
+Each run is grouped by experimental intent and reused for figures/tables.
+Table~\ref{tab:dataset-prep} reports the final split.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Prepared experiment set used in this paper. Counts are run-level units.}
+\label{tab:dataset-prep}
+\begin{tabular}{lcc}
+\toprule
+Family & Runs & Purpose \\
+\midrule
+Pairwise AND composition & 31 & CLIP AND vs SuperDiff AND \\
+Multi-prompt composition & 7 & 3-prompt logical composition \\
+Guided $\alpha$ sweeps & 9 & Hybrid semantic-logical interpolation \\
+Solo stress prompts & 29 & Compositional failure probing \\
+Negation (NOT) & 1 & Composable NOT vs SuperDiff NOT \\
+Spatial extension outputs & 1 & Extra spatial trajectory diagnostics \\
+\midrule
+Total & 67 & Reproducible trajectory experiments \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Methodology}
+We use one unified protocol for all benchmarked conditions.
+Figure~\ref{fig:method-subplots} shows the per-condition trajectory artifact
+produced by this pipeline.
+
+\textbf{Pipeline.}
+\begin{itemize}
+  \item Fix a prompt set and scheduler settings.
+  \item Sample all methods from the same initial noise $x_T$.
+  \item Track latent trajectories at every denoising step.
+  \item Compare methods using divergence onset, endpoint distance, and decoded outputs.
+\end{itemize}
+
+\textbf{Hybrid guidance rule.}
+\begin{equation}
+v_{\alpha}=(1-\alpha)\,v_{\text{mono}}+\alpha\,v_{\text{superdiff}},
+\end{equation}
+where $v_{\text{mono}}$ is monolithic CFG velocity and
+$v_{\text{superdiff}}$ is logical composition velocity.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{../experiments/trajectory_dynamics/20260217_005615/trajectory_subplots.png}
+\caption{Per-condition trajectory views produced by the pipeline
+(\texttt{run 20260217\_005615}).}
+\label{fig:method-subplots}
+\end{figure}
+
+\section{Prompts Tested}
+We evaluate diverse prompts to stress different compositional behaviors.
+The prompt coverage is summarized in Table~\ref{tab:prompt-families}.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Prompt families used for the benchmark.}
+\label{tab:prompt-families}
+\begin{tabular}{p{3.2cm}p{6.5cm}p{2.3cm}}
+\toprule
+Family & Example prompts & Target behavior \\
+\midrule
+Object co-presence & ``a dog'', ``a cat'', ``a dog and a cat'' & basic conjunction \\
+Spatial relations & ``cat on the left'', ``dog on the right'' & localization \\
+Counting & ``two blue apples'', ``three cats'' & cardinality control \\
+Attribute binding & ``red cube'', ``blue sphere'' & object-attribute match \\
+Negation & ``a woman wearing a hat'' with NOT ``glasses'' & concept suppression \\
+Multi-constraint & ``a cat and a dog'', ``cat on left'', ``dog on right'' & semantic anchoring \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Semantic and Logical Composition Diverge in Latent Space}
+We test whether semantic and logical conjunction are equivalent in practice.
+They are not.
+
+\textbf{Protocol.}
+\begin{itemize}
+  \item Conditions: prompt A, prompt B, monolithic AND, SuperDiff AND (and optional PoE).
+  \item Controls: identical seed, identical scheduler steps, identical guidance scale.
+  \item Diagnostics: divergence onset, endpoint distances, path length, and CLIP probe.
+\end{itemize}
+
+\textbf{Findings.}
+\begin{itemize}
+  \item CLIP AND and SuperDiff AND split early in latent space for many prompt pairs.
+  \item Endpoint geometry often places SuperDiff closer to a latent midpoint than to monolithic endpoints.
+  \item Kappa dynamics are time-varying, indicating adaptive concept balancing rather than fixed blending.
+  \item Practical implication: semantic co-presence should not be assumed from logical score composition alone.
+\end{itemize}
+Figure~\ref{fig:divergence-spatial} gives a representative spatial example.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{../experiments/trajectory_dynamics/20260216_114652/trajectory_manifold.png}
+\caption{Early divergence between CLIP AND and SuperDiff AND in latent space
+(\texttt{run 20260216\_114652}, cat-left/dog-right).}
+\label{fig:divergence-spatial}
+\end{figure}
+
+\section{What Semantic Prompt Does Logical Composition Follow?}
+We investigate the effective semantics induced by logical composition.
+We frame this as a decoding and failure-analysis problem.
+
+\textbf{Failure taxonomy from SD3.5 runs.}
+\begin{itemize}
+  \item \textbf{Count failures:} wrong number of objects under conjunctive prompts.
+  \item \textbf{Spatial failures:} left/right or relative position constraints collapse.
+  \item \textbf{Attribute binding failures:} colors or parts swap between objects.
+  \item \textbf{Negation failures:} ``without X'' prompts leak the negated concept.
+\end{itemize}
+
+\textbf{Interpretation.}
+\begin{itemize}
+  \item SuperDiff outputs often satisfy parts of both prompts but can diverge from natural-language ``A and B'' semantics.
+  \item This suggests logical intersection in latent dynamics is not a direct proxy for linguistic conjunction.
+  \item The effective semantic target is task-dependent and can drift with prompt geometry.
+\end{itemize}
+Figure~\ref{fig:decoded-apples} illustrates this semantic gap on a counting-and-attribute prompt.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{../experiments/trajectory_dynamics/20260217_011236/decoded_images.png}
+\caption{Decoded outputs for ``two blue apples'' + ``a red table'' conditions
+(\texttt{run 20260217\_011236}).}
+\label{fig:decoded-apples}
+\end{figure}
+
+\section{Adding the Semantic Prompt as a Third Constraint}
+We test whether monolithic semantics can regularize logical composition.
+The mechanism is SuperDiff-guided interpolation with sweep over $\alpha$.
+
+\textbf{Method.}
+\begin{itemize}
+  \item Compute monolithic CFG velocity $v_{\text{mono}}$.
+  \item Compute SuperDiff composite velocity $v_{\text{superdiff}}$.
+  \item Blend them using $v_{\alpha}=(1-\alpha)v_{\text{mono}}+\alpha v_{\text{superdiff}}$.
+\end{itemize}
+
+\textbf{Empirical behavior under $\alpha$ sweeps.}
+\begin{itemize}
+  \item Small $\alpha$: stronger semantic naturalness, weaker strict compositional balancing.
+  \item Large $\alpha$: stronger logical balancing, higher risk of semantic drift.
+  \item Mid-range $\alpha$: best trade-off in many spatial and object co-presence prompts.
+\end{itemize}
+
+\textbf{Geometry insight.}
+\begin{itemize}
+  \item Forcing CLIP-like behavior toward SuperDiff trajectories reveals a non-trivial manifold gap.
+  \item The hybrid path can reduce this gap without collapsing to either extreme.
+  \item This supports guided composition as a controllable bridge between semantics and logic.
+\end{itemize}
+Figure~\ref{fig:guided-distances} shows how trajectory distances evolve under
+the $\alpha$ sweep.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{../experiments/trajectory_dynamics/20260217_005615/pairwise_distances.png}
+\caption{Pairwise trajectory distances under guided $\alpha$ sweep
+(\texttt{run 20260217\_005615}).}
+\label{fig:guided-distances}
+\end{figure}
+
+\section{Benchmark}
+Tables~\ref{tab:benchmark-and} and~\ref{tab:benchmark-not} summarize
+representative quantitative outcomes from the prepared benchmark set.
+
+\begin{table}[t]
+\centering
+\small
+\caption{AND benchmark on representative prompts.
+$d_{\text{onset}}$ is the first divergence step.
+Lower CLIP-vs-Guided distance indicates stronger semantic anchoring.}
+\label{tab:benchmark-and}
+\begin{tabular}{p{3.8cm}ccc}
+\toprule
+Prompt pair (run id) & $d_{\text{onset}}$ CLIP vs SD & L2 CLIP vs SD & L2 CLIP vs Guided ($\alpha{=}0.3$) \\
+\midrule
+cat-left / dog-right (\texttt{20260216\_114652}) & 3 & 377.7 & -- \\
+book-left / bird-right (\texttt{20260217\_005615}) & 4 & 247.1 & 146.0 \\
+two-blue-apples / red-table (\texttt{20260217\_011236}) & 2 & 407.1 & 129.3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\small
+\caption{Negation benchmark (\texttt{run 20260217\_013025}).}
+\label{tab:benchmark-not}
+\begin{tabular}{lcc}
+\toprule
+Comparison & $d_{\text{onset}}$ & Endpoint L2 \\
+\midrule
+Composable NOT vs SuperDiff NOT & 1 & 325.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \section{Conclusion}
+This paper separates two objectives in compositional generation:
+semantic conjunction and logical composition.
+They are related but not identical in SD3.5 trajectory dynamics.
+
+\textbf{Takeaways.}
+\begin{itemize}
+  \item Logical composition alone is insufficient for reliable semantic co-presence.
+  \item Shared-noise trajectory diagnostics expose where and when methods diverge.
+  \item Guided interpolation with $\alpha$ offers a practical and tunable solution.
+\end{itemize}
+
+\textbf{Limitations and next steps.}
+\begin{itemize}
+  \item Current results focus on SD3.5 Medium and selected prompt families.
+  \item Larger-scale human evaluation and automated compositional scoring are needed.
+  \item Future work should study model scaling, scheduler effects, and stronger semantic priors.
+\end{itemize}
 
 \bibliographystyle{splncs}
 \bibliography{egbib}
