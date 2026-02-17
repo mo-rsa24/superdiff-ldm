@@ -33,6 +33,8 @@ $\alpha$.
 Our results support a practical view: semantic co-presence and logical
 intersection are related but non-equivalent objectives, and the best
 trade-off is obtained by explicit guidance interpolation.
+Our benchmark currently contains 67 reproducible trajectory runs with fixed
+configuration logging and per-run summaries.
 \keywords{compositional generation, diffusion models, latent trajectories, guidance, logical operators}
 \end{abstract}
 
@@ -44,6 +46,8 @@ This mismatch causes hybridization artifacts, spatial collapse, and unstable
 object co-presence.
 
 Our goal is to characterize this gap and propose a practical control strategy.
+The paper is built directly from our experiment artifacts, not synthetic
+illustrations.
 
 \textbf{Main contributions.}
 \begin{itemize}
@@ -51,6 +55,13 @@ Our goal is to characterize this gap and propose a practical control strategy.
   \item We show that many SD3.5 failure cases can be reorganized as composition failures, not only sampling noise.
   \item We introduce and evaluate a hybrid guidance rule that interpolates monolithic and logical dynamics.
   \item We report reproducible protocols with shared noise, fixed seeds, and structured ablations.
+\end{itemize}
+
+\textbf{Paper scope.}
+\begin{itemize}
+  \item Focus model: Stable Diffusion 3.5 Medium.
+  \item Focus question: semantic conjunction versus logical composition in latent dynamics.
+  \item Focus outputs: trajectories, endpoint geometry, decoded images, and CLIP-based semantic probes.
 \end{itemize}
 
 \section{Background}
@@ -74,11 +85,25 @@ They need not produce the same latent trajectory or endpoint image.
   \item Outputs per run: trajectory manifold, pairwise distances, decoded images, and summary metrics.
 \end{itemize}
 
+\textbf{Why trajectory-level analysis.}
+\begin{itemize}
+  \item Endpoint-only comparison hides when methods first diverge.
+  \item Shared-noise trajectories isolate composition effects from random initialization.
+  \item Per-step diagnostics reveal whether guidance acts early, mid, or late in denoising.
+\end{itemize}
+
 \section{Dataset Preparation}
 We build the paper benchmark from the trajectory logs in
 \texttt{experiments/trajectory\_dynamics/*/summary.json}.
 Each run is grouped by experimental intent and reused for figures/tables.
 Table~\ref{tab:dataset-prep} reports the final split.
+
+\textbf{Curation protocol.}
+\begin{itemize}
+  \item We keep only runs with complete summary outputs and generated figures.
+  \item We assign each run to one intent group: failures, guidance, trajectory dynamics, or ablations.
+  \item We preserve run identifiers (timestamps) to maintain one-to-one traceability with artifacts.
+\end{itemize}
 
 \begin{table}[t]
 \centering
@@ -114,12 +139,27 @@ produced by this pipeline.
   \item Compare methods using divergence onset, endpoint distance, and decoded outputs.
 \end{itemize}
 
+\textbf{Reproducibility controls from our run interface.}
+\begin{itemize}
+  \item Core controls: \texttt{--steps}, \texttt{--guidance}, \texttt{--seed}, \texttt{--projection}.
+  \item Composition controls: \texttt{--superdiff-variant}, \texttt{--guided}, \texttt{--alpha}.
+  \item Prompt modes: pairwise (\texttt{--prompt-a/--prompt-b}), multi-prompt (\texttt{--prompts}), negation (\texttt{--neg-prompt}).
+  \item Ablation controls: \texttt{--no-poe}, \texttt{--lift}, and multi-seed sweeps.
+\end{itemize}
+
 \textbf{Hybrid guidance rule.}
 \begin{equation}
 v_{\alpha}=(1-\alpha)\,v_{\text{mono}}+\alpha\,v_{\text{superdiff}},
 \end{equation}
 where $v_{\text{mono}}$ is monolithic CFG velocity and
 $v_{\text{superdiff}}$ is logical composition velocity.
+
+\textbf{Metrics used throughout.}
+\begin{itemize}
+  \item Divergence onset step: first denoising step where pairwise trajectory distance becomes non-trivial.
+  \item Endpoint L2 distance: final latent-space discrepancy between conditions.
+  \item CLIP probe prediction: nearest text prototype in CLIP space for each output image.
+\end{itemize}
 
 \begin{figure}[t]
 \centering
@@ -132,6 +172,23 @@ $v_{\text{superdiff}}$ is logical composition velocity.
 \section{Prompts Tested}
 We evaluate diverse prompts to stress different compositional behaviors.
 The prompt coverage is summarized in Table~\ref{tab:prompt-families}.
+
+\textbf{Prompt selection principles.}
+\begin{itemize}
+  \item Include easy pairs (dog/cat) to verify baseline behavior.
+  \item Include spatial prompts (left/right) to test relational composition.
+  \item Include counting and attribute prompts to test semantic precision.
+  \item Include negation prompts to compare fixed and dynamic suppression.
+  \item Include three-prompt settings to test semantic anchoring with logical constraints.
+\end{itemize}
+
+\textbf{Representative tested instances.}
+\begin{itemize}
+  \item ``a book on the left'' + ``a bird on the right''.
+  \item ``two blue apples'' + ``a red table''.
+  \item ``a woman wearing a hat'' with NOT ``glasses''.
+  \item ``a cat and a dog'', ``cat on the left'', ``dog on the right''.
+\end{itemize}
 
 \begin{table}[t]
 \centering
@@ -172,6 +229,13 @@ They are not.
 \end{itemize}
 Figure~\ref{fig:divergence-spatial} gives a representative spatial example.
 
+\textbf{Concrete evidence from benchmark runs.}
+\begin{itemize}
+  \item Run \texttt{20260216\_114652} (cat-left/dog-right): divergence onset at step 3; endpoint L2(CLIP, SuperDiff) $=377.7$.
+  \item Run \texttt{20260217\_011236} (two-blue-apples/red-table): divergence onset at step 2; endpoint L2(CLIP, SuperDiff) $=407.1$.
+  \item These early onsets indicate that divergence starts near the beginning of denoising, not only at late refinement.
+\end{itemize}
+
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{../experiments/trajectory_dynamics/20260216_114652/trajectory_manifold.png}
@@ -200,6 +264,13 @@ We frame this as a decoding and failure-analysis problem.
 \end{itemize}
 Figure~\ref{fig:decoded-apples} illustrates this semantic gap on a counting-and-attribute prompt.
 
+\textbf{CLIP probe observations from our runs.}
+\begin{itemize}
+  \item In run \texttt{20260217\_011236}, CLIP predicts the monolithic class for guided outputs but predicts a single sub-prompt class for pure SuperDiff.
+  \item In run \texttt{20260216\_114652}, pure SuperDiff is pulled toward one component prompt under the CLIP probe.
+  \item This supports the hypothesis that logical balancing and linguistic conjunction occupy different semantic neighborhoods.
+\end{itemize}
+
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{../experiments/trajectory_dynamics/20260217_011236/decoded_images.png}
@@ -226,6 +297,13 @@ The mechanism is SuperDiff-guided interpolation with sweep over $\alpha$.
   \item Mid-range $\alpha$: best trade-off in many spatial and object co-presence prompts.
 \end{itemize}
 
+\textbf{Quantitative examples from $\alpha$ runs.}
+\begin{itemize}
+  \item Run \texttt{20260217\_005615} (book-left/bird-right): L2(CLIP, SuperDiff) $=247.1$, while L2(CLIP, Guided $\alpha=0.3$) $=146.0$.
+  \item Run \texttt{20260217\_011236} (two-blue-apples/red-table): L2(CLIP, SuperDiff) $=407.1$, while L2(CLIP, Guided $\alpha=0.3$) $=129.3$.
+  \item Guided trajectories keep semantic anchoring while preserving part of logical correction.
+\end{itemize}
+
 \textbf{Geometry insight.}
 \begin{itemize}
   \item Forcing CLIP-like behavior toward SuperDiff trajectories reveals a non-trivial manifold gap.
@@ -246,6 +324,14 @@ the $\alpha$ sweep.
 \section{Benchmark}
 Tables~\ref{tab:benchmark-and} and~\ref{tab:benchmark-not} summarize
 representative quantitative outcomes from the prepared benchmark set.
+
+\textbf{Benchmark protocol.}
+\begin{itemize}
+  \item Use shared-noise pairwise comparisons per run.
+  \item Report divergence onset and endpoint L2 on the same latent trajectory basis.
+  \item Compare pure logical composition against guided variants when available.
+  \item Include one negation benchmark to test fixed vs dynamic suppression behavior.
+\end{itemize}
 
 \begin{table}[t]
 \centering
@@ -289,6 +375,13 @@ They are related but not identical in SD3.5 trajectory dynamics.
   \item Logical composition alone is insufficient for reliable semantic co-presence.
   \item Shared-noise trajectory diagnostics expose where and when methods diverge.
   \item Guided interpolation with $\alpha$ offers a practical and tunable solution.
+\end{itemize}
+
+\textbf{Practical recommendation from our experiments.}
+\begin{itemize}
+  \item Start with monolithic prompting for semantic naturalness.
+  \item Add guided logical correction with moderate $\alpha$ to improve compositional balance.
+  \item Use trajectory divergence metrics as an early warning signal for failure cases.
 \end{itemize}
 
 \textbf{Limitations and next steps.}
