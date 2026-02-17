@@ -1,0 +1,5 @@
+_target_: riemannian_score_sde.datasets.CLIPEmbeddingDataset
+embeddings_path: ${work_dir}/clip_embeddings/coco_common_pairs/image_embeddings.npy
+manifest_path: ${work_dir}/clip_embeddings/coco_common_pairs/image_manifest.jsonl
+pair: null
+category: null

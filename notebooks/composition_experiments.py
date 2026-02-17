@@ -12,6 +12,7 @@ Based on "The Superposition of Diffusion Models Using the Itô Density Estimator
 """
 
 import os
+import math
 from typing import List, Dict, Tuple, Optional
 import numpy as np
 import torch
@@ -26,9 +27,12 @@ from sklearn.manifold import TSNE
 from scipy.spatial.distance import cdist
 from scipy.stats import gaussian_kde
 
-from diffusers import EulerDiscreteScheduler
+from diffusers import EulerDiscreteScheduler, FlowMatchEulerDiscreteScheduler
 from notebooks.dynamics import stochastic_super_diff_and, get_latents, get_vel
-from notebooks.utils import get_sd_models, get_text_embedding, get_image
+from notebooks.utils import (
+    get_sd_models, get_sd3_models,
+    get_text_embedding, get_sd3_text_embedding, get_image,
+)
 
 
 @dataclass
@@ -46,6 +50,7 @@ class ExperimentConfig:
     guidance_scale: float = 7.5
 
     # Model parameters
+    model_id: str = "runwayml/stable-diffusion-v1-5"
     height: int = 512
     width: int = 512
     latent_height: int = 64
@@ -97,6 +102,46 @@ class LatentTrajectoryCollector:
         self.trajectories[-1] = latents.detach().cpu()
 
 
+def get_prompt_conditioning(
+    prompt: str,
+    batch_size: int,
+    tokenizer,
+    text_encoder,
+    device: torch.device,
+    height: int = 512,
+    width: int = 512,
+    tokenizer_2=None,
+    text_encoder_2=None,
+) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
+    prompt_batch = [prompt] * batch_size
+
+    if tokenizer_2 is None or text_encoder_2 is None:
+        prompt_embeds = get_text_embedding(prompt_batch, tokenizer, text_encoder, device)
+        return prompt_embeds, None
+
+    prompt_embeds, pooled_prompt_embeds = get_text_embedding(
+        prompt_batch,
+        tokenizer,
+        text_encoder,
+        device,
+        tokenizer_2=tokenizer_2,
+        text_encoder_2=text_encoder_2,
+        return_pooled=True,
+    )
+
+    add_time_ids = torch.tensor(
+        [[height, width, 0, 0, height, width]],
+        device=device,
+        dtype=prompt_embeds.dtype,
+    ).repeat(batch_size, 1)
+
+    added_cond_kwargs = {
+        "text_embeds": pooled_prompt_embeds.to(device=device, dtype=prompt_embeds.dtype),
+        "time_ids": add_time_ids,
+    }
+    return prompt_embeds, added_cond_kwargs
+
+
 def sample_with_trajectory_tracking(
     latents: torch.Tensor,
     prompt: str,
@@ -104,17 +149,41 @@ def sample_with_trajectory_tracking(
     unet,
     tokenizer,
     text_encoder,
+    tokenizer_2=None,
+    text_encoder_2=None,
     guidance_scale: float = 7.5,
     num_inference_steps: int = 100,
     batch_size: int = 4,
     device: torch.device = torch.device("cuda"),
     dtype: torch.dtype = torch.float16,
+    height: int = 512,
+    width: int = 512,
 ) -> Tuple[torch.Tensor, LatentTrajectoryCollector]:
     """
     Standard classifier-free guidance sampling with trajectory tracking
     """
-    embeddings = get_text_embedding([prompt] * batch_size, tokenizer, text_encoder, device)
-    uncond_embeddings = get_text_embedding([""] * batch_size, tokenizer, text_encoder, device)
+    embeddings, cond_kwargs = get_prompt_conditioning(
+        prompt,
+        batch_size=batch_size,
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+        tokenizer_2=tokenizer_2,
+        text_encoder_2=text_encoder_2,
+        device=device,
+        height=height,
+        width=width,
+    )
+    uncond_embeddings, uncond_kwargs = get_prompt_conditioning(
+        "",
+        batch_size=batch_size,
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+        tokenizer_2=tokenizer_2,
+        text_encoder_2=text_encoder_2,
+        device=device,
+        height=height,
+        width=width,
+    )
 
     tracker = LatentTrajectoryCollector(
         num_inference_steps, batch_size,
@@ -128,8 +197,26 @@ def sample_with_trajectory_tracking(
         sigma = scheduler.sigmas[i]
 
         # Get velocities
-        vel_cond, _ = get_vel(unet, t, sigma, latents, [embeddings], device=device, dtype=dtype)
-        vel_uncond, _ = get_vel(unet, t, sigma, latents, [uncond_embeddings], device=device, dtype=dtype)
+        vel_cond, _ = get_vel(
+            unet,
+            t,
+            sigma,
+            latents,
+            [embeddings],
+            device=device,
+            dtype=dtype,
+            added_cond_kwargs=cond_kwargs,
+        )
+        vel_uncond, _ = get_vel(
+            unet,
+            t,
+            sigma,
+            latents,
+            [uncond_embeddings],
+            device=device,
+            dtype=dtype,
+            added_cond_kwargs=uncond_kwargs,
+        )
 
         # Classifier-free guidance
         vf = vel_uncond + guidance_scale * (vel_cond - vel_uncond)
@@ -156,20 +243,54 @@ def superdiff_with_trajectory_tracking(
     unet,
     tokenizer,
     text_encoder,
+    tokenizer_2=None,
+    text_encoder_2=None,
     guidance_scale: float = 7.5,
     num_inference_steps: int = 100,
     batch_size: int = 4,
     device: torch.device = torch.device("cuda"),
     dtype: torch.dtype = torch.float16,
-    lift: float = 0.0
+    lift: float = 0.0,
+    height: int = 512,
+    width: int = 512,
 ) -> Tuple[torch.Tensor, LatentTrajectoryCollector, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     SUPERDIFF AND with trajectory tracking
     Returns: (final_latents, tracker, kappa, ll_obj, ll_bg)
     """
-    obj_embeddings = get_text_embedding([obj_prompt] * batch_size, tokenizer, text_encoder, device)
-    bg_embeddings = get_text_embedding([bg_prompt] * batch_size, tokenizer, text_encoder, device)
-    uncond_embeddings = get_text_embedding([""] * batch_size, tokenizer, text_encoder, device)
+    obj_embeddings, obj_kwargs = get_prompt_conditioning(
+        obj_prompt,
+        batch_size=batch_size,
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+        tokenizer_2=tokenizer_2,
+        text_encoder_2=text_encoder_2,
+        device=device,
+        height=height,
+        width=width,
+    )
+    bg_embeddings, bg_kwargs = get_prompt_conditioning(
+        bg_prompt,
+        batch_size=batch_size,
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+        tokenizer_2=tokenizer_2,
+        text_encoder_2=text_encoder_2,
+        device=device,
+        height=height,
+        width=width,
+    )
+    uncond_embeddings, uncond_kwargs = get_prompt_conditioning(
+        "",
+        batch_size=batch_size,
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+        tokenizer_2=tokenizer_2,
+        text_encoder_2=text_encoder_2,
+        device=device,
+        height=height,
+        width=width,
+    )
 
     tracker = LatentTrajectoryCollector(
         num_inference_steps, batch_size,
@@ -186,9 +307,36 @@ def superdiff_with_trajectory_tracking(
         dsigma = scheduler.sigmas[i + 1] - scheduler.sigmas[i]
         sigma = scheduler.sigmas[i]
 
-        vel_obj, _ = get_vel(unet, t, sigma, latents, [obj_embeddings], device=device, dtype=dtype)
-        vel_bg, _ = get_vel(unet, t, sigma, latents, [bg_embeddings], device=device, dtype=dtype)
-        vel_uncond, _ = get_vel(unet, t, sigma, latents, [uncond_embeddings], device=device, dtype=dtype)
+        vel_obj, _ = get_vel(
+            unet,
+            t,
+            sigma,
+            latents,
+            [obj_embeddings],
+            device=device,
+            dtype=dtype,
+            added_cond_kwargs=obj_kwargs,
+        )
+        vel_bg, _ = get_vel(
+            unet,
+            t,
+            sigma,
+            latents,
+            [bg_embeddings],
+            device=device,
+            dtype=dtype,
+            added_cond_kwargs=bg_kwargs,
+        )
+        vel_uncond, _ = get_vel(
+            unet,
+            t,
+            sigma,
+            latents,
+            [uncond_embeddings],
+            device=device,
+            dtype=dtype,
+            added_cond_kwargs=uncond_kwargs,
+        )
 
         noise = torch.sqrt(2 * torch.abs(dsigma) * sigma) * torch.randn_like(latents)
         dx_ind = 2 * dsigma * (vel_uncond + guidance_scale * (vel_bg - vel_uncond)) + noise
@@ -222,24 +370,269 @@ def superdiff_with_trajectory_tracking(
     return latents, tracker, kappa, ll_obj, ll_bg
 
 
+# ---------------------------------------------------------------------------
+# SD3 (flow-matching) functions
+# ---------------------------------------------------------------------------
+@torch.no_grad()
+def get_vel_sd3(transformer, t, latents, prompt_embeds, pooled_embeds,
+                device=torch.device("cuda"), dtype=torch.float16):
+    """Get velocity prediction from SD3 transformer (no input scaling)."""
+    latents_in = latents.to(device=device, dtype=dtype)
+    prompt_embeds = prompt_embeds.to(device=device, dtype=dtype)
+    pooled_embeds = pooled_embeds.to(device=device, dtype=dtype)
+    timestep = t.expand(latents_in.shape[0]).to(device=device)
+
+    with torch.autocast("cuda", dtype=dtype):
+        vel = transformer(
+            hidden_states=latents_in,
+            timestep=timestep,
+            encoder_hidden_states=prompt_embeds,
+            pooled_projections=pooled_embeds,
+            return_dict=False,
+        )[0]
+    return vel
+
+
+def _get_sd3_conditioning(prompt, batch_size, tokenizer, text_encoder,
+                          tokenizer_2, text_encoder_2, tokenizer_3,
+                          text_encoder_3, device):
+    """Helper: get SD3 prompt embeddings + pooled for a single prompt."""
+    prompt_embeds, pooled = get_sd3_text_embedding(
+        [prompt] * batch_size,
+        tokenizer, text_encoder,
+        tokenizer_2, text_encoder_2,
+        tokenizer_3, text_encoder_3,
+        device=device,
+    )
+    return prompt_embeds, pooled
+
+
+def sample_sd3_with_trajectory_tracking(
+    latents, prompt, scheduler, transformer,
+    tokenizer, text_encoder, tokenizer_2, text_encoder_2,
+    tokenizer_3, text_encoder_3,
+    guidance_scale=7.5, num_inference_steps=50, batch_size=4,
+    device=torch.device("cuda"), dtype=torch.float16,
+):
+    """Standard CFG sampling for SD3 with trajectory tracking."""
+    cond_embeds, cond_pooled = _get_sd3_conditioning(
+        prompt, batch_size, tokenizer, text_encoder,
+        tokenizer_2, text_encoder_2, tokenizer_3, text_encoder_3, device,
+    )
+    uncond_embeds, uncond_pooled = _get_sd3_conditioning(
+        "", batch_size, tokenizer, text_encoder,
+        tokenizer_2, text_encoder_2, tokenizer_3, text_encoder_3, device,
+    )
+
+    tracker = LatentTrajectoryCollector(
+        num_inference_steps, batch_size,
+        latents.shape[1], latents.shape[2], latents.shape[3],
+    )
+
+    scheduler.set_timesteps(num_inference_steps)
+
+    for i, t in enumerate(scheduler.timesteps):
+        sigma = scheduler.sigmas[i]
+
+        vel_cond = get_vel_sd3(transformer, t, latents, cond_embeds, cond_pooled,
+                               device=device, dtype=dtype)
+        vel_uncond = get_vel_sd3(transformer, t, latents, uncond_embeds, uncond_pooled,
+                                  device=device, dtype=dtype)
+
+        # CFG
+        vf = vel_uncond + guidance_scale * (vel_cond - vel_uncond)
+
+        # Flow matching step: x += dt * v
+        dt = scheduler.sigmas[i + 1] - sigma
+        dx = dt * vf
+
+        tracker.store_step(i, latents, vf, sigma.item(), t.item())
+        latents = latents + dx
+
+    tracker.store_final(latents)
+    return latents, tracker
+
+
+def _solve_kappa_and_fm(velocities, vel_uncond, dt, sigma, noise,
+                        guidance_scale, lift, num_inference_steps):
+    """
+    Kappa solver for flow-matching SuperDiff AND (Proposition 6).
+
+    Identical linear system to _solve_kappa_and but with flow-matching step
+    scale (dt instead of 2·dσ) and σ clamped for stability near σ=0.
+    """
+    M = len(velocities)
+    B = velocities[0].shape[0]
+    dev = velocities[0].device
+    sigma_safe = max(float(sigma), 1e-4)
+
+    vels = torch.stack([v.flatten(1) for v in velocities])       # [M, B, D]
+    v_unc = vel_uncond.flatten(1)                                 # [B, D]
+    dx_base = (dt * vel_uncond + noise).flatten(1)                # [B, D]
+
+    u_diff = vels - v_unc.unsqueeze(0)                            # [M, B, D]
+    v_diff = vels[1:] - vels[0:1]                                 # [M-1, B, D]
+
+    u_diff_t = u_diff.permute(1, 0, 2).float()                   # [B, M, D]
+    v_diff_t = v_diff.permute(1, 0, 2).float()                   # [B, M-1, D]
+
+    # Build A [B, M, M] — note: dt (not 2·dσ) for flow matching
+    A = torch.zeros(B, M, M, device=dev, dtype=torch.float32)
+    A[:, :M-1, :] = (float(dt) * guidance_scale) * torch.bmm(
+        v_diff_t, u_diff_t.transpose(1, 2),
+    )
+    A[:, M-1, :] = 1.0
+
+    # Build b [B, M]
+    norms_sq = (vels.float() ** 2).sum(dim=2)                    # [M, B]
+    b = torch.zeros(B, M, device=dev, dtype=torch.float32)
+    for j in range(M - 1):
+        norm_term = abs(float(dt)) / sigma_safe * (norms_sq[0] - norms_sq[j + 1])
+        dot_term = (dx_base.float() * v_diff_t[:, j, :]).sum(dim=1) / sigma_safe
+        b[:, j] = norm_term - dot_term - sigma_safe * lift / num_inference_steps
+    b[:, M-1] = 1.0
+
+    kappa = torch.linalg.lstsq(A, b.unsqueeze(-1)).solution.squeeze(-1)
+    return kappa.to(velocities[0].dtype)
+
+
+def superdiff_sd3_with_trajectory_tracking(
+    latents, obj_prompt, bg_prompt, scheduler, transformer,
+    tokenizer, text_encoder, tokenizer_2, text_encoder_2,
+    tokenizer_3, text_encoder_3,
+    guidance_scale=7.5, num_inference_steps=50, batch_size=4,
+    device=torch.device("cuda"), dtype=torch.float16, lift=0.0,
+):
+    """
+    SuperDiff AND for SD3 (flow matching) with trajectory tracking.
+
+    Returns: (final_latents, tracker, kappa, ll_obj, ll_bg)
+    """
+    obj_embeds, obj_pooled = _get_sd3_conditioning(
+        obj_prompt, batch_size, tokenizer, text_encoder,
+        tokenizer_2, text_encoder_2, tokenizer_3, text_encoder_3, device,
+    )
+    bg_embeds, bg_pooled = _get_sd3_conditioning(
+        bg_prompt, batch_size, tokenizer, text_encoder,
+        tokenizer_2, text_encoder_2, tokenizer_3, text_encoder_3, device,
+    )
+    uncond_embeds, uncond_pooled = _get_sd3_conditioning(
+        "", batch_size, tokenizer, text_encoder,
+        tokenizer_2, text_encoder_2, tokenizer_3, text_encoder_3, device,
+    )
+
+    tracker = LatentTrajectoryCollector(
+        num_inference_steps, batch_size,
+        latents.shape[1], latents.shape[2], latents.shape[3],
+    )
+    ll_obj = torch.ones((num_inference_steps + 1, batch_size), device=device, dtype=dtype)
+    ll_bg = torch.ones((num_inference_steps + 1, batch_size), device=device, dtype=dtype)
+    kappa = 0.5 * torch.ones((num_inference_steps + 1, batch_size), device=device, dtype=dtype)
+
+    scheduler.set_timesteps(num_inference_steps)
+
+    for i, t in enumerate(scheduler.timesteps):
+        sigma = scheduler.sigmas[i]
+        dt = scheduler.sigmas[i + 1] - sigma
+        sigma_safe = max(float(sigma), 1e-4)
+
+        vel_obj = get_vel_sd3(transformer, t, latents, obj_embeds, obj_pooled,
+                               device=device, dtype=dtype)
+        vel_bg = get_vel_sd3(transformer, t, latents, bg_embeds, bg_pooled,
+                              device=device, dtype=dtype)
+        vel_uncond = get_vel_sd3(transformer, t, latents, uncond_embeds, uncond_pooled,
+                                  device=device, dtype=dtype)
+
+        # Stochastic noise for density estimation
+        noise_scale = math.sqrt(2.0 * abs(float(dt)) * sigma_safe)
+        noise = noise_scale * torch.randn_like(latents)
+
+        # Solve for kappa via Proposition 6 (flow-matching adapted)
+        kappa[i + 1] = _solve_kappa_and_fm(
+            [vel_obj, vel_bg], vel_uncond, dt, sigma, noise,
+            guidance_scale, lift, num_inference_steps,
+        )[:, 0]  # κ₀ = weight on obj; κ₁ = 1 - κ₀
+
+        # Composite velocity field
+        vf = vel_uncond + guidance_scale * (
+            (vel_bg - vel_uncond) + kappa[i + 1][:, None, None, None] * (vel_obj - vel_bg)
+        )
+
+        # Flow matching step + stochastic noise
+        dx = dt * vf + noise
+
+        tracker.store_step(i, latents, vf, float(sigma), t.item())
+        latents = latents + dx
+
+        # Update log-likelihoods (Theorem 1, adapted for flow matching)
+        ll_obj[i + 1] = ll_obj[i] + (
+            -abs(float(dt)) / sigma_safe * (vel_obj ** 2)
+            - (dx * (vel_obj / sigma_safe))
+        ).sum((1, 2, 3))
+        ll_bg[i + 1] = ll_bg[i] + (
+            -abs(float(dt)) / sigma_safe * (vel_bg ** 2)
+            - (dx * (vel_bg / sigma_safe))
+        ).sum((1, 2, 3))
+
+    tracker.store_final(latents)
+    return latents, tracker, kappa, ll_obj, ll_bg
+
+
 class CompositionExperimentSuite:
     """Complete suite of composition experiments"""
 
     def __init__(self, config: ExperimentConfig):
         self.config = config
+        self.is_sd3 = "stable-diffusion-3" in config.model_id.lower()
         self.output_dir = Path(config.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Auto-configure for SD3
+        if self.is_sd3:
+            config.z_channels = 16
+            config.latent_height = 128
+            config.latent_width = 128
+            config.height = 1024
+            config.width = 1024
+
         # Load models
-        print("Loading models...")
-        models = get_sd_models(dtype=config.dtype, device=torch.device(config.device))
-        self.vae = models["vae"]
-        self.tokenizer = models["tokenizer"]
-        self.text_encoder = models["text_encoder"]
-        self.unet = models["unet"]
-        self.scheduler = EulerDiscreteScheduler.from_pretrained(
-            "runwayml/stable-diffusion-v1-5", subfolder="scheduler"
-        )
+        print(f"Loading models ({config.model_id})...")
+        if self.is_sd3:
+            models = get_sd3_models(
+                model_id=config.model_id,
+                dtype=config.dtype,
+                device=torch.device(config.device),
+            )
+            self.vae = models["vae"]
+            self.tokenizer = models["tokenizer"]
+            self.text_encoder = models["text_encoder"]
+            self.tokenizer_2 = models["tokenizer_2"]
+            self.text_encoder_2 = models["text_encoder_2"]
+            self.tokenizer_3 = models["tokenizer_3"]
+            self.text_encoder_3 = models["text_encoder_3"]
+            self.transformer = models["transformer"]
+            self.unet = None
+            self.scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+                config.model_id, subfolder="scheduler"
+            )
+        else:
+            models = get_sd_models(
+                model_id=config.model_id,
+                dtype=config.dtype,
+                device=torch.device(config.device),
+            )
+            self.vae = models["vae"]
+            self.tokenizer = models["tokenizer"]
+            self.text_encoder = models["text_encoder"]
+            self.tokenizer_2 = models.get("tokenizer_2")
+            self.text_encoder_2 = models.get("text_encoder_2")
+            self.tokenizer_3 = None
+            self.text_encoder_3 = None
+            self.transformer = None
+            self.unet = models["unet"]
+            self.scheduler = EulerDiscreteScheduler.from_pretrained(
+                config.model_id, subfolder="scheduler"
+            )
 
         # Storage for results
         self.results = {
@@ -272,77 +665,105 @@ class CompositionExperimentSuite:
                 seed=run_idx  # Different seed per run
             )
 
-            # Experiment 1: Monolithic prompt
-            print(f"  Sampling: '{self.config.prompt_composed}'")
-            latents_mono, traj_mono = sample_with_trajectory_tracking(
-                initial_latents.clone(),
-                self.config.prompt_composed,
-                self.scheduler,
-                self.unet,
-                self.tokenizer,
-                self.text_encoder,
-                guidance_scale=self.config.guidance_scale,
-                num_inference_steps=self.config.num_inference_steps,
-                batch_size=self.config.batch_size,
-                device=torch.device(self.config.device),
-                dtype=self.config.dtype
-            )
+            # Common kwargs for SD3 vs UNet routing
+            dev = torch.device(self.config.device)
+
+            if self.is_sd3:
+                sd3_kw = dict(
+                    scheduler=self.scheduler,
+                    transformer=self.transformer,
+                    tokenizer=self.tokenizer,
+                    text_encoder=self.text_encoder,
+                    tokenizer_2=self.tokenizer_2,
+                    text_encoder_2=self.text_encoder_2,
+                    tokenizer_3=self.tokenizer_3,
+                    text_encoder_3=self.text_encoder_3,
+                    guidance_scale=self.config.guidance_scale,
+                    num_inference_steps=self.config.num_inference_steps,
+                    batch_size=self.config.batch_size,
+                    device=dev,
+                    dtype=self.config.dtype,
+                )
+
+                # Experiment 1: Monolithic prompt
+                print(f"  Sampling: '{self.config.prompt_composed}'")
+                latents_mono, traj_mono = sample_sd3_with_trajectory_tracking(
+                    initial_latents.clone(), self.config.prompt_composed, **sd3_kw,
+                )
+
+                # Experiment 2: Individual prompt A
+                print(f"  Sampling: '{self.config.prompt_a}'")
+                latents_a, traj_a = sample_sd3_with_trajectory_tracking(
+                    initial_latents.clone(), self.config.prompt_a, **sd3_kw,
+                )
+
+                # Experiment 3: Individual prompt B
+                print(f"  Sampling: '{self.config.prompt_b}'")
+                latents_b, traj_b = sample_sd3_with_trajectory_tracking(
+                    initial_latents.clone(), self.config.prompt_b, **sd3_kw,
+                )
+
+                # Experiment 4: SUPERDIFF composition
+                print(f"  SUPERDIFF: '{self.config.prompt_a}' ∧ '{self.config.prompt_b}'")
+                latents_sd, traj_sd, kappa, ll_obj, ll_bg = superdiff_sd3_with_trajectory_tracking(
+                    initial_latents.clone(),
+                    self.config.prompt_a,
+                    self.config.prompt_b,
+                    **sd3_kw,
+                    lift=self.config.lift,
+                )
+
+            else:
+                unet_kw = dict(
+                    scheduler=self.scheduler,
+                    unet=self.unet,
+                    tokenizer=self.tokenizer,
+                    text_encoder=self.text_encoder,
+                    tokenizer_2=self.tokenizer_2,
+                    text_encoder_2=self.text_encoder_2,
+                    guidance_scale=self.config.guidance_scale,
+                    num_inference_steps=self.config.num_inference_steps,
+                    batch_size=self.config.batch_size,
+                    device=dev,
+                    dtype=self.config.dtype,
+                    height=self.config.height,
+                    width=self.config.width,
+                )
+
+                # Experiment 1: Monolithic prompt
+                print(f"  Sampling: '{self.config.prompt_composed}'")
+                latents_mono, traj_mono = sample_with_trajectory_tracking(
+                    initial_latents.clone(), self.config.prompt_composed, **unet_kw,
+                )
+
+                # Experiment 2: Individual prompt A
+                print(f"  Sampling: '{self.config.prompt_a}'")
+                latents_a, traj_a = sample_with_trajectory_tracking(
+                    initial_latents.clone(), self.config.prompt_a, **unet_kw,
+                )
+
+                # Experiment 3: Individual prompt B
+                print(f"  Sampling: '{self.config.prompt_b}'")
+                latents_b, traj_b = sample_with_trajectory_tracking(
+                    initial_latents.clone(), self.config.prompt_b, **unet_kw,
+                )
+
+                # Experiment 4: SUPERDIFF composition
+                print(f"  SUPERDIFF: '{self.config.prompt_a}' ∧ '{self.config.prompt_b}'")
+                latents_sd, traj_sd, kappa, ll_obj, ll_bg = superdiff_with_trajectory_tracking(
+                    initial_latents.clone(),
+                    self.config.prompt_a,
+                    self.config.prompt_b,
+                    **unet_kw,
+                    lift=self.config.lift,
+                )
+
             self.results['monolithic']['latents'].append(latents_mono)
             self.results['monolithic']['trajectories'].append(traj_mono)
-
-            # Experiment 2: Individual prompt A
-            print(f"  Sampling: '{self.config.prompt_a}'")
-            latents_a, traj_a = sample_with_trajectory_tracking(
-                initial_latents.clone(),
-                self.config.prompt_a,
-                self.scheduler,
-                self.unet,
-                self.tokenizer,
-                self.text_encoder,
-                guidance_scale=self.config.guidance_scale,
-                num_inference_steps=self.config.num_inference_steps,
-                batch_size=self.config.batch_size,
-                device=torch.device(self.config.device),
-                dtype=self.config.dtype
-            )
             self.results['prompt_a']['latents'].append(latents_a)
             self.results['prompt_a']['trajectories'].append(traj_a)
-
-            # Experiment 3: Individual prompt B
-            print(f"  Sampling: '{self.config.prompt_b}'")
-            latents_b, traj_b = sample_with_trajectory_tracking(
-                initial_latents.clone(),
-                self.config.prompt_b,
-                self.scheduler,
-                self.unet,
-                self.tokenizer,
-                self.text_encoder,
-                guidance_scale=self.config.guidance_scale,
-                num_inference_steps=self.config.num_inference_steps,
-                batch_size=self.config.batch_size,
-                device=torch.device(self.config.device),
-                dtype=self.config.dtype
-            )
             self.results['prompt_b']['latents'].append(latents_b)
             self.results['prompt_b']['trajectories'].append(traj_b)
-
-            # Experiment 4: SUPERDIFF composition
-            print(f"  SUPERDIFF: '{self.config.prompt_a}' ∧ '{self.config.prompt_b}'")
-            latents_sd, traj_sd, kappa, ll_obj, ll_bg = superdiff_with_trajectory_tracking(
-                initial_latents.clone(),
-                self.config.prompt_a,
-                self.config.prompt_b,
-                self.scheduler,
-                self.unet,
-                self.tokenizer,
-                self.text_encoder,
-                guidance_scale=self.config.guidance_scale,
-                num_inference_steps=self.config.num_inference_steps,
-                batch_size=self.config.batch_size,
-                device=torch.device(self.config.device),
-                dtype=self.config.dtype,
-                lift=self.config.lift
-            )
             self.results['superdiff']['latents'].append(latents_sd)
             self.results['superdiff']['trajectories'].append(traj_sd)
             self.results['superdiff']['kappas'].append(kappa)
@@ -1320,6 +1741,198 @@ def run_composition_experiments(config: Optional[ExperimentConfig] = None):
     print("="*80)
     print(f"\nResults saved to: {suite.output_dir.absolute()}")
     print("\nReview the generated visualizations and summary report for detailed analysis.")
+
+
+# ---------------------------------------------------------------------------
+# GLIGEN paradigm: DDPM noise prediction + bounding-box grounding
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def get_noise_pred_gligen(unet, timestep, latents, prompt_embeds,
+                          cross_attention_kwargs=None,
+                          device=torch.device("cuda"), dtype=torch.float16):
+    """Noise prediction from GLIGEN UNet (analogous to get_vel_sd3)."""
+    latents_in = latents.to(device=device, dtype=dtype)
+    prompt_embeds = prompt_embeds.to(device=device, dtype=dtype)
+    t = timestep.expand(latents_in.shape[0]).to(device=device)
+
+    with torch.autocast("cuda", dtype=dtype):
+        noise_pred = unet(
+            latents_in,
+            t,
+            encoder_hidden_states=prompt_embeds,
+            cross_attention_kwargs=cross_attention_kwargs,
+        ).sample
+    return noise_pred
+
+
+@torch.no_grad()
+def _get_gligen_conditioning(prompt, batch_size, tokenizer, text_encoder, device):
+    """Single CLIP text encoder conditioning (analogous to _get_sd3_conditioning)."""
+    text_input = tokenizer(
+        [prompt] * batch_size,
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt",
+    )
+    prompt_embeds = text_encoder(text_input.input_ids.to(device))[0]
+    return prompt_embeds
+
+
+@torch.no_grad()
+def _prepare_gligen_grounding(phrases, boxes, tokenizer, text_encoder, unet,
+                               device, do_cfg=True, batch_size=1):
+    """
+    Prepare cross_attention_kwargs["gligen"] dict with boxes, embeddings, masks.
+
+    Args:
+        phrases: list of grounding phrases, e.g. ["a dog", "a cat"]
+        boxes: list of [x0, y0, x1, y1] normalized coords
+        do_cfg: if True, duplicate for CFG (uncond half gets zero masks)
+    Returns:
+        cross_attention_kwargs dict ready for UNet forward pass
+    """
+    max_objs = 30
+    n_objs = len(phrases)
+
+    tokenizer_inputs = tokenizer(phrases, padding=True, return_tensors="pt").to(device)
+    text_embeddings = text_encoder(**tokenizer_inputs).pooler_output  # (n_objs, dim)
+
+    cross_dim = unet.config.cross_attention_dim
+    boxes_t = torch.zeros(max_objs, 4, device=device, dtype=text_embeddings.dtype)
+    boxes_t[:n_objs] = torch.tensor(boxes, dtype=text_embeddings.dtype)
+    embeds_t = torch.zeros(max_objs, cross_dim, device=device, dtype=text_embeddings.dtype)
+    embeds_t[:n_objs] = text_embeddings
+    masks_t = torch.zeros(max_objs, device=device, dtype=text_embeddings.dtype)
+    masks_t[:n_objs] = 1
+
+    repeat = batch_size
+    boxes_t = boxes_t.unsqueeze(0).expand(repeat, -1, -1).clone()
+    embeds_t = embeds_t.unsqueeze(0).expand(repeat, -1, -1).clone()
+    masks_t = masks_t.unsqueeze(0).expand(repeat, -1).clone()
+
+    if do_cfg:
+        boxes_t = torch.cat([boxes_t] * 2)
+        embeds_t = torch.cat([embeds_t] * 2)
+        masks_t = torch.cat([masks_t] * 2)
+        # Unconditional half: zero out masks
+        masks_t[:repeat] = 0
+
+    return {"gligen": {"boxes": boxes_t, "positive_embeddings": embeds_t, "masks": masks_t}}
+
+
+def sample_gligen_with_trajectory_tracking(
+    latents, prompt, scheduler, unet, tokenizer, text_encoder,
+    gligen_phrases=None, gligen_boxes=None, gligen_scheduled_sampling_beta=0.3,
+    guidance_scale=7.5, num_inference_steps=50, batch_size=1,
+    device=torch.device("cuda"), dtype=torch.float16,
+):
+    """Standard CFG denoising for GLIGEN with trajectory tracking."""
+    cond_embeds = _get_gligen_conditioning(prompt, batch_size, tokenizer, text_encoder, device)
+    uncond_embeds = _get_gligen_conditioning("", batch_size, tokenizer, text_encoder, device)
+
+    # Prepare grounding tokens
+    cross_attention_kwargs = None
+    if gligen_phrases and gligen_boxes:
+        cross_attention_kwargs = _prepare_gligen_grounding(
+            gligen_phrases, gligen_boxes, tokenizer, text_encoder, unet,
+            device, do_cfg=True, batch_size=batch_size,
+        )
+
+    tracker = LatentTrajectoryCollector(
+        num_inference_steps, batch_size,
+        latents.shape[1], latents.shape[2], latents.shape[3],
+    )
+
+    scheduler.set_timesteps(num_inference_steps)
+    timesteps = scheduler.timesteps
+
+    num_grounding_steps = int(gligen_scheduled_sampling_beta * len(timesteps))
+
+    for i, t in enumerate(timesteps):
+        # Scheduled sampling: disable grounding after β fraction of steps
+        step_xattn = cross_attention_kwargs if i < num_grounding_steps else None
+
+        latent_model_input = torch.cat([latents] * 2)
+        latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+        prompt_embeds_cfg = torch.cat([uncond_embeds, cond_embeds])
+
+        noise_pred = get_noise_pred_gligen(
+            unet, t, latent_model_input, prompt_embeds_cfg,
+            cross_attention_kwargs=step_xattn, device=device, dtype=dtype,
+        )
+
+        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+        noise_pred_combined = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+        prev_latents = scheduler.step(noise_pred_combined, t, latents).prev_sample
+
+        tracker.store_step(i, latents, noise_pred_combined, 0.0, t.item())
+        latents = prev_latents
+
+    tracker.store_final(latents)
+    return latents, tracker
+
+
+def poe_gligen_with_trajectory_tracking(
+    latents, prompt_a, prompt_b, scheduler, unet, tokenizer, text_encoder,
+    gligen_phrases=None, gligen_boxes=None, gligen_scheduled_sampling_beta=0.3,
+    guidance_scale=7.5, num_inference_steps=50, batch_size=1,
+    device=torch.device("cuda"), dtype=torch.float16,
+):
+    """
+    Product of Experts for GLIGEN (noise-prediction paradigm).
+
+    In noise-prediction CFG:
+        eps_PoE = eps_unc + gs * ((eps_A - eps_unc) + (eps_B - eps_unc))
+    """
+    a_embeds = _get_gligen_conditioning(prompt_a, batch_size, tokenizer, text_encoder, device)
+    b_embeds = _get_gligen_conditioning(prompt_b, batch_size, tokenizer, text_encoder, device)
+    uncond_embeds = _get_gligen_conditioning("", batch_size, tokenizer, text_encoder, device)
+
+    cross_attention_kwargs = None
+    if gligen_phrases and gligen_boxes:
+        cross_attention_kwargs = _prepare_gligen_grounding(
+            gligen_phrases, gligen_boxes, tokenizer, text_encoder, unet,
+            device, do_cfg=False, batch_size=batch_size,
+        )
+
+    tracker = LatentTrajectoryCollector(
+        num_inference_steps, batch_size,
+        latents.shape[1], latents.shape[2], latents.shape[3],
+    )
+
+    scheduler.set_timesteps(num_inference_steps)
+    timesteps = scheduler.timesteps
+
+    num_grounding_steps = int(gligen_scheduled_sampling_beta * len(timesteps))
+
+    for i, t in enumerate(timesteps):
+        step_xattn = cross_attention_kwargs if i < num_grounding_steps else None
+
+        scaled_latents = scheduler.scale_model_input(latents, t)
+
+        eps_a = get_noise_pred_gligen(unet, t, scaled_latents, a_embeds,
+                                      cross_attention_kwargs=step_xattn, device=device, dtype=dtype)
+        eps_b = get_noise_pred_gligen(unet, t, scaled_latents, b_embeds,
+                                      cross_attention_kwargs=step_xattn, device=device, dtype=dtype)
+        eps_unc = get_noise_pred_gligen(unet, t, scaled_latents, uncond_embeds,
+                                        device=device, dtype=dtype)
+
+        # PoE: sum of conditional scores
+        eps_combined = eps_unc + guidance_scale * (
+            (eps_a - eps_unc) + (eps_b - eps_unc)
+        )
+
+        prev_latents = scheduler.step(eps_combined, t, latents).prev_sample
+
+        tracker.store_step(i, latents, eps_combined, 0.0, t.item())
+        latents = prev_latents
+
+    tracker.store_final(latents)
+    return latents, tracker
 
 
 if __name__ == "__main__":

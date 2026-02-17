@@ -4,6 +4,10 @@ latents/
 manifest.jsonl
 wandb/
 MNIST/
+*.jpg
+*.png
+*.npy
+*.npz
 *.flax
 *.idea
 *.iml

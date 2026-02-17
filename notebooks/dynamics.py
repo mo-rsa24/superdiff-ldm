@@ -8,7 +8,18 @@ from notebooks.utils import get_text_embedding
 
 
 @torch.no_grad
-def get_vel(unet, t, sigma, latents, embeddings, eps=None, get_div=False, device=torch.device("cuda"), dtype=torch.float16):
+def get_vel(
+    unet,
+    t,
+    sigma,
+    latents,
+    embeddings,
+    eps=None,
+    get_div=False,
+    device=torch.device("cuda"),
+    dtype=torch.float16,
+    added_cond_kwargs=None,
+):
     t = t.to(device, dtype=torch.float16)
 
     def v(_x, _e):
@@ -19,7 +30,19 @@ def get_vel(unet, t, sigma, latents, embeddings, eps=None, get_div=False, device
         x_in = _x / denom
 
         with torch.autocast("cuda", dtype=dtype):
-            return unet(x_in, t, encoder_hidden_states=_e).sample
+            if added_cond_kwargs is None:
+                return unet(x_in, t, encoder_hidden_states=_e).sample
+
+            cond_kwargs = {
+                key: value.to(device=device, dtype=dtype)
+                for key, value in added_cond_kwargs.items()
+            }
+            return unet(
+                x_in,
+                t,
+                encoder_hidden_states=_e,
+                added_cond_kwargs=cond_kwargs,
+            ).sample
     # v = lambda _x, _e: unet(_x / ((sigma**2 + 1) ** 0.5), t, encoder_hidden_states=_e).sample
     embeds = torch.cat(embeddings)
     latent_input = latents
@@ -49,7 +72,9 @@ def get_latents(scheduler, z_channels: int =4, device = torch.device("cuda"), dt
         dtype=dtype
     )
     scheduler.set_timesteps(num_inference_steps)
-    latents = latents * scheduler.init_noise_sigma
+    # FlowMatchEulerDiscreteScheduler has no init_noise_sigma (starts from N(0,1))
+    if hasattr(scheduler, 'init_noise_sigma'):
+        latents = latents * scheduler.init_noise_sigma
     return latents
 
 
@@ -116,6 +141,89 @@ def stochastic_super_diff_and(
     return latents, kappa, ll_obj, ll_bg
 
 
+def _solve_kappa_and(velocities, vel_uncond, dsigma, sigma, noise,
+                     guidance_scale, lift, num_inference_steps):
+    """
+    Solve the M+1 linear system from Proposition 6 for AND composition.
+
+    Finds κ = [κ₁, ..., κₘ] with Σκ = 1 such that all log-densities
+    evolve at the same rate:  d log qⁱ = d log qʲ  ∀ i,j ∈ [M].
+
+    Derivation (generalising the 2-prompt analytical formula):
+    ---------------------------------------------------------
+    Composite update:
+        dx = 2·dσ·(v_unc + gs·Σₖ κₖ(vₖ − v_unc)) + noise
+
+    Split into κ-independent and κ-dependent parts:
+        dx_base = 2·dσ·v_unc + noise          (independent of κ)
+        dx      = dx_base + 2·dσ·gs·Σₖ κₖ(vₖ − v_unc)
+
+    Itô density estimator (Theorem 1) for model i:
+        d log qⁱ ≈ −|dσ|/σ · ‖vⁱ‖² − ⟨dx, vⁱ/σ⟩
+
+    Setting d log q⁰ = d log qʲ  for j = 1, …, M−1 and
+    substituting dx gives a linear equation in κ for each j:
+
+        Σₖ κₖ · [2·dσ·gs · ⟨vₖ − v_unc, vⱼ − v₀⟩]
+            = |dσ| · (‖v₀‖² − ‖vⱼ‖²) − ⟨dx_base, vⱼ − v₀⟩ − σ·ℓ/N
+
+    Together with Σₖ κₖ = 1 this is an M × M system  A κ = b.
+
+    For M = 2 this reduces to the closed-form in stochastic_super_diff_and.
+    """
+    M = len(velocities)
+    B = velocities[0].shape[0]
+    dev = velocities[0].device
+
+    # Flatten spatial dims: [M, B, D]
+    vels = torch.stack([v.flatten(1) for v in velocities])          # [M, B, D]
+    v_unc = vel_uncond.flatten(1)                                    # [B, D]
+    dx_base = (2 * dsigma * vel_uncond + noise).flatten(1)           # [B, D]
+
+    # Differences needed for the linear system
+    # u_diff[k] = vₖ − v_unc   (how each model differs from uncond)
+    u_diff = vels - v_unc.unsqueeze(0)                               # [M, B, D]
+
+    # v_diff[j] = v_{j+1} − v₀  (how each model differs from reference)
+    v_diff = vels[1:] - vels[0:1]                                   # [M-1, B, D]
+
+    # ---- Build A  [B, M, M] ----
+    # Upper block [B, M-1, M]:
+    #   A[b, j, k] = 2·dσ·gs · ⟨u_diff[k,b,:], v_diff[j,b,:]⟩
+    # Efficiently via batched matmul:
+    #   u_diff_t : [B, M, D],  v_diff_t : [B, M-1, D]
+    #   upper = v_diff_t @ u_diff_t^T → [B, M-1, M]
+    u_diff_t = u_diff.permute(1, 0, 2).float()                      # [B, M, D]
+    v_diff_t = v_diff.permute(1, 0, 2).float()                      # [B, M-1, D]
+
+    A = torch.zeros(B, M, M, device=dev, dtype=torch.float32)
+    A[:, :M-1, :] = (2 * dsigma * guidance_scale) * torch.bmm(
+        v_diff_t, u_diff_t.transpose(1, 2)
+    )                                                                # [B, M-1, M]
+    A[:, M-1, :] = 1.0                                              # sum constraint
+
+    # ---- Build b  [B, M] ----
+    b = torch.zeros(B, M, device=dev, dtype=torch.float32)
+
+    # Per-model squared norms: [M, B]
+    norms_sq = (vels.float() ** 2).sum(dim=2)                       # [M, B]
+
+    # RHS for each constraint j = 0 … M-2  (comparing model j+1 to model 0)
+    #   b[j] = |dσ|·(‖v₀‖² − ‖v_{j+1}‖²) − ⟨dx_base, v_{j+1} − v₀⟩ − σ·ℓ/N
+    for j in range(M - 1):
+        norm_term = torch.abs(dsigma) * (norms_sq[0] - norms_sq[j + 1])  # [B]
+        dot_term = (dx_base.float() * v_diff_t[:, j, :]).sum(dim=1)       # [B]
+        b[:, j] = norm_term - dot_term - sigma * lift / num_inference_steps
+
+    b[:, M-1] = 1.0                                                 # sum constraint
+
+    # ---- Solve  A κ = b ----
+    # Use least-squares for robustness (handles near-singular cases)
+    kappa = torch.linalg.lstsq(A, b.unsqueeze(-1)).solution.squeeze(-1)  # [B, M]
+
+    return kappa.to(velocities[0].dtype)
+
+
 def stochastic_super_diff_multi(
         latents,
         prompts: List[str],
@@ -132,7 +240,11 @@ def stochastic_super_diff_multi(
         operation: str = "AND"  # "AND" or "OR"
 ):
     """
-    Compose M pre-trained score models using SuperDiff.
+    Compose M pre-trained score models using SuperDiff (Algorithm 1).
+
+    For AND: solves the M+1 linear system from Proposition 6 so that
+             all log-densities evolve at the same rate.
+    For OR:  uses softmax over log-likelihoods (Proposition 3).
 
     Args:
         latents: Initial latent noise
@@ -146,7 +258,7 @@ def stochastic_super_diff_multi(
         batch_size: Batch size
         device: Device to run on
         dtype: Data type
-        lift: Lift parameter for stability
+        lift: Lift / bias parameter ℓ for stability (Eq. 18)
         operation: "AND" or "OR" composition (Algorithm 1)
 
     Returns:
@@ -189,62 +301,34 @@ def stochastic_super_diff_multi(
 
         # Compute kappas based on operation type
         if operation == "OR":
-            # Softmax over log-likelihoods (Proposition 3 in Algorithm 1)
-            # Add temperature parameter for stability
+            # Softmax over T·log-likelihoods + ℓ (Proposition 3 in Algorithm 1)
             temperature = 1.0
             logits = log_likelihoods[i] / temperature + lift / num_inference_steps
             kappas[i + 1] = torch.softmax(logits, dim=-1)
 
         elif operation == "AND":
-            # Solve linear system for AND operation (Proposition 6 in Algorithm 1)
-            # For simplicity, we use a gradient-based approach similar to the 2-prompt case
-
-            # Stack velocities: (M, batch, C, H, W)
-            vel_stack = torch.stack(velocities)  # (M, B, C, H, W)
-
-            # Compute pairwise differences and prepare for kappa optimization
-            # We want to maximize the composite log-likelihood
-            # For M models, we solve: kappa_i proportional to contribution to joint likelihood
-
-            # Simplified approach: use weighted average based on agreement with independent update
-            dx_ind = 2 * dsigma * vel_uncond + noise
-
-            # For each model, compute how well it agrees with independent dynamics
-            agreements = []
-            for m in range(M):
-                # Compute guidance-scaled velocity
-                vel_guided = vel_uncond + guidance_scale * (velocities[m] - vel_uncond)
-
-                # Measure agreement via dot product with independent update
-                agreement = -(dx_ind * (vel_guided - vel_uncond)).sum((1, 2, 3))
-
-                # Add velocity magnitude term and lift
-                vel_term = (torch.abs(dsigma) * velocities[m] ** 2).sum((1, 2, 3))
-                agreements.append(agreement + vel_term + lift / num_inference_steps)
-
-            # Stack agreements: (batch, M)
-            agreement_stack = torch.stack(agreements, dim=-1)  # (B, M)
-
-            # Softmax to get kappa values that sum to 1
-            kappas[i + 1] = torch.softmax(agreement_stack, dim=-1)
+            # Solve M+1 linear system for κ (Proposition 6)
+            kappas[i + 1] = _solve_kappa_and(
+                velocities, vel_uncond, dsigma, sigma, noise,
+                guidance_scale, lift, num_inference_steps,
+            )
 
         else:
             raise ValueError(f"Unknown operation: {operation}. Use 'AND' or 'OR'.")
 
-        # Compute composite vector field as weighted sum
-        # vf = vel_uncond + guidance_scale * sum_m(kappa_m * (vel_m - vel_uncond))
+        # Composite vector field:  u_t = Σ_m κ_m · ∇log q_m  (Algorithm 1)
+        # In CFG form: vf = v_unc + gs · Σ_m κ_m · (v_m − v_unc)
         vf = vel_uncond.clone()
         for m in range(M):
-            kappa_m = kappas[i + 1, :, m]  # (batch,)
-            # Reshape kappa for broadcasting: (batch, 1, 1, 1)
-            kappa_m = kappa_m[:, None, None, None]
+            kappa_m = kappas[i + 1, :, m][:, None, None, None]      # [B,1,1,1]
             vf = vf + guidance_scale * kappa_m * (velocities[m] - vel_uncond)
 
-        # Update latents
+        # SDE step (Proposition 1):
+        # dx_τ = (−f_{1−τ} + g²_{1−τ} u_t) dτ + g_{1−τ} dW̄_τ
         dx = 2 * dsigma * vf + noise
         latents = latents + dx
 
-        # Update log-likelihoods for each model (Theorem 1)
+        # Update log-likelihoods for each model (Theorem 1, Eq. 13)
         for m in range(M):
             vel_m = velocities[m]
             ll_update = (

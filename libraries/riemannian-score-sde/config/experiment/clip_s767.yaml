@@ -1,0 +1,33 @@
+# @package _global_
+
+# Train Riemannian Score SDE on CLIP ViT-L/14 image embeddings (S^767).
+# python main.py experiment=clip_s767
+# python main.py experiment=clip_s767 dataset.pair="person+car"
+
+name: clip_s767
+ckpt_dir: ckpt/${name}
+
+defaults:
+  - /manifold: nsphere
+  - /model: rsgm
+  - /dataset: clip_embeddings
+  - /architecture: concat_wide
+  - /embedding: none
+  - override /generator: ambient
+
+manifold:
+  dim: 767
+
+beta_schedule:
+  beta_0: 0.01
+  beta_f: 3.0
+
+batch_size: 256
+eval_batch_size: 256
+warmup_steps: 500
+steps: 50000
+val_freq: 2500
+ema_rate: 0.999
+eps: 1e-3
+
+splits: [0.8, 0.1, 0.1]

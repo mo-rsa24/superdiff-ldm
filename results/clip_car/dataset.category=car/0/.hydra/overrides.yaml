@@ -1,0 +1,3 @@
+- experiment=clip_s767
+- name=clip_car
+- dataset.category=car

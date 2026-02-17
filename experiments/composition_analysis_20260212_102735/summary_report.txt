@@ -1,0 +1,124 @@
+
+================================================================================
+SUPERDIFF COMPOSITION ANALYSIS - SUMMARY REPORT
+================================================================================
+
+EXPERIMENTAL CONFIGURATION
+================================================================================
+Prompts:
+  A: "A dog"
+  B: "A cat"
+  Monolithic: "A dog and a cat"
+
+Sampling:
+  Number of runs: 4
+  Batch size: 4
+  Total samples per condition: 16
+  Inference steps: 100
+  Guidance scale: 7.5
+  SUPERDIFF lift parameter: 0.0
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+1. CENTROID ANALYSIS
+================================================================================
+
+Distance metrics (L2 norm in latent space):
+
+  SUPERDIFF positioning:
+    - Distance to Monolithic:        41.6562
+    - Distance to A:                 43.4062
+    - Distance to B:                 38.3125
+    - Distance to (A+B)/2:           34.2812
+
+  Reference distances:
+    - A to B:                        44.6875
+    - Monolithic to (A+B)/2:         37.8125
+
+  Interpretation:
+    - SUPERDIFF centroid is CLOSER to the linear midpoint (A+B)/2
+      than to the monolithic prompt.
+    - This suggests that SUPERDIFF performs approximate linear interpolation in latent space.
+
+2. KAPPA DYNAMICS
+================================================================================
+
+  Mean κ across all steps:          0.6060
+  Std deviation of κ:                0.3137
+
+  Interpretation:
+    - κ = 0.5 represents equal weighting between A and B
+    - κ > 0.5 biases toward A ("A dog")
+    - κ < 0.5 biases toward B ("A cat")
+
+    Mean κ = 0.6060 indicates A-biased composition.
+
+3. VARIANCE ANALYSIS
+================================================================================
+
+  Mean variance across dimensions:
+    - Monolithic:  0.994629
+    - Prompt A:    1.009766
+    - Prompt B:    0.984375
+    - SUPERDIFF:   0.828613
+
+  Interpretation:
+    Lower variance in SUPERDIFF suggests mode collapse or reduced diversity.
+
+================================================================================
+THEORETICAL IMPLICATIONS
+================================================================================
+
+Based on the analysis, we can draw the following conclusions:
+
+1. GEOMETRIC INTERPRETATION:
+
+   The SUPERDIFF AND operation appears to deviate significantly from linear interpolation
+   in the latent manifold. This challenges the hypothesis that composition
+   occurs via Euclidean averaging of velocity fields.
+
+2. MANIFOLD HYPOTHESIS:
+
+   The deviation of SUPERDIFF samples from the A-B interpolation line suggests potential   off-manifold trajectories, which could explain hybridization artifacts.
+
+3. SEMANTIC INTERPRETATION:
+
+   The observed dissimilarity between SUPERDIFF and monolithic prompts
+   indicates that the mathematical AND operation differs from natural language conjunction semantics.
+
+   This challenges the hypothesis that hybridization is a consequence of energy-based
+   intersection rather than semantic co-presence.
+
+================================================================================
+RECOMMENDATIONS FOR FURTHER INVESTIGATION
+================================================================================
+
+1. Vary the lift parameter systematically to observe its effect on composition geometry
+2. Test with prompts that have clear spatial semantics (e.g., "left" vs "right")
+3. Analyze intermediate timesteps to identify when hybridization emerges
+4. Compare with alternative composition operators (arithmetic mean, geometric mean)
+5. Investigate whether different prompt embeddings lead to more manifold-aligned compositions
+6. Test with CLIP-based semantic similarity metrics to quantify hybridization
+
+================================================================================
+EXPERIMENTAL DATA SAVED TO:
+================================================================================
+
+/home/molefe/Playground/PhD/superdiff-ldm/experiments/composition_analysis_20260212_102735
+
+Files generated:
+  - sample_images_comparison.png
+  - trajectory_geometry.png
+  - centroid_statistics.png
+  - kappa_dynamics.png
+  - pca_tsne_projections.png
+  - manifold_distances.png
+  - velocity_field_alignment.png
+  - centroid_distances.txt
+  - summary_report.txt (this file)
+
+================================================================================
+END OF REPORT
+================================================================================

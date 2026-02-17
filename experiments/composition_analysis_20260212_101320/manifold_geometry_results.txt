@@ -1,0 +1,24 @@
+MANIFOLD GEOMETRY ANALYSIS RESULTS
+================================================================================
+
+1. INTRINSIC DIMENSIONALITY (MLE)
+   Monolithic:     12.79
+   Prompt A:       11.41
+   Prompt B:        9.22
+   SUPERDIFF:      14.11
+
+2. INTRINSIC DIMENSIONALITY (Correlation)
+   Monolithic:     16.26
+   Prompt A:       12.22
+   Prompt B:       14.10
+   SUPERDIFF:      21.42
+
+3. TANGENT SPACE ALIGNMENT
+   SD vs Monolithic: 0.1356 ± 0.0803
+   SD vs A:          0.1227 ± 0.0494
+   SD vs B:          0.1510 ± 0.0764
+
+4. GEODESIC VS EUCLIDEAN DISTANCES
+   Mean Euclidean:   125.9375 ± 5.6719
+   Mean Geodesic:    12.5411 ± 0.5608
+   Mean Ratio:       0.0996 ± 0.0002

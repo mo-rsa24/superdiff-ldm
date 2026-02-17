@@ -1,0 +1,22 @@
+CENTROID DISTANCE ANALYSIS
+============================================================
+
+SD to Mono               :    38.4062
+SD to A                  :    36.4375
+SD to B                  :    35.9375
+SD to (A+B)/2            :    31.2812
+A to B                   :    36.4375
+Mono to (A+B)/2          :    33.8750
+
+
+VARIANCE ANALYSIS
+============================================================
+
+Monolithic
+"A Cat and A Dog":   1.416992
+Prompt A
+"A Cat"         :   1.670898
+Prompt B
+"A Dog"         :   1.622070
+SUPERDIFF
+A ∧ B          :   1.601562

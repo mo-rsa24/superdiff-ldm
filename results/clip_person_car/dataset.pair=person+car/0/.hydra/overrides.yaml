@@ -1,0 +1,3 @@
+- experiment=clip_s767
+- name=clip_person_car
+- dataset.pair=person+car

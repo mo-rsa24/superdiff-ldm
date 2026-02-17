@@ -64,8 +64,18 @@ class _Hypersphere(EmbeddedManifold):
             value=1.0,
             tangent_submersion=lambda v, x: 2 * gs.sum(x * v, axis=-1),
         )
-        self.isom_group = SpecialOrthogonal(n=dim + 1)
+        self._isom_group = None
         self.c = 1.0
+
+    @property
+    def isom_group(self):
+        if self._isom_group is None:
+            self._isom_group = SpecialOrthogonal(n=self.dim + 1)
+        return self._isom_group
+
+    @isom_group.setter
+    def isom_group(self, value):
+        self._isom_group = value
 
     @property
     def injectivity_radius(self):
@@ -75,6 +85,18 @@ class _Hypersphere(EmbeddedManifold):
     def identity(self):
         out = gs.zeros((self.embedding_space.dim))
         return gs.assignment(out, 1.0 / gs.sqrt(self.c), (0), axis=-1)
+
+    def grad_marginal_log_prob(self, x0, x, t, thresh=0.5, n_max=5):
+        """Gradient of the log transition kernel for Brownian motion on S^n.
+
+        For high-dimensional spheres (dim > 50), uses the geodesic Gaussian
+        approximation for all t, since the Gegenbauer series is numerically
+        intractable.
+        """
+        if self.dim > 50:
+            # Geodesic approximation: grad_x log p(x|x0,t) = Log_x(x0) / t
+            return self.grad_log_heat_kernel_exp(x0, x, t)
+        return super().grad_marginal_log_prob(x0, x, t, thresh=thresh, n_max=n_max)
 
     def projection(self, point):
         """Project a point on the hypersphere.
@@ -589,16 +611,33 @@ class _Hypersphere(EmbeddedManifold):
         else:
             n = gs.expand_dims(gs.arange(0, n_max + 1), axis=-1)
             t = gs.expand_dims(t, axis=0)
-            coeffs = (
-                gs.exp(-n * (n + 1) * t) * (2 * n + d - 1) / (d - 1) / self.metric.volume
+            log_vol = self.metric.log_volume
+            # Compute log-coefficients to avoid overflow from volume/gamma
+            # coeffs_n = exp(-n(n+1)t) * (2n+d-1) / (d-1) / vol
+            log_coeffs = (
+                -n * (n + 1) * t
+                + gs.log(2 * n + d - 1)
+                - gs.log(gs.array(d - 1, dtype=t.dtype))
+                - log_vol
             )
             inner_prod = gs.sum(x0 * x, axis=-1)
             cos_theta = gs.clip(inner_prod, -1.0, 1.0)
             P_n = gegenbauer_polynomials(
                 alpha=(self.dim - 1) / 2, l_max=n_max, x=cos_theta
             )
-            prob = gs.sum(coeffs * P_n, axis=0)
-        return gs.log(prob)
+            # log-sum-exp: log(sum(exp(log_coeffs) * P_n))
+            # = log(sum(sign(P_n) * exp(log_coeffs + log|P_n|)))
+            sign_P = gs.sign(P_n)
+            abs_P = gs.maximum(sign_P * P_n, 1e-45)
+            log_abs_P = gs.log(abs_P)
+            log_terms = log_coeffs + log_abs_P
+            # log-sum-exp: reduce over n (axis 0, size n_max+1 which is small)
+            max_log = log_terms[0]
+            for i in range(1, log_terms.shape[0]):
+                max_log = gs.where(log_terms[i] > max_log, log_terms[i], max_log)
+            shifted = sign_P * gs.exp(log_terms - gs.expand_dims(max_log, 0))
+            prob_log = max_log + gs.log(gs.maximum(gs.sum(shifted, axis=0), 1e-45))
+        return prob_log
 
     def div_free_generators(self, x):
         """
@@ -976,6 +1015,8 @@ class HypersphereMetric(RiemannianMetric):
     @property
     def volume(self):
         half_dim = (self.dim + 1) / 2
+        if half_dim > 170:  # math.gamma overflows beyond ~171
+            return gs.exp(self.log_volume)
         return 2 * gs.pi**half_dim / math.gamma(half_dim)
 
     def _normalization_factor_odd_dim(self, variances):

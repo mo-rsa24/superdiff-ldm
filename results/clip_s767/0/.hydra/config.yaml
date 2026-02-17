@@ -1,0 +1,99 @@
+eval_batch_size: 256
+now: ${now:%Y-%m-%d}/${now:%H-%M-%S}
+resume: false
+mode: all
+seed: 0
+PROJECT_NAME: score-sde
+work_dir: ${hydra:runtime.cwd}
+data_dir: ${work_dir}/data/
+ckpt_dir: ckpt
+logs_dir: logs
+logdir: ${work_dir}/results
+train_val: true
+train_plot: true
+test_val: true
+test_test: true
+test_plot: true
+num_workers: 8
+paths:
+  experiments: results
+n_jobs: 2
+manifold:
+  _target_: geomstats.geometry.hypersphere.Hypersphere
+  dim: 767
+transform:
+  _target_: score_sde.models.Id
+flow:
+  _target_: riemannian_score_sde.sde.Brownian
+  'N': 100
+base:
+  _target_: riemannian_score_sde.models.distribution.DefaultDistribution
+pushf:
+  _target_: score_sde.models.flow.SDEPushForward
+  diffeq: sde
+loss:
+  _target_: riemannian_score_sde.losses.get_dsm_loss_fn
+  like_w: false
+  eps: ${eps}
+  thresh: 0.5
+  n_max: 5
+generator:
+  _target_: riemannian_score_sde.models.AmbientGenerator
+dataset:
+  _target_: riemannian_score_sde.datasets.CLIPEmbeddingDataset
+  embeddings_path: ${work_dir}/clip_embeddings/coco_common_pairs/image_embeddings.npy
+  manifest_path: ${work_dir}/clip_embeddings/coco_common_pairs/image_manifest.jsonl
+  pair: null
+architecture:
+  _target_: score_sde.models.Concat
+  hidden_shapes:
+  - 1024
+  - 1024
+  - 1024
+  - 1024
+  - 1024
+  act: sin
+embedding:
+  _target_: riemannian_score_sde.models.NoneEmbedding
+name: clip_s767
+beta_schedule:
+  beta_0: 0.001
+  beta_f: 5.0
+  _target_: score_sde.schedule.LinearBetaSchedule
+  t0: 0.0
+  tf: 1.0
+batch_size: 256
+warmup_steps: 500
+steps: 50000
+val_freq: 2500
+ema_rate: 0.999
+eps: 0.001
+splits:
+- 0.8
+- 0.1
+- 0.1
+logger:
+  csv:
+    _target_: score_sde.utils.loggers_pl.CSVLogger
+    save_dir: logs
+    name: ''
+    flush_logs_every_n_steps: 1000
+optim:
+  _target_: optax.adam
+  learning_rate: 0.0002
+  b1: 0.9
+  b2: 0.999
+  eps: 1.0e-08
+scheduler:
+  _target_: optax.join_schedules
+  schedules:
+  - _target_: optax.linear_schedule
+    init_value: 0.0
+    end_value: 1.0
+    transition_steps: ${warmup_steps}
+  - _target_: optax.cosine_decay_schedule
+    init_value: 1.0
+    decay_steps: ${eval:${steps}-${warmup_steps}}
+    alpha: 0.0
+  boundaries:
+  - ${warmup_steps}
