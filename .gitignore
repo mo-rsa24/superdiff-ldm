@@ -5,6 +5,7 @@ manifest.jsonl
 wandb/
 MNIST/
 *.jpg
+*.pt
 *.png
 *.npy
 *.npz

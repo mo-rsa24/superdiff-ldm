@@ -29,12 +29,32 @@ import json
 import math
 import sys
 from pathlib import Path
+from typing import List
 
+import numpy as np
 import torch
 import torch.nn.functional as F
-from torchvision.utils import save_image
+from torchvision.utils import save_image, make_grid
 from torchvision import transforms
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
+
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.collections import LineCollection
+    from matplotlib.colors import Normalize
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+
+try:
+    from sklearn.decomposition import PCA
+    from sklearn.manifold import MDS
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    print("Warning: scikit-learn not installed. Trajectory MDS will be skipped.")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from notebooks.utils import get_sd3_models, get_sd3_text_embedding
@@ -238,6 +258,216 @@ def compute_trajectory_gap(
 
 
 # ---------------------------------------------------------------------------
+# 1. Text decoding: find nearest training prompt to predicted p*
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def decode_pooled_to_text(
+    pred_pooled: torch.Tensor,          # (2048,) — averaged across seeds
+    vocab_prompts: List[str],
+    models: dict,
+    device: torch.device,
+    top_k: int = 3,
+) -> List[tuple]:
+    """
+    Find the top-k nearest training prompts to the predicted pooled embedding
+    by cosine similarity in SD3.5's pooled conditioning space (2048-dim).
+
+    Returns list of (prompt_str, cosine_similarity) sorted descending.
+    """
+    query = F.normalize(pred_pooled.float().unsqueeze(0), dim=-1)  # (1, 2048)
+
+    sims = []
+    for prompt in vocab_prompts:
+        _, pooled = get_sd3_text_embedding(
+            [prompt],
+            models["tokenizer"],   models["text_encoder"],
+            models["tokenizer_2"], models["text_encoder_2"],
+            models["tokenizer_3"], models["text_encoder_3"],
+            device=device,
+        )
+        pooled_n = F.normalize(pooled.float(), dim=-1)  # (1, 2048)
+        sim = (query * pooled_n).sum().item()
+        sims.append((prompt, sim))
+
+    sims.sort(key=lambda x: x[1], reverse=True)
+    return sims[:top_k]
+
+
+# ---------------------------------------------------------------------------
+# 2. Side-by-side comparison grid
+# ---------------------------------------------------------------------------
+
+def _add_text_label(img_tensor: torch.Tensor, label: str, font_size: int = 16) -> torch.Tensor:
+    """Burn a text label into the top of a (3, H, W) [0,1] float tensor."""
+    pil = transforms.ToPILImage()(img_tensor.clamp(0, 1))
+    draw = ImageDraw.Draw(pil)
+    # Use default font — no TTF dependency
+    draw.rectangle([0, 0, pil.width, font_size + 6], fill=(20, 20, 20))
+    draw.text((4, 3), label, fill=(255, 255, 255))
+    return transforms.ToTensor()(pil)
+
+
+def plot_comparison_grid(
+    imgs_and:   torch.Tensor,   # (N, 3, H, W) [0,1]
+    imgs_pstar: torch.Tensor,   # (N, 3, H, W)
+    imgs_mono:  torch.Tensor,   # (N, 3, H, W)
+    decoded_text: List[tuple],  # top-k (prompt, sim) from decode_pooled_to_text
+    c1: str,
+    c2: str,
+    out_path: Path,
+    n_display: int = 4,
+):
+    """
+    Save a 3-row comparison grid:
+      Row 0 — SuperDiff AND
+      Row 1 — SD3.5(p*)  [with decoded nearest prompts annotated below]
+      Row 2 — SD3.5 monolithic  "c1 and c2"
+
+    Each row shows n_display images side by side.
+    Decoded text is printed below the p* row as a caption block.
+    """
+    N = min(n_display, imgs_and.shape[0])
+
+    def label_row(imgs, label):
+        labelled = [_add_text_label(imgs[i], label) for i in range(N)]
+        return torch.stack(labelled)   # (N, 3, H, W)
+
+    row_and   = label_row(imgs_and,   f"SuperDiff AND  ({c1}  +  {c2})")
+    row_pstar = label_row(imgs_pstar, "SD3.5 ( p* — inverted )")
+    row_mono  = label_row(imgs_mono,  f"SD3.5 monolithic  \"{c1} and {c2}\"")
+
+    combined = torch.cat([row_and, row_pstar, row_mono], dim=0)  # (3N, 3, H, W)
+    grid = make_grid(combined, nrow=N, padding=4, normalize=False)
+
+    # Convert to PIL to add a caption strip at the bottom
+    grid_pil = transforms.ToPILImage()(grid)
+    line_h = 20
+    caption_lines = ["Nearest training prompts to p* (cosine similarity in SD3.5 pooled space):"]
+    for rank, (prompt, sim) in enumerate(decoded_text, 1):
+        caption_lines.append(f"  {rank}. \"{prompt}\"  —  {sim:.4f}")
+
+    caption_h = line_h * len(caption_lines) + 10
+    canvas = Image.new("RGB", (grid_pil.width, grid_pil.height + caption_h), color=(30, 30, 30))
+    canvas.paste(grid_pil, (0, 0))
+
+    draw = ImageDraw.Draw(canvas)
+    for i, line in enumerate(caption_lines):
+        draw.text((8, grid_pil.height + 5 + i * line_h), line, fill=(220, 220, 220))
+
+    canvas.save(str(out_path))
+
+
+# ---------------------------------------------------------------------------
+# 3. Trajectory MDS / PCA visualisation
+# ---------------------------------------------------------------------------
+
+def _collect_trajectory_array(tracker: LatentTrajectoryCollector) -> np.ndarray:
+    """Flatten trajectories to (T+1, D) numpy array."""
+    traj = tracker.trajectories  # (T+1, B, C, H, W)
+    T1, B, C, H, W = traj.shape
+    return traj[:, 0].reshape(T1, -1).numpy().astype(np.float32)  # (T+1, D)
+
+
+def plot_trajectory_mds(
+    tracker_and:   LatentTrajectoryCollector,
+    tracker_pstar: LatentTrajectoryCollector,
+    tracker_mono:  LatentTrajectoryCollector,
+    c1: str,
+    c2: str,
+    out_path: Path,
+    method: str = "pca",
+):
+    """
+    Jointly project the latent trajectories of:
+      - SuperDiff AND
+      - SD3.5(p*)
+      - SD3.5 monolithic
+    into 2D via PCA or MDS and plot time-coloured curves.
+
+    All three start from the same x_T (shared noise), so the origin is common.
+    """
+    if not MATPLOTLIB_AVAILABLE or not SKLEARN_AVAILABLE:
+        print("  [skip] trajectory MDS — matplotlib or scikit-learn not available")
+        return
+
+    traj_and   = _collect_trajectory_array(tracker_and)    # (T+1, D)
+    traj_pstar = _collect_trajectory_array(tracker_pstar)  # (T+1, D)
+    traj_mono  = _collect_trajectory_array(tracker_mono)   # (T+1, D)
+
+    T1 = traj_and.shape[0]
+    stacked = np.vstack([traj_and, traj_pstar, traj_mono])  # (3*(T+1), D)
+
+    # Dimensionality reduction
+    if method == "pca":
+        proj = PCA(n_components=2).fit_transform(stacked)
+        axis_label = "PC"
+    else:  # mds
+        from sklearn.metrics import pairwise_distances
+        dist = pairwise_distances(stacked, metric="euclidean")
+        mds = MDS(n_components=2, dissimilarity="precomputed",
+                  random_state=42, normalized_stress="auto")
+        proj = mds.fit_transform(dist)
+        axis_label = "MDS"
+
+    p_and   = proj[:T1]
+    p_pstar = proj[T1:2*T1]
+    p_mono  = proj[2*T1:]
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+    cmap = plt.get_cmap("viridis")
+    norm = Normalize(vmin=0, vmax=T1 - 1)
+
+    def draw_curve(pts, label, color_offset=0.0):
+        for t in range(len(pts) - 1):
+            seg = np.array([[pts[t], pts[t + 1]]])
+            lc = LineCollection(seg, colors=[cmap(norm(t + color_offset))],
+                                linewidths=2, alpha=0.85)
+            ax.add_collection(lc)
+        ax.scatter(*pts[-1], s=120, zorder=5, edgecolors="k", linewidths=0.8,
+                   color=cmap(norm(T1 - 1)))
+        ax.annotate(label, pts[-1], xytext=(6, 4), textcoords="offset points", fontsize=10)
+
+    draw_curve(p_and,   f"SuperDiff AND")
+    draw_curve(p_pstar, f"SD3.5 (p*)")
+    draw_curve(p_mono,  f"SD3.5 monolithic")
+
+    # Shared origin marker (all start from same x_T)
+    ax.plot(*p_and[0], "ko", markersize=9, zorder=6)
+    ax.annotate("$x_T$ (shared)", p_and[0], xytext=(6, -14),
+                textcoords="offset points", fontsize=9, color="black")
+
+    # Colourbar for time
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, label="Denoising step")
+
+    ax.autoscale()
+    ax.set_xlabel(f"{axis_label} 1", fontsize=12)
+    ax.set_ylabel(f"{axis_label} 2", fontsize=12)
+    ax.set_title(
+        f"Latent Trajectory: SuperDiff AND vs SD3.5($p^*$) vs Monolithic\n"
+        f"({c1}  +  {c2})",
+        fontsize=12,
+    )
+    ax.grid(True, alpha=0.25)
+
+    # Custom legend
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], color=cmap(0.2), lw=2, label=f"SuperDiff AND ({c1} + {c2})"),
+        Line2D([0], [0], color=cmap(0.5), lw=2, label="SD3.5 (p* — inverted)"),
+        Line2D([0], [0], color=cmap(0.8), lw=2, label=f"SD3.5 monolithic \"{c1} and {c2}\""),
+        Line2D([0], [0], marker="o", color="k", lw=0, markersize=8, label="Shared start $x_T$"),
+    ]
+    ax.legend(handles=legend_elements, loc="best", fontsize=9)
+
+    plt.tight_layout()
+    plt.savefig(str(out_path), dpi=150, bbox_inches="tight")
+    plt.close()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -246,12 +476,16 @@ def parse_args():
     p.add_argument("--ckpt",       default="ckpt/inverter/best.pt")
     p.add_argument("--model-id",   default="stabilityai/stable-diffusion-3.5-medium")
     p.add_argument("--output-dir", default="experiments/inversion/gap_analysis")
+    p.add_argument("--data-dir",   default="experiments/inversion/training_data",
+                   help="Path to training data directory (for text-decoding vocabulary)")
     p.add_argument("--seeds",      type=int, nargs="+", default=list(range(8)))
     p.add_argument("--steps",      type=int,   default=50)
     p.add_argument("--guidance",   type=float, default=4.5)
     p.add_argument("--image-size", type=int,   default=512)
     p.add_argument("--dtype",      default="float16", choices=["float16", "bfloat16"])
     p.add_argument("--clip-model-id", default="openai/clip-vit-large-patch14")
+    p.add_argument("--projection", default="pca", choices=["pca", "mds"],
+                   help="Dimensionality reduction method for trajectory visualisation")
     return p.parse_args()
 
 
@@ -298,6 +532,16 @@ def main():
             device=device,
         )
 
+    # ---- Load vocabulary for text decoding ----
+    vocab_prompts = []
+    index_path = Path(args.data_dir) / "dataset_index.json"
+    if index_path.exists():
+        with open(index_path) as f:
+            vocab_prompts = [entry["prompt"] for entry in json.load(f)]
+        print(f"Loaded {len(vocab_prompts)} vocab prompts from {index_path}")
+    else:
+        print(f"Warning: {index_path} not found — text decoding will be skipped")
+
     all_pair_results = []
 
     for c1, c2 in TEST_PAIRS:
@@ -315,6 +559,8 @@ def main():
 
         trackers_and   = []
         trackers_pstar = []
+        trackers_mono  = []
+        pred_pooled_list = []   # accumulate across seeds for text decoding
 
         # Monolithic prompt
         mono_prompt = f"{c1} and {c2}"
@@ -359,6 +605,7 @@ def main():
                 pred_pooled, pred_seq = inverter(img_clip)
                 # pred_pooled: (1, 2048)
                 # pred_seq:    (1, 410, 4096)  — T5 portion zeroed
+            pred_pooled_list.append(pred_pooled.squeeze(0).float().cpu())
 
             # ---- Step 3: SD3.5(p*) ----
             with torch.no_grad():
@@ -382,7 +629,7 @@ def main():
 
             # ---- Step 4: Naive monolithic baseline ----
             with torch.no_grad():
-                lat_mono, _ = sample_sd3_with_trajectory_tracking(
+                lat_mono, tracker_mono = sample_sd3_with_trajectory_tracking(
                     latents=init_latents.clone(),
                     prompt=mono_prompt,
                     scheduler=scheduler,
@@ -402,6 +649,7 @@ def main():
                 img_mono = decode_latents(models["vae"], lat_mono)
 
             images_mono.append(img_mono.cpu())
+            trackers_mono.append(tracker_mono)
 
             print(f"  seed {seed} done")
 
@@ -448,6 +696,44 @@ def main():
             json.dump(metrics, f, indent=2)
 
         all_pair_results.append(metrics)
+
+        # ---- Visualisation 1: text decoding of p* ----
+        decoded_text = []
+        if vocab_prompts:
+            print("  Decoding p* to nearest training prompts ...")
+            avg_pooled = torch.stack(pred_pooled_list).mean(dim=0).to(device)
+            decoded_text = decode_pooled_to_text(
+                avg_pooled, vocab_prompts, models, device, top_k=3
+            )
+            print(f"  Nearest prompts to p*:")
+            for rank, (prompt, sim) in enumerate(decoded_text, 1):
+                print(f"    {rank}. \"{prompt}\"  (cos={sim:.4f})")
+            metrics["decoded_p_star"] = [
+                {"prompt": p, "cos_sim": round(s, 4)} for p, s in decoded_text
+            ]
+            with open(pair_dir / "gap_metrics.json", "w") as f:
+                json.dump(metrics, f, indent=2)
+
+        # ---- Visualisation 2: side-by-side comparison grid ----
+        print("  Saving comparison grid ...")
+        plot_comparison_grid(
+            imgs_and, imgs_pstar, imgs_mono,
+            decoded_text=decoded_text,
+            c1=c1, c2=c2,
+            out_path=pair_dir / "comparison_grid.png",
+            n_display=4,
+        )
+
+        # ---- Visualisation 3: trajectory MDS/PCA (seed 0) ----
+        print(f"  Plotting trajectory {args.projection.upper()} (seed 0) ...")
+        plot_trajectory_mds(
+            tracker_and=trackers_and[0],
+            tracker_pstar=trackers_pstar[0],
+            tracker_mono=trackers_mono[0],
+            c1=c1, c2=c2,
+            out_path=pair_dir / f"trajectory_{args.projection}.png",
+            method=args.projection,
+        )
 
         print(f"\n  Results for '{c1}' AND '{c2}':")
         print(f"    AND vs p*:        CLIP={gap_and_pstar['clip_cos']:.4f}  "
