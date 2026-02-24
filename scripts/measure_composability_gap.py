@@ -61,9 +61,9 @@ from notebooks.utils import get_sd3_models, get_sd3_text_embedding
 from notebooks.composition_experiments import (
     LatentTrajectoryCollector,
     sample_sd3_with_trajectory_tracking,
-    superdiff_sd3_with_trajectory_tracking,
     get_vel_sd3,
 )
+from scripts.trajectory_dynamics_experiment import superdiff_fm_ode_sd3
 from models.sd35_inverter import load_inverter, make_clip_preprocessor
 
 try:
@@ -198,9 +198,9 @@ def compute_image_gap(
     result = {"clip_cos": clip_cos}
 
     if lpips_fn is not None:
-        # lpips expects [-1, 1]
-        a_lp = images_a.to(device) * 2 - 1
-        b_lp = images_b.to(device) * 2 - 1
+        # lpips expects [-1, 1]; kept on CPU to avoid OOM alongside the transformer
+        a_lp = images_a.cpu().float() * 2 - 1
+        b_lp = images_b.cpu().float() * 2 - 1
         lp_vals = lpips_fn(a_lp, b_lp)
         result["lpips"] = lp_vals.mean().item()
 
@@ -255,6 +255,101 @@ def compute_trajectory_gap(
         "traj_mse_per_step": [float(v) for v in mse_per_step],
         "traj_cos_per_step": [float(v) for v in cos_per_step],
     }
+
+
+# ---------------------------------------------------------------------------
+# Best-of-K candidate selection
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def select_best_p_star(
+    candidates: list,
+    x_T: torch.Tensor,
+    target_img: torch.Tensor,
+    transformer,
+    scheduler,
+    uncond_embeds: torch.Tensor,
+    uncond_pooled: torch.Tensor,
+    guidance_scale: float,
+    vae,
+    clip_eval,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple:
+    """
+    Pick the best p* from K candidates using a single-NFE x₀ prediction.
+
+    Formula:  x₀_pred = x_T - σ_max · v_cfg(x_T, t_max, p*_k)
+
+    This is the direct clean-image prediction at the first (noisiest)
+    timestep — one transformer call per candidate, no ODE solve.
+    The winner is the candidate whose predicted x₀ has the highest
+    CLIP cosine similarity to the reference AND image.
+
+    Scheduler must already have set_timesteps called (e.g. by the AND
+    run that preceded this call) — we read sigmas[0] without resetting.
+
+    Parameters
+    ----------
+    candidates  : list of k (pooled: Tensor(1,2048), seq: Tensor(1,410,4096))
+    x_T         : (1, 16, H, W) — shared initial noise for this seed
+    target_img  : (1, 3, H, W) float32 [0,1] — AND image for this seed
+    ...
+
+    Returns
+    -------
+    (best_pooled, best_seq, best_score)
+    best_score is None when len(candidates)==1.
+    """
+    if len(candidates) == 1:
+        return candidates[0][0], candidates[0][1], None
+
+    # Timestep / sigma at t_max — read from already-configured scheduler
+    t_max     = scheduler.timesteps[0]
+    sigma_max = float(scheduler.sigmas[0])   # ≈ 1.0 for flow matching
+
+    # Unconditional velocity at x_T — same for all candidates, compute once
+    vel_uncond = get_vel_sd3(
+        transformer, t_max, x_T,
+        uncond_embeds.expand(1, -1, -1),
+        uncond_pooled.expand(1, -1),
+        device=device, dtype=dtype,
+    )
+
+    # CLIP features of the AND target image — computed once
+    target_clip_in = images_to_clip_input(target_img.cpu()).to(device)
+    feat_target = F.normalize(
+        clip_eval.get_image_features(pixel_values=target_clip_in), dim=-1
+    )  # (1, D_clip)
+
+    best_score  = -float("inf")
+    best_pooled, best_seq = candidates[0]
+
+    for pooled_k, seq_k in candidates:
+        c_embeds = seq_k.to(device=device, dtype=dtype)
+        c_pooled = pooled_k.to(device=device, dtype=dtype)
+
+        vel_cond = get_vel_sd3(
+            transformer, t_max, x_T, c_embeds, c_pooled,
+            device=device, dtype=dtype,
+        )
+        vf = vel_uncond + guidance_scale * (vel_cond - vel_uncond)
+
+        # Direct x₀ prediction (flow-matching: x₀ = x_T - σ · v)
+        x0_pred = x_T - sigma_max * vf
+
+        img_pred = decode_latents(vae, x0_pred)
+        approx_clip = images_to_clip_input(img_pred.cpu()).to(device)
+        feat_approx = F.normalize(
+            clip_eval.get_image_features(pixel_values=approx_clip), dim=-1
+        )
+
+        score = (feat_target * feat_approx).sum().item()
+        if score > best_score:
+            best_score  = score
+            best_pooled, best_seq = pooled_k, seq_k
+
+    return best_pooled, best_seq, best_score
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +581,10 @@ def parse_args():
     p.add_argument("--clip-model-id", default="openai/clip-vit-large-patch14")
     p.add_argument("--projection", default="pca", choices=["pca", "mds"],
                    help="Dimensionality reduction method for trajectory visualisation")
+    p.add_argument("--k-samples", type=int, default=1,
+                   help="Best-of-K inversion: sample K p* candidates via MC dropout "
+                        "and pick the best by single-NFE CLIP score. "
+                        "k=1 (default) disables and uses a single deterministic forward pass.")
     return p.parse_args()
 
 
@@ -520,7 +619,7 @@ def main():
     # ---- Load LPIPS if available ----
     lpips_fn = None
     if LPIPS_AVAILABLE:
-        lpips_fn = lpips.LPIPS(net="vgg").to(device)
+        lpips_fn = lpips.LPIPS(net="vgg")  # kept on CPU; images moved to CPU at call time
 
     # ---- Pre-compute unconditional conditioning ----
     with torch.no_grad():
@@ -543,6 +642,8 @@ def main():
         print(f"Warning: {index_path} not found — text decoding will be skipped")
 
     all_pair_results = []
+    all_seed_records = []
+    all_traj_records = []
 
     for c1, c2 in TEST_PAIRS:
         pair_slug = f"{c1.replace(' ', '_')}_{c2.replace(' ', '_')}"
@@ -565,6 +666,12 @@ def main():
         # Monolithic prompt
         mono_prompt = f"{c1} and {c2}"
 
+        images_c1        = []
+        images_c2        = []
+        trackers_c1      = []
+        trackers_c2      = []
+        per_seed_records = []
+
         for seed in args.seeds:
             gen = torch.Generator(device=device).manual_seed(seed)
             init_latents = torch.randn(
@@ -574,7 +681,7 @@ def main():
 
             # ---- Step 1: SuperDiff-AND ----
             with torch.no_grad():
-                lat_and, tracker_and, *_ = superdiff_sd3_with_trajectory_tracking(
+                lat_and, tracker_and, *_ = superdiff_fm_ode_sd3(
                     latents=init_latents.clone(),
                     obj_prompt=c1,
                     bg_prompt=c2,
@@ -601,10 +708,26 @@ def main():
             # Preprocess for CLIP (224×224, normalised)
             img_clip = preprocess(img_and)  # (1, 3, 224, 224), float32
 
-            with torch.no_grad():
-                pred_pooled, pred_seq = inverter(img_clip)
-                # pred_pooled: (1, 2048)
-                # pred_seq:    (1, 410, 4096)  — T5 portion zeroed
+            candidates = inverter.sample_k(img_clip, k=args.k_samples)
+
+            pred_pooled, pred_seq, best_score = select_best_p_star(
+                candidates,
+                x_T=init_latents.clone(),
+                target_img=img_and,
+                transformer=models["transformer"],
+                scheduler=scheduler,
+                uncond_embeds=uncond_embeds,
+                uncond_pooled=uncond_pooled,
+                guidance_scale=args.guidance,
+                vae=models["vae"],
+                clip_eval=clip_eval,
+                device=device,
+                dtype=dtype,
+            )
+            if best_score is not None:
+                print(f"    best-of-{args.k_samples} score: {best_score:.4f}")
+            # pred_pooled: (1, 2048)
+            # pred_seq:    (1, 410, 4096)  — T5 portion zeroed
             pred_pooled_list.append(pred_pooled.squeeze(0).float().cpu())
 
             # ---- Step 3: SD3.5(p*) ----
@@ -651,17 +774,117 @@ def main():
             images_mono.append(img_mono.cpu())
             trackers_mono.append(tracker_mono)
 
+            # ---- c1-only and c2-only baselines (same initial noise) ----
+            with torch.no_grad():
+                lat_c1, tracker_c1 = sample_sd3_with_trajectory_tracking(
+                    latents=init_latents.clone(),
+                    prompt=c1,
+                    scheduler=scheduler,
+                    transformer=models["transformer"],
+                    tokenizer=models["tokenizer"],
+                    text_encoder=models["text_encoder"],
+                    tokenizer_2=models["tokenizer_2"],
+                    text_encoder_2=models["text_encoder_2"],
+                    tokenizer_3=models["tokenizer_3"],
+                    text_encoder_3=models["text_encoder_3"],
+                    guidance_scale=args.guidance,
+                    num_inference_steps=args.steps,
+                    batch_size=1,
+                    device=device,
+                    dtype=dtype,
+                )
+                img_c1 = decode_latents(models["vae"], lat_c1)
+
+                lat_c2, tracker_c2 = sample_sd3_with_trajectory_tracking(
+                    latents=init_latents.clone(),
+                    prompt=c2,
+                    scheduler=scheduler,
+                    transformer=models["transformer"],
+                    tokenizer=models["tokenizer"],
+                    text_encoder=models["text_encoder"],
+                    tokenizer_2=models["tokenizer_2"],
+                    text_encoder_2=models["text_encoder_2"],
+                    tokenizer_3=models["tokenizer_3"],
+                    text_encoder_3=models["text_encoder_3"],
+                    guidance_scale=args.guidance,
+                    num_inference_steps=args.steps,
+                    batch_size=1,
+                    device=device,
+                    dtype=dtype,
+                )
+                img_c2 = decode_latents(models["vae"], lat_c2)
+
+            images_c1.append(img_c1.cpu())
+            images_c2.append(img_c2.cpu())
+            trackers_c1.append(tracker_c1)
+            trackers_c2.append(tracker_c2)
+
+            # ---- Per-seed terminal latent distances (anchor = AND) ----
+            # Use raw tracker latents — no VAE re-encode error.
+            # Per-element MSE is dimension-normalised and scale-comparable.
+            z_and     = tracker_and.trajectories[-1].float()   # (1, 16, H, W)
+            z_mono    = tracker_mono.trajectories[-1].float()
+            z_c1_t    = tracker_c1.trajectories[-1].float()
+            z_c2_t    = tracker_c2.trajectories[-1].float()
+            z_pstar_t = tracker_pstar.trajectories[-1].float()
+
+            per_seed_records.append({
+                "pair":      f"{c1} + {c2}",
+                "c1":        c1,
+                "c2":        c2,
+                "seed":      seed,
+                "d_T_mono":  float(((z_mono    - z_and) ** 2).mean()),
+                "d_T_c1":    float(((z_c1_t    - z_and) ** 2).mean()),
+                "d_T_c2":    float(((z_c2_t    - z_and) ** 2).mean()),
+                "d_T_pstar": float(((z_pstar_t - z_and) ** 2).mean()),
+            })
+
             print(f"  seed {seed} done")
+
+        # ---- Per-step trajectory distances (CPU, no GPU needed) ----
+        # trackers already hold trajectories as CPU tensors from store_step().
+        # Shape: (num_steps+1, 1, C, H, W) — iterate over all T+1 states.
+        print("  Computing per-step trajectory distances ...")
+        for seed_idx, seed in enumerate(args.seeds):
+            ta  = trackers_and[seed_idx]
+            tm  = trackers_mono[seed_idx]
+            tc1 = trackers_c1[seed_idx]
+            tc2 = trackers_c2[seed_idx]
+            tp  = trackers_pstar[seed_idx]
+            n_steps = ta.trajectories.shape[0]   # T+1
+            for step in range(n_steps):
+                z_and     = ta.trajectories[step].float()
+                z_mono    = tm.trajectories[step].float()
+                z_c1_t    = tc1.trajectories[step].float()
+                z_c2_t    = tc2.trajectories[step].float()
+                z_pstar_s = tp.trajectories[step].float()
+                sigma     = float(ta.sigmas[min(step, len(ta.sigmas) - 1)])
+                all_traj_records.append({
+                    "pair":      f"{c1} + {c2}",
+                    "c1":        c1,
+                    "c2":        c2,
+                    "seed":      seed,
+                    "step":      step,
+                    "sigma":     sigma,
+                    "d_t_mono":  float(((z_mono    - z_and) ** 2).mean()),
+                    "d_t_c1":    float(((z_c1_t    - z_and) ** 2).mean()),
+                    "d_t_c2":    float(((z_c2_t    - z_and) ** 2).mean()),
+                    "d_t_pstar": float(((z_pstar_s - z_and) ** 2).mean()),
+                })
 
         # Stack across seeds
         imgs_and   = torch.cat(images_and,   dim=0)  # (N, 3, H, W)
         imgs_pstar = torch.cat(images_pstar, dim=0)
         imgs_mono  = torch.cat(images_mono,  dim=0)
+        imgs_c1    = torch.cat(images_c1,    dim=0)
+        imgs_c2    = torch.cat(images_c2,    dim=0)
 
         # ---- Save image grids ----
         save_image(imgs_and,   pair_dir / "superdiff_and.png",   nrow=4, normalize=False)
         save_image(imgs_pstar, pair_dir / "sd35_pstar.png",      nrow=4, normalize=False)
         save_image(imgs_mono,  pair_dir / "sd35_monolithic.png", nrow=4, normalize=False)
+        save_image(imgs_c1,    pair_dir / "sd35_c1_only.png",    nrow=4, normalize=False)
+        save_image(imgs_c2,    pair_dir / "sd35_c2_only.png",    nrow=4, normalize=False)
 
         # ---- Step 5: Gap metrics ----
         print("  Computing image gap: AND vs p* ...")
@@ -696,6 +919,7 @@ def main():
             json.dump(metrics, f, indent=2)
 
         all_pair_results.append(metrics)
+        all_seed_records.extend(per_seed_records)
 
         # ---- Visualisation 1: text decoding of p* ----
         decoded_text = []
@@ -748,7 +972,19 @@ def main():
     summary_path = out_root / "all_pairs_gap.json"
     with open(summary_path, "w") as f:
         json.dump(all_pair_results, f, indent=2)
+
+    # Save flat per-seed distances for histogram plotting
+    seed_records_path = out_root / "per_seed_distances.json"
+    with open(seed_records_path, "w") as f:
+        json.dump(all_seed_records, f, indent=2)
+
+    traj_path = out_root / "trajectory_distances.json"
+    with open(traj_path, "w") as f:
+        json.dump(all_traj_records, f, indent=2)
+
     print(f"\nAll results saved to {out_root}")
+    print(f"Per-seed distances  → {seed_records_path}")
+    print(f"Trajectory distances → {traj_path}")
 
 
 if __name__ == "__main__":

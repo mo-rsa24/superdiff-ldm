@@ -375,21 +375,29 @@ def superdiff_with_trajectory_tracking(
 # ---------------------------------------------------------------------------
 @torch.no_grad()
 def get_vel_sd3(transformer, t, latents, prompt_embeds, pooled_embeds,
-                device=torch.device("cuda"), dtype=torch.float16):
-    """Get velocity prediction from SD3 transformer (no input scaling)."""
+                device=torch.device("cuda"), dtype=torch.float16,
+                skip_layers=None):
+    """Get velocity prediction from SD3 transformer (no input scaling).
+
+    skip_layers: list of transformer block indices to skip (for SLG).
+    """
     latents_in = latents.to(device=device, dtype=dtype)
     prompt_embeds = prompt_embeds.to(device=device, dtype=dtype)
     pooled_embeds = pooled_embeds.to(device=device, dtype=dtype)
     timestep = t.expand(latents_in.shape[0]).to(device=device)
 
+    kwargs = dict(
+        hidden_states=latents_in,
+        timestep=timestep,
+        encoder_hidden_states=prompt_embeds,
+        pooled_projections=pooled_embeds,
+        return_dict=False,
+    )
+    if skip_layers is not None:
+        kwargs["skip_layers"] = skip_layers
+
     with torch.autocast("cuda", dtype=dtype):
-        vel = transformer(
-            hidden_states=latents_in,
-            timestep=timestep,
-            encoder_hidden_states=prompt_embeds,
-            pooled_projections=pooled_embeds,
-            return_dict=False,
-        )[0]
+        vel = transformer(**kwargs)[0]
     return vel
 
 

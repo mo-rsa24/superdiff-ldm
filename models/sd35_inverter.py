@@ -93,9 +93,12 @@ class SD35ConditioningInverter(nn.Module):
         clip_hidden = self.clip_vision.config.hidden_size  # 768 for ViT-L/14
 
         # ---- Pooled head: 768 → 1024 → 2048 ----
+        # Dropout(0.15) is between GELU and LayerNorm so that MC-dropout
+        # at inference (sample_k) produces diverse pooled candidates.
         self.pooled_head = nn.Sequential(
             nn.Linear(clip_hidden, 1024),
             nn.GELU(),
+            nn.Dropout(p=0.15),
             nn.LayerNorm(1024),
             nn.Linear(1024, POOLED_DIM),
         )
@@ -103,12 +106,13 @@ class SD35ConditioningInverter(nn.Module):
         # ---- Sequence head: cross-attention decoder ----
         # 154 learned query tokens attend over CLIP patch features,
         # then project to 4096.
+        # dropout=0.1 enables MC-dropout diversity in sample_k().
         self.query_tokens = nn.Parameter(torch.randn(CLIP_TOKENS, clip_hidden) * 0.02)
         self.cross_attn   = nn.MultiheadAttention(
             embed_dim=clip_hidden,
             num_heads=8,
             batch_first=True,
-            dropout=0.0,
+            dropout=0.1,
         )
         self.seq_norm = nn.LayerNorm(clip_hidden)
         self.seq_proj = nn.Linear(clip_hidden, SEQ_DIM)
@@ -168,6 +172,66 @@ class SD35ConditioningInverter(nn.Module):
         seq_clip = self.seq_proj(attn_out)
 
         return pooled, seq_clip   # (B, 2048), (B, 154, 4096)
+
+    # ------------------------------------------------------------------
+    def sample_k(self, images: torch.Tensor, k: int):
+        """
+        Sample K candidate (pooled, seq) pairs via MC dropout.
+
+        The CLIP backbone is deterministic (frozen, always eval).
+        Only the prediction heads are set to train mode to activate
+        Dropout and MultiheadAttention dropout, giving diverse candidates.
+
+        CLIP patch features are extracted once and reused for all K passes,
+        so cost is 1 CLIP forward + K cheap head forwards.
+
+        Parameters
+        ----------
+        images : (B, 3, 224, 224) float32, CLIP-normalised
+        k      : number of candidates to sample
+
+        Returns
+        -------
+        list of k tuples: (pooled: Tensor(B, 2048), seq: Tensor(B, 410, 4096))
+        """
+        if k == 1:
+            with torch.no_grad():
+                pooled, seq = self.forward(images)
+            return [(pooled, seq)]
+
+        # Extract CLIP features once — backbone is frozen and eval, deterministic
+        with torch.no_grad():
+            vision_out  = self.clip_vision(pixel_values=images, return_dict=True)
+            patch_feats = vision_out.last_hidden_state   # (B, 257, 768)
+            cls_feat    = patch_feats[:, 0]              # (B, 768)
+
+        B = cls_feat.shape[0]
+
+        # Activate dropout in prediction heads only
+        self.pooled_head.train()
+        self.cross_attn.train()
+
+        candidates = []
+        with torch.no_grad():
+            for _ in range(k):
+                pooled = self.pooled_head(cls_feat)
+
+                queries  = self.query_tokens.unsqueeze(0).expand(B, -1, -1)
+                attn_out, _ = self.cross_attn(queries, patch_feats, patch_feats)
+                attn_out = self.seq_norm(attn_out)
+                seq_clip = self.seq_proj(attn_out)
+
+                t5_zeros = torch.zeros(B, T5_TOKENS, SEQ_DIM,
+                                       device=seq_clip.device, dtype=seq_clip.dtype)
+                seq = torch.cat([seq_clip, t5_zeros], dim=1)
+
+                candidates.append((pooled.clone(), seq.clone()))
+
+        # Restore eval mode
+        self.pooled_head.eval()
+        self.cross_attn.eval()
+
+        return candidates
 
     # ------------------------------------------------------------------
     @property
@@ -237,5 +301,16 @@ def load_inverter(
 ) -> SD35ConditioningInverter:
     model = SD35ConditioningInverter(clip_model_id=clip_model_id, freeze_clip=freeze_clip)
     ckpt  = torch.load(path, map_location=device, weights_only=True)
-    model.load_state_dict(ckpt["state_dict"])
+    state = ckpt["state_dict"]
+
+    # Compat: checkpoints saved before Dropout was inserted at pooled_head[2]
+    # have LayerNorm at old index 2 and final Linear at old index 3.
+    # Move old-index-3 first (before that key is overwritten), then old-index-2.
+    if "pooled_head.2.weight" in state and "pooled_head.4.weight" not in state:
+        state["pooled_head.4.weight"] = state.pop("pooled_head.3.weight")
+        state["pooled_head.4.bias"]   = state.pop("pooled_head.3.bias")
+        state["pooled_head.3.weight"] = state.pop("pooled_head.2.weight")
+        state["pooled_head.3.bias"]   = state.pop("pooled_head.2.bias")
+
+    model.load_state_dict(state)
     return model.to(device)

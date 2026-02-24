@@ -80,7 +80,7 @@ class TrajectoryExperimentConfig:
     lift: float = 0.0
     projection: str = "pca"  # "pca" or "mds"
     device: str = "cuda"
-    dtype: torch.dtype = torch.float16
+    dtype: torch.dtype = torch.bfloat16
     output_dir: str = ""
     # SuperDIFF variant: "ours", "fm_ode", "author_det", "author_stoch", "all"
     # - "fm_ode": Flow matching ODE adaptation (recommended for SD3.5)
@@ -1405,6 +1405,7 @@ def collect_trajectories(
 
     trackers = {}
     final_latents = {}
+    kappa_data = {}          # name -> {kappa, log_likelihoods, concept_labels}
 
     for name, cond in conditions.items():
         print(f"  Running condition: {name} ...")
@@ -1444,6 +1445,13 @@ def collect_trajectories(
                         lift=cfg.lift,
                     )
                 )
+            kappa_data[name] = {
+                    "kappa": [[round(float(1 - kappa[t, 0]), 6), round(float(kappa[t, 0]), 6)]
+                               for t in range(kappa.shape[0])],
+                    "log_likelihoods": [[round(float(ll_obj[t, 0]), 6), round(float(ll_bg[t, 0]), 6)]
+                                         for t in range(ll_obj.shape[0])],
+                    "concept_labels": [cond["obj_prompt"], cond["bg_prompt"]],
+                }
             elif cond["type"] == "poe":
                 latents_out, tracker = poe_sd_with_trajectory_tracking(
                     latents_clone,
@@ -1479,6 +1487,13 @@ def collect_trajectories(
                     lift=cfg.lift,
                 )
             )
+            kappa_data[name] = {
+                "kappa": [[round(float(1 - kappa[t, 0]), 6), round(float(kappa[t, 0]), 6)]
+                           for t in range(kappa.shape[0])],
+                "log_likelihoods": [[round(float(ll_obj[t, 0]), 6), round(float(ll_bg[t, 0]), 6)]
+                                     for t in range(ll_obj.shape[0])],
+                "concept_labels": [cond["obj_prompt"], cond["bg_prompt"]],
+            }
         elif cond["type"] == "superdiff_author_det":
             latents_out, tracker, kappa, ll_obj, ll_bg = (
                 superdiff_author_deterministic_sd3(
@@ -1489,6 +1504,13 @@ def collect_trajectories(
                     lift=cfg.lift,
                 )
             )
+            kappa_data[name] = {
+                "kappa": [[round(float(1 - kappa[t, 0]), 6), round(float(kappa[t, 0]), 6)]
+                           for t in range(kappa.shape[0])],
+                "log_likelihoods": [[round(float(ll_obj[t, 0]), 6), round(float(ll_bg[t, 0]), 6)]
+                                     for t in range(ll_obj.shape[0])],
+                "concept_labels": [cond["obj_prompt"], cond["bg_prompt"]],
+            }
         elif cond["type"] == "superdiff_fm_ode":
             latents_out, tracker, kappa, ll_obj, ll_bg = (
                 superdiff_fm_ode_sd3(
@@ -1499,6 +1521,13 @@ def collect_trajectories(
                     lift=cfg.lift,
                 )
             )
+            kappa_data[name] = {
+                "kappa": [[round(float(1 - kappa[t, 0]), 6), round(float(kappa[t, 0]), 6)]
+                           for t in range(kappa.shape[0])],
+                "log_likelihoods": [[round(float(ll_obj[t, 0]), 6), round(float(ll_bg[t, 0]), 6)]
+                                     for t in range(ll_obj.shape[0])],
+                "concept_labels": [cond["obj_prompt"], cond["bg_prompt"]],
+            }
         elif cond["type"] == "superdiff_multi":
             latents_out, tracker, kappas_m, ll_m = (
                 superdiff_multi_fm_ode_sd3(
@@ -1508,6 +1537,13 @@ def collect_trajectories(
                     lift=cfg.lift,
                 )
             )
+            kappa_data[name] = {
+                "kappa": [[round(float(kappas_m[t, 0, m]), 6) for m in range(kappas_m.shape[2])]
+                           for t in range(kappas_m.shape[0])],
+                "log_likelihoods": [[round(float(ll_m[t, 0, m]), 6) for m in range(ll_m.shape[2])]
+                                     for t in range(ll_m.shape[0])],
+                "concept_labels": cond["prompts"],
+            }
         elif cond["type"] == "superdiff_guided":
             latents_out, tracker, kappas_m, ll_m = (
                 superdiff_guided_fm_ode_sd3(
@@ -1519,6 +1555,13 @@ def collect_trajectories(
                     monolithic_prompt=cond.get("monolithic_prompt"),
                 )
             )
+            kappa_data[name] = {
+                "kappa": [[round(float(kappas_m[t, 0, m]), 6) for m in range(kappas_m.shape[2])]
+                           for t in range(kappas_m.shape[0])],
+                "log_likelihoods": [[round(float(ll_m[t, 0, m]), 6) for m in range(ll_m.shape[2])]
+                                     for t in range(ll_m.shape[0])],
+                "concept_labels": cond["prompts"],
+            }
         elif cond["type"] == "composable_not":
             latents_out, tracker = composable_not_sd3(
                 latents_clone,
@@ -1538,6 +1581,12 @@ def collect_trajectories(
                     neg_lambda=cond.get("neg_lambda", 1.0),
                 )
             )
+            kappa_data[name] = {
+                "kappa": [[round(float(kappa_neg[t, 0]), 6)] for t in range(kappa_neg.shape[0])],
+                "log_likelihoods": [[round(float(ll_pos[t, 0]), 6), round(float(ll_neg[t, 0]), 6)]
+                                     for t in range(ll_pos.shape[0])],
+                "concept_labels": [cond["pos_prompt"], cond["neg_prompt"]],
+            }
         elif cond["type"] == "poe":
             latents_out, tracker = poe_sd3_with_trajectory_tracking(
                 latents_clone,
@@ -1555,7 +1604,7 @@ def collect_trajectories(
         # Free intermediate VRAM between conditions
         torch.cuda.empty_cache()
 
-    return trackers, final_latents
+    return trackers, final_latents, kappa_data
 
 
 # ---------------------------------------------------------------------------
@@ -2236,6 +2285,132 @@ def clip_classifier_probe(
 
 
 # ---------------------------------------------------------------------------
+# Trajectory data serialiser
+# ---------------------------------------------------------------------------
+def save_trajectory_data(
+    trackers: Dict,
+    kappa_data: Dict,
+    projected: Dict,
+    explained,
+    summary: dict,
+    labels: Dict,
+    conditions: Dict,
+    cfg,
+    output_dir: str,
+    clip_results: dict = None,
+):
+    """
+    Serialise all data needed by plot_trajectory_analysis.py into
+    trajectory_data.json alongside the other experiment outputs.
+
+    Per-condition scalars (latent_norms, velocity_magnitudes) are computed
+    here from the LatentTrajectoryCollector tensors so that the plotting
+    script is fully offline (no models needed).
+    """
+    condition_names = list(trackers.keys())
+
+    # ---- Flatten trackers to (T+1, D) per condition ----
+    flat_np = {}
+    for name, tracker in trackers.items():
+        traj = tracker.trajectories        # (T+1, B, C, H, W)
+        T1 = traj.shape[0]
+        flat_np[name] = traj[:, 0].reshape(T1, -1).float().numpy()
+
+    # ---- Per-condition stats ----
+    per_condition = {}
+    for name, tracker in trackers.items():
+        T1 = tracker.trajectories.shape[0]
+
+        # Latent norms: ||x_t||_2
+        lat = flat_np[name]                                     # (T+1, D)
+        lat_norms = np.linalg.norm(lat, axis=1).tolist()
+
+        # Velocity magnitudes: ||v_t||_2  (last entry is zeros — store_final has no vel)
+        vel = tracker.velocities[:, 0].reshape(T1, -1).float().numpy()
+        vel_mags = np.linalg.norm(vel, axis=1).tolist()
+
+        # Projected coordinates (2D)
+        proj = projected.get(name)
+        proj_x = proj[:, 0].tolist() if proj is not None else []
+        proj_y = proj[:, 1].tolist() if proj is not None else []
+
+        entry = {
+            "latent_norms":        lat_norms,
+            "velocity_magnitudes": vel_mags,
+            "projected_x":         proj_x,
+            "projected_y":         proj_y,
+            "kappa":               kappa_data.get(name, {}).get("kappa"),
+            "log_likelihoods":     kappa_data.get(name, {}).get("log_likelihoods"),
+            "concept_labels":      kappa_data.get(name, {}).get("concept_labels"),
+        }
+        per_condition[name] = entry
+
+    # ---- Pairwise L2 distances over time ----
+    pairs = [(i, j) for i in range(len(condition_names))
+             for j in range(i + 1, len(condition_names))]
+    pairwise_l2 = {}
+    for i, j in pairs:
+        ni, nj = condition_names[i], condition_names[j]
+        li = flat_np.get(ni)
+        lj = flat_np.get(nj)
+        if li is None or lj is None:
+            continue
+        min_T = min(li.shape[0], lj.shape[0])
+        dist = np.linalg.norm(li[:min_T] - lj[:min_T], axis=1).tolist()
+        pairwise_l2[f"{ni}|{nj}"] = dist
+
+    # ---- CLIP cosine similarities (terminal only) ----
+    clip_terminal = {}
+    if clip_results and "cosine_similarities" in clip_results:
+        for cond_name, sims in clip_results["cosine_similarities"].items():
+            clip_terminal[cond_name] = sims
+
+    # ---- PCA variance explained ----
+    pca_var = []
+    mds_stress = None
+    if explained is not None:
+        pca_var = [round(float(v), 6) for v in explained]
+    elif hasattr(cfg, "_mds_stress"):
+        mds_stress = cfg._mds_stress
+
+    data = {
+        "conditions":            condition_names,
+        "labels":                labels,
+        "condition_types":       {n: conditions[n].get("type", "unknown")
+                                   for n in condition_names if n in conditions},
+        "n_steps":               int(flat_np[condition_names[0]].shape[0]) if condition_names else 0,
+        "projection_method":     cfg.projection,
+        "pca_variance_explained": pca_var,
+        "mds_stress":            mds_stress,
+        "config": {
+            "prompt_a":            cfg.prompt_a,
+            "prompt_b":            cfg.prompt_b,
+            "monolithic_prompt":   cfg.monolithic_prompt,
+            "model_id":            cfg.model_id,
+            "num_inference_steps": cfg.num_inference_steps,
+            "guidance_scale":      cfg.guidance_scale,
+            "seed":                cfg.seed,
+            "lift":                cfg.lift,
+        },
+        "decoded_images_path": "decoded_images.png",
+        "per_condition":       per_condition,
+        "pairwise_l2":         pairwise_l2,
+        "summary":             {
+            k: v for k, v in summary.items()
+            if k in ("endpoint_distances_l2", "path_lengths",
+                     "divergence_onset_step", "final_tangent_cosine_similarity",
+                     "pca_variance_explained", "pca_total_variance_top2")
+        },
+        "clip": clip_terminal,
+    }
+
+    out_path = os.path.join(output_dir, "trajectory_data.json")
+    with open(out_path, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"  Saved: {out_path}")
+
+
+# ---------------------------------------------------------------------------
 # Main experiment
 # ---------------------------------------------------------------------------
 def run_experiment(cfg: TrajectoryExperimentConfig):
@@ -2528,11 +2703,11 @@ def run_experiment(cfg: TrajectoryExperimentConfig):
             if cond["type"] == "superdiff_author_stoch"
         }
 
-        trackers_sd3, final_sd3 = {}, {}
+        trackers_sd3, final_sd3, kappa_sd3 = {}, {}, {}
         if sd3_conditions:
-            trackers_sd3, final_sd3 = collect_trajectories(cfg, models, sd3_conditions)
+            trackers_sd3, final_sd3, kappa_sd3 = collect_trajectories(cfg, models, sd3_conditions)
 
-        trackers_legacy, final_legacy = {}, {}
+        trackers_legacy, final_legacy, kappa_legacy = {}, {}, {}
         if legacy_conditions:
             cfg_legacy = replace(
                 cfg,
@@ -2541,12 +2716,13 @@ def run_experiment(cfg: TrajectoryExperimentConfig):
                 latent_height=64,
                 latent_width=64,
             )
-            trackers_legacy, final_legacy = collect_trajectories(
+            trackers_legacy, final_legacy, kappa_legacy = collect_trajectories(
                 cfg_legacy, legacy_models, legacy_conditions,
             )
 
         trackers = {}
         final_latents = {}
+        kappa_data = {**kappa_sd3, **kappa_legacy}
         for name in conditions.keys():
             if name in trackers_sd3:
                 trackers[name] = trackers_sd3[name]
@@ -2560,7 +2736,7 @@ def run_experiment(cfg: TrajectoryExperimentConfig):
             **{name: legacy_models["vae"] for name in trackers_legacy.keys()},
         }
     else:
-        trackers, final_latents = collect_trajectories(cfg, models, conditions)
+        trackers, final_latents, kappa_data = collect_trajectories(cfg, models, conditions)
         vae_for_decoding = models["vae"]
 
     # Project
@@ -2633,6 +2809,21 @@ def run_experiment(cfg: TrajectoryExperimentConfig):
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"  Saved: {summary_path}")
+
+    # Save unified data file for plot_trajectory_analysis.py
+    print("Saving trajectory_data.json ...")
+    save_trajectory_data(
+        trackers=trackers,
+        kappa_data=kappa_data,
+        projected=projected,
+        explained=explained,
+        summary=summary,
+        labels=labels,
+        conditions=conditions,
+        cfg=cfg,
+        output_dir=cfg.output_dir,
+        clip_results=summary.get("clip_classifier"),
+    )
 
     # --- Spatial extension ---
     if cfg.spatial and cfg.superdiff_variant == "author_stoch":

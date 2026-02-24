@@ -69,7 +69,7 @@ def get_gligen_models(
 
 def get_sd3_models(
     model_id: str = "stabilityai/stable-diffusion-3.5-medium",
-    dtype=torch.float16,
+    dtype=torch.bfloat16,
     device=torch.device("cuda"),
 ):
     """Load SD3 transformer + triple text encoders + VAE."""
@@ -126,6 +126,11 @@ def get_sd3_text_embedding(
     Returns (prompt_embeds, pooled_prompt_embeds):
         prompt_embeds:        (B, clip_seq + t5_seq, 4096)
         pooled_prompt_embeds: (B, pooled_dim)
+
+    Matches official SD3 packing:
+      1) CLIP-L and CLIP-G are concatenated on feature dim -> (B, 77, 2048)
+      2) CLIP block is padded to T5 hidden dim (4096)
+      3) CLIP block is concatenated with T5 block on sequence dim
     """
     if isinstance(prompt, str):
         prompt = [prompt]
@@ -148,9 +153,6 @@ def get_sd3_text_embedding(
     prompt_embeds_2 = out_2.hidden_states[-2]      # (B, seq, 1280)
     pooled_2 = out_2[0]                             # (B, 1280)
 
-    # Concatenate CLIP embeddings on feature dim
-    clip_embeds = torch.cat([prompt_embeds_1, prompt_embeds_2], dim=-1)  # (B, seq, 2048)
-
     # --- T5-XXL (text_encoder_3) ---
     text_input_3 = tokenizer_3(
         prompt, padding="max_length", max_length=max_sequence_length,
@@ -158,11 +160,17 @@ def get_sd3_text_embedding(
     )
     t5_embeds = text_encoder_3(text_input_3.input_ids.to(device))[0]  # (B, t5_seq, 4096)
 
-    # Pad CLIP embeddings to match T5 dim (2048 → 4096)
-    clip_embeds = F.pad(clip_embeds, (0, t5_embeds.shape[-1] - clip_embeds.shape[-1]))
+    # Official SD3 packing:
+    # CLIP-L and CLIP-G share the same 77 token positions and are merged on feature dim:
+    #   (B, 77, 768) + (B, 77, 1280) -> (B, 77, 2048)
+    clip_embeds = torch.cat([prompt_embeds_1, prompt_embeds_2], dim=-1)
 
-    # Concatenate on sequence dim
-    prompt_embeds = torch.cat([clip_embeds, t5_embeds], dim=-2)  # (B, clip_seq+t5_seq, 4096)
+    # Pad merged CLIP block to T5 hidden size (4096)
+    t5_dim = t5_embeds.shape[-1]
+    clip_embeds = F.pad(clip_embeds, (0, t5_dim - clip_embeds.shape[-1]))
+
+    # Concatenate along sequence: CLIP (77) + T5 (256) = 333
+    prompt_embeds = torch.cat([clip_embeds, t5_embeds], dim=-2)  # (B, 333, 4096)
 
     # Pooled = concat of both CLIP pooled
     pooled_prompt_embeds = torch.cat([pooled_1, pooled_2], dim=-1)  # (B, 2048)
@@ -179,7 +187,8 @@ def get_image(vae, latents, nrow, ncol):
     if latents.ndim == 3:
         latents = latents.unsqueeze(0)
 
-    image = vae.decode(latents / vae.config.scaling_factor, return_dict=False)[0]
+    shift_factor = getattr(vae.config, "shift_factor", 0.0)
+    image = vae.decode(latents / vae.config.scaling_factor + shift_factor, return_dict=False)[0]
     image = (image / 2 + 0.5).clamp(0, 1)
     # Don't squeeze! Keep batch dimension for permute
     image = (image.permute(0, 2, 3, 1) * 255).to(torch.uint8)
